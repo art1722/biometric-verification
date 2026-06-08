@@ -1,0 +1,26 @@
+# Biometric QC — pinned dependencies
+#
+# Python: 3.11.x  (see .python-version / README)
+#   MediaPipe ships wheels for 3.9–3.12; 3.13 is NOT supported yet.
+#   3.11 is the safest, most-tested choice.
+#
+# WHY THESE EXACT PINS:
+#   mediapipe 0.10.31 (latest) broke the `mp.solutions` API via a protobuf
+#   incompatibility ("'MessageFactory' object has no attribute 'GetPrototype'").
+#   The known-good combination that keeps `mp.solutions.face_mesh` working is
+#   mediapipe 0.10.21 + protobuf 4.25.x + numpy 1.26.x. Pinning all three
+#   together is the point — upgrading any one of them can re-break solutions.
+
+# --- core CV / ML ---
+mediapipe==0.10.21
+opencv-python==4.11.0.86
+numpy==1.26.4
+protobuf==4.25.8          # pinned: mediapipe 0.10.21 needs protobuf >=4.25.3,<5
+
+# --- config / data ---
+PyYAML==6.0.2
+
+# Note: mediapipe pulls in jax/jaxlib/sentencepiece etc. as its own
+# dependencies; we do NOT pin those here — let mediapipe choose compatible
+# versions. We only pin the packages we import directly plus protobuf/numpy,
+# which are the ones that actually cause the solutions-API breakage.

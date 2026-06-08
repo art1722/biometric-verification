@@ -1,0 +1,344 @@
+# config.yml
+# Biometric data QC configuration
+#
+# Source tags:
+# [SPEC]    = official project specification PDF
+# [PLAN]    = PROJECT_PLAN.md / 4th meeting plan
+# [REPO]    = researcher Face-Verification example repo
+# [DESIGN]  = implementation choice, not from spec
+# [CONFIRM] = should be confirmed with researcher
+#
+# NOTE on ID width: Phase 0 has NOT settled whether IDs are zero-padded to a
+# fixed width. The spec only SHOWS examples (001_face_rgb.mp4, 0001_palm_L_N.jpg);
+# it does not state the rule. Until confirmed, every filename pattern accepts
+# an id of one or more digits ((?P<volunteer_id>\d+)), so no valid file is
+# rejected on width. Tighten to a fixed width once the researcher confirms. [CONFIRM]
+
+project:
+  status_pass: "PASS"      # [DESIGN]
+  status_fail: "FAIL"      # [DESIGN]
+  status_skip: "SKIP"      # [DESIGN]
+  status_review: "REVIEW"  # [DESIGN]
+
+paths:
+  input_root: "data"       # [DESIGN]
+  report_dir: "reports"    # [DESIGN]
+  report_csv: "reports/qc_report.csv"    # [DESIGN]
+  report_json: "reports/qc_report.json"  # [DESIGN]
+
+# --- filename validation (read by validate_filenames.py) ---
+# Each required file = (key, regex). The regex MUST capture a named group
+# `volunteer_id`. Width is one-or-more digits (\d+) until Phase 0 confirms. [CONFIRM]
+filenames:
+  id_width_policy: "any"   # [CONFIRM] any | fixed_3 | fixed_4
+  required:
+    face_rgb:        "^(?P<volunteer_id>\\d+)_face_rgb\\.mp4$"
+    face_depth:   "^(?P<volunteer_id>\\d+)_face_depth\\.mp4$"
+    face_ir1:     "^(?P<volunteer_id>\\d+)_face_ir1\\.mp4$"
+    face_ir2:     "^(?P<volunteer_id>\\d+)_face_ir2\\.mp4$"
+    face_thermal: "^(?P<volunteer_id>\\d+)_face_thermal\\.mp4$"
+    palm_L_N:        "^(?P<volunteer_id>\\d+)_palm_L_N\\.jpg$"
+    palm_L_RL:       "^(?P<volunteer_id>\\d+)_palm_L_RL\\.jpg$"
+    palm_L_RR:       "^(?P<volunteer_id>\\d+)_palm_L_RR\\.jpg$"
+    palm_L_PU:       "^(?P<volunteer_id>\\d+)_palm_L_PU\\.jpg$"
+    palm_L_PD:       "^(?P<volunteer_id>\\d+)_palm_L_PD\\.jpg$"
+    palm_R_N:        "^(?P<volunteer_id>\\d+)_palm_R_N\\.jpg$"
+    palm_R_RL:       "^(?P<volunteer_id>\\d+)_palm_R_RL\\.jpg$"
+    palm_R_RR:       "^(?P<volunteer_id>\\d+)_palm_R_RR\\.jpg$"
+    palm_R_PU:       "^(?P<volunteer_id>\\d+)_palm_R_PU\\.jpg$"
+    palm_R_PD:       "^(?P<volunteer_id>\\d+)_palm_R_PD\\.jpg$"
+    walk_F:          "^(?P<volunteer_id>\\d+)_walk_F\\.mp4$"
+    walk_S:          "^(?P<volunteer_id>\\d+)_walk_S\\.mp4$"
+
+video:
+  sample_fps: 1            # [DESIGN] sample 1 frame/sec for model-based checks
+  sample_first_frame: true # [DESIGN]
+  sample_last_frame: true  # [DESIGN]
+  max_frames: 600          # [DESIGN] safety cap on a very long video
+
+models:
+  mediapipe:
+    static_image_mode: true          # [REPO]
+    max_num_faces: 10                # [REPO] repo used 10; pipelines take first/largest
+    min_detection_confidence: 0.6    # [REPO]
+    refine_landmarks: true
+
+  face_detection:
+    model_selection: 1               # [REPO]
+    min_detection_confidence: 0.5    # [REPO/code behavior]
+
+  hands:
+    max_num_hands: 1                 # [DESIGN]
+    min_detection_confidence: 0.5    # [DESIGN]
+
+  pose:
+    min_detection_confidence: 0.5    # [DESIGN]
+    min_tracking_confidence: 0.5     # [DESIGN]
+
+
+face:
+  extension: ".mp4"                  # [SPEC]
+  container: "MPEG-4"                # [SPEC]
+
+  streams:
+    rgb:
+      required: true
+      pattern_key: "face_rgb"
+      require_rgb: true              # [SPEC]
+      checks:
+        metadata: true
+        face_size: true
+        blur: true
+        brightness: true
+        head_fully_visible: true
+        head_pose: true
+        eyes_open: true
+        occlusion: true
+        turn_sequence: true
+
+    depth:
+      required: true
+      pattern_key: "face_depth"
+      require_rgb: false
+      checks:
+        metadata: true
+        face_size: false             # [PLAN] RGB face model may fail on depth
+        blur: false                  # [PLAN]
+        brightness: false            # [PLAN]
+        head_fully_visible: false    # [PLAN]
+        head_pose: false             # [PLAN]
+        eyes_open: false             # [PLAN]
+        occlusion: false             # [PLAN]
+        turn_sequence: false         # [PLAN]
+
+    ir1:
+      required: true
+      pattern_key: "face_ir1"
+      require_rgb: false
+      checks:
+        metadata: true
+        face_size: true              # [PLAN] try face checks on IR
+        blur: true                   # [PLAN]
+        brightness: true             # [PLAN]
+        head_fully_visible: true     # [PLAN]
+        head_pose: true              # [PLAN]
+        eyes_open: false             # [DESIGN] eye check may be unreliable on IR
+        occlusion: false             # [DESIGN]
+        turn_sequence: true          # [PLAN] if head pose works
+
+    ir2:
+      required: true
+      pattern_key: "face_ir2"
+      require_rgb: false
+      checks:
+        metadata: true
+        face_size: true              # [PLAN] try face checks on IR
+        blur: true                   # [PLAN]
+        brightness: true             # [PLAN]
+        head_fully_visible: true     # [PLAN]
+        head_pose: true              # [PLAN]
+        eyes_open: false             # [DESIGN] eye check may be unreliable on IR
+        occlusion: false             # [DESIGN]
+        turn_sequence: true          # [PLAN] if head pose works
+
+    thermal:
+      required: true
+      pattern_key: "face_thermal"
+      require_rgb: false
+      checks:
+        metadata: true
+        face_size: false             # [PLAN] RGB face model may fail on thermal
+        blur: false                  # [PLAN]
+        brightness: false            # [PLAN]
+        head_fully_visible: false    # [PLAN]
+        head_pose: false             # [PLAN]
+        eyes_open: false             # [PLAN]
+        occlusion: false             # [PLAN]
+        turn_sequence: false         # [PLAN]
+
+  required_sets:
+    rgb:
+      - "rgb"
+    depth_ir_thermal:
+      - "depth"
+      - "ir1"
+      - "ir2"
+      - "thermal"
+
+  metadata:
+    min_fps: 5                       # [SPEC]
+    min_duration_sec: 40             # [SPEC] confirm applies to all 4 thermal streams [CONFIRM]
+
+  size:
+    min_head_width_px: 180           # [SPEC]
+    min_head_height_px: 180          # [SPEC]
+
+  visibility:
+    require_head_to_neck_visible: true   # [SPEC]
+    require_clear_face: true             # [SPEC]
+    require_enough_light: true           # [SPEC]
+    require_head_straight: true          # [SPEC]
+    require_eye_level_camera: true       # [SPEC] no detector yet -> emit SKIP
+    require_no_occlusion: true           # [SPEC]
+
+  occlusion:
+    no_hair_covering_face_or_eyes: true  # [SPEC]
+    no_mask: true                        # [SPEC]
+    no_sunglasses: true                  # [SPEC]
+    no_hat: true                         # [SPEC]
+    policy: "REVIEW"                     # [DESIGN] safer than hard fail
+
+  turn_sequence:
+    enabled: true                    # [SPEC]
+    total_min_duration_sec: 40       # [SPEC]
+    order_policy: "REVIEW"
+
+    accepted_orders:
+      spec:
+        - "front"
+        - "left"
+        - "front"
+        - "right"
+        - "front"
+        - "down"
+        - "front"
+        - "up"
+        - "front"
+      audio_prompt:
+        - "front"
+        - "left"
+        - "front"
+        - "right"
+        - "front"
+        - "up"
+        - "front"
+        - "down"
+        - "front"
+
+    hold_seconds:
+      front_initial: 5
+      front_between_movements: 2
+      left: 2
+      right: 2
+      down: 2
+      up: 2
+
+    tolerance:
+      side_yaw_tolerance_deg: 30      # [DESIGN] guess - spec says ~90deg turn
+      pitch_tolerance_deg: 15         # [DESIGN] guess
+      min_detected_step_ratio: 0.6    # [DESIGN] guess - fraction of states seen
+
+  checks:
+    face_size:
+      threshold_px: 180              # [SPEC], not repo 150
+    blur:
+      threshold: 90                  # [REPO]
+    brightness:
+      dark_threshold: 35             # [REPO]
+      bright_threshold: 200          # [REPO]
+      diff_threshold: 20             # [REPO]
+      margin: 0.1                    # [REPO]
+    head_fully_visible:
+      margin_px: 10                  # [REPO]
+    eyes_open:
+      ear_threshold: 0.37            # [REPO]
+    head_pose:
+      left_th: -0.3                  # [REPO]
+      right_th: 0.3                  # [REPO]
+      down_th: -10                   # [REPO]
+      up_th: 15                      # [REPO]
+      til_left_th: -0.10             # [REPO]
+      til_right_th: 0.10             # [REPO]
+
+
+palm:
+  extension: ".jpg"                  # [SPEC]
+  pattern_keys:
+    - "palm_L_N"
+    - "palm_L_RL"
+    - "palm_L_RR"
+    - "palm_L_PU"
+    - "palm_L_PD"
+    - "palm_R_N"
+    - "palm_R_RL"
+    - "palm_R_RR"
+    - "palm_R_PU"
+    - "palm_R_PD"
+
+  hands: ["L", "R"]                  # [SPEC]
+  poses: ["N", "RL", "RR", "PU", "PD"]   # [SPEC]
+  expected_files_per_volunteer: 10   # [SPEC] 2 hands x 5 poses
+
+  size:
+    min_width_px: 200                # [SPEC]
+    min_height_px: 200               # [SPEC]
+
+  quality:
+    require_bright_and_clear: true   # [SPEC]
+    require_visible_veins: true      # [SPEC]
+    visible_veins_policy: "REVIEW"   # [DESIGN]
+
+  obstruction:
+    require_no_jewelry: true         # [SPEC]
+    jewelry_policy: "REVIEW"         # [DESIGN]
+
+  hand_pose:
+    require_palm_open: true                  # [SPEC]
+    require_all_five_fingers_visible: true   # [SPEC]
+    require_natural_finger_spread: true      # [SPEC]
+    require_not_overly_tensed: true          # [SPEC]
+
+  angle:
+    max_abs_roll_deg: 45             # [SPEC]
+    max_abs_pitch_deg: 45            # [SPEC]
+    check_angle_enabled: false       # [DESIGN] stretch / later check
+
+
+walk:
+  extension: ".mp4"                  # [SPEC]
+  pattern_keys:
+    - "walk_F"
+    - "walk_S"
+
+  views: ["F", "S"]                  # [SPEC]
+  expected_files_per_volunteer: 2    # [SPEC]
+
+  metadata:
+    min_fps: 30                      # [SPEC]
+    min_duration_sec: 15             # [SPEC]
+    min_width_px: 1920               # [PLAN] concrete value for full HD
+    min_height_px: 1080              # [PLAN] concrete value for full HD
+
+  visibility:
+    min_person_height_ratio: 0.5     # [SPEC]
+    require_full_body_visible: true  # [SPEC]
+    require_walking_pose_visible_every_frame: true  # [SPEC]
+
+  recording:
+    require_indoor_safe_area: true       # [SPEC] no detector -> SKIP
+    require_no_obstacle: true            # [SPEC] no detector -> SKIP
+    require_normal_clothing: true        # [SPEC] no detector -> SKIP
+    require_F_walk_toward_and_back: true # [SPEC]
+    require_S_walk_left_and_right: true  # [SPEC]
+    require_two_cameras_simultaneous: true # [SPEC]
+
+  sync:
+    check_sync_enabled: false        # [DESIGN] simultaneous required, but no timestamp method defined
+
+report:
+  columns:
+    - "volunteer_id"
+    - "data_type"
+    - "stream_or_view"
+    - "filename"
+    - "check_name"
+    - "status"
+    - "reason"
+    - "measured_value"
+    - "threshold"
+    - "source"
+  include_pass: true                 # [DESIGN]
+  include_fail: true                 # [DESIGN]
+  include_skip: true                 # [DESIGN]
+  include_review: true               # [DESIGN]
+  aggregate_by_volunteer: true       # [PLAN]

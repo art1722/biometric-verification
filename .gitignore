@@ -1,0 +1,47 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test/cache folders
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Local data / biometric media
+data/
+mock_data/
+mock_data_collection/
+organized/
+
+# Generated reports
+reports/*.csv
+reports/*.json
+reports/*.xlsx
+reports/*.xls
+reports/*.xltx
+
+# Large media files, in case they appear outside data folders
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.mp3
+*.wav
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
