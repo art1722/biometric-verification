@@ -20,22 +20,63 @@ except ImportError:
     sys.exit("PyYAML required: pip install pyyaml")
 
 from qc.pipelines.face_rgb import run_face_rgb
+from collections import Counter
 
 
-def guess_volunteer_id(path):
+def parse_args():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("video", help="path to a NNN_face_rgb.mp4")
+    ap.add_argument("--id", default=None, help="volunteer id (else parsed from filename)")
+    ap.add_argument("--config", default="config.yml")
+    ap.add_argument("--sample-fps", type=float, default=1.0)
+    ap.add_argument("--csv", default=None, help="optional: also write rows to this CSV")
+    return ap.parse_args()
+
+def parse_volunteer_id(path):
     """Pull NNN from a filename like 001_face_rgb.mp4; fallback to '000'."""
     m = re.match(r"(\d+)_face_rgb", os.path.basename(path))
     return m.group(1) if m else "000"
 
+def print_rows(rows):
+    print("volunteer_id, data_type, filename, check_name, status, reason")
+    for r in rows:
+        print(", ".join(str(x) for x in r.as_tuple()))
 
+def print_name_status(rows):
+    tally = Counter((r.check_name, r.status) for r in rows)
+    print("\n=== tally (check_name -> status x count) ===")
+    for (name, status), n in sorted(tally.items()):
+        print(f"  {name:22} {status:7} x{n}")
+
+def print_angle(angles):
+    print(f"\n=== head-pose angles collected: {len(angles)} frames ===")
+    if angles:
+        yaws = [a["yaw"] for a in angles]
+        pitches = [a["pitch"] for a in angles]
+        print(f"  yaw   range: {min(yaws):+.1f} .. {max(yaws):+.1f}")
+        print(f"  pitch range: {min(pitches):+.1f} .. {max(pitches):+.1f}")
+        print("  (a real turn video should show yaw swinging negative->positive as the head"
+              " turns left->right, and pitch swinging as it looks down->up)")
+        
+def print_csv(rows, args_csv=None):
+    if args_csv:
+        os.makedirs(os.path.dirname(args_csv) or ".", exist_ok=True)
+        with open(args_csv, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(["volunteer_id", "data_type", "filename",
+                        "check_name", "status", "reason", "frame_index"])
+            for r in rows:
+                w.writerow([*r.as_tuple(), r.frame_index])
+        print(f"\nwrote {len(rows)} rows to {args_csv}")    
+        
+def print_results(rows, angles, args_csv=None):
+    print_rows(rows)
+    print_name_status(rows)
+    print_angle(angles)
+    print_csv(rows, args_csv)
+    
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("video", help="path to a NNN_face_rgb.mp4")
-    ap.add_argument("--id", default=None, help="volunteer id (else guessed from filename)")
-    ap.add_argument("--config", default="config.yml")
-    ap.add_argument("--sample-fps", type=float, default=1.0)
-    ap.add_argument("--csv", default=None, help="optional: also write rows to this CSV")
-    args = ap.parse_args()
+    args = parse_args()
 
     if not os.path.exists(args.video):
         sys.exit(f"video not found: {args.video}")
@@ -45,45 +86,13 @@ def main():
     with open(args.config, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
-    vid = args.id or guess_volunteer_id(args.video)
+    vid = args.id or parse_volunteer_id(args.video)
 
     print(f"Running face_rgb pipeline on: {args.video}")
     print(f"volunteer id: {vid} | sample_fps: {args.sample_fps}\n")
 
     rows, angles = run_face_rgb(args.video, vid, config, sample_fps=args.sample_fps)
-
-    # --- print rows in the requested format ---
-    print("volunteer_id, data_type, filename, check_name, status, reason")
-    for r in rows:
-        print(", ".join(str(x) for x in r.as_tuple()))
-
-    # --- quick tally so you can see behaviour at a glance ---
-    from collections import Counter
-    tally = Counter((r.check_name, r.status) for r in rows)
-    print("\n=== tally (check_name -> status x count) ===")
-    for (name, status), n in sorted(tally.items()):
-        print(f"  {name:22} {status:7} x{n}")
-
-    # --- angle summary (for the future turn-sequence check) ---
-    print(f"\n=== head-pose angles collected: {len(angles)} frames ===")
-    if angles:
-        yaws = [a["yaw"] for a in angles]
-        pitches = [a["pitch"] for a in angles]
-        print(f"  yaw   range: {min(yaws):+.1f} .. {max(yaws):+.1f}")
-        print(f"  pitch range: {min(pitches):+.1f} .. {max(pitches):+.1f}")
-        print("  (a real turn video should show yaw swinging negative->positive as the head"
-              " turns left->right, and pitch swinging as it looks down->up)")
-
-    # --- optional CSV ---
-    if args.csv:
-        os.makedirs(os.path.dirname(args.csv) or ".", exist_ok=True)
-        with open(args.csv, "w", newline="", encoding="utf-8-sig") as f:
-            w = csv.writer(f)
-            w.writerow(["volunteer_id", "data_type", "filename",
-                        "check_name", "status", "reason", "frame_index"])
-            for r in rows:
-                w.writerow([*r.as_tuple(), r.frame_index])
-        print(f"\nwrote {len(rows)} rows to {args.csv}")
+    print_results(rows, angles, args_csv=args.csv)
 
 
 if __name__ == "__main__":

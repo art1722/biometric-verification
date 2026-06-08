@@ -47,26 +47,11 @@ from qc.checks.check_face_blur import check_face_blur
 from qc.checks.check_light_pollution import check_lightpol
 from qc.checks.check_head_pose import estimate_head_pose
 from qc.checks import check_metadata as md
+from qc.schemas import CheckRow
 
 logger = logging.getLogger(__name__)
 
 DATA_TYPE = "face_rgb"
-
-
-@dataclass
-class CheckRow:
-    volunteer_id: str
-    data_type: str
-    filename: str
-    check_name: str
-    status: str            # PASS / FAIL / REVIEW / SKIP
-    reason: str
-    frame_index: Optional[int] = None
-
-    def as_tuple(self):
-        return (self.volunteer_id, self.data_type, self.filename,
-                self.check_name, self.status, self.reason)
-
 
 def _bool_to_status(ok: bool, *, fail="FAIL") -> str:
     return "PASS" if ok else fail
