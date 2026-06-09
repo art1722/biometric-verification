@@ -39,6 +39,8 @@ import os
 from dataclasses import dataclass, asdict
 from typing import Any, Optional
 
+import mediapipe as mp
+
 from qc.utils.video import probe_video, iter_sampled_frames
 from qc.checks.get_landmarks import get_lm
 from qc.checks.check_face_size import check_face_min_size
@@ -46,6 +48,7 @@ from qc.checks.check_head_fully import check_head_fully
 from qc.checks.check_face_blur import check_face_blur
 from qc.checks.check_light_pollution import check_lightpol
 from qc.checks.check_head_pose import estimate_head_pose
+from qc.checks.check_eye import check_eye_status
 from qc.checks import check_metadata as md
 from qc.schemas import CheckRow
 
@@ -104,6 +107,9 @@ def run_face_rgb(
     margin = bright_cfg.get("margin", 0.1)
     hf_margin = hf_cfg.get("margin_px", 10)
 
+    eye_cfg = face_cfg.get("checks", {}).get("eyes_open", {})
+    ear_th = eye_cfg.get("ear_threshold", 0.37)
+    
     # ---- video-level checks (once) ----
     meta = probe_video(path)
 
@@ -128,53 +134,82 @@ def run_face_rgb(
     angles: list[dict] = []
     frames_seen = 0
 
-    for sf in iter_sampled_frames(path, sample_fps=sample_fps):
-        frames_seen += 1
-        img = sf.image
-        cspace = sf.color_space  # "BGR" or "RGB" — pass through so colors are right
+    # Create the detectors ONCE and reuse them for every frame and every check
+    # that needs them. Building a MediaPipe model is expensive; doing it per
+    # call (the previous behavior) meant ~4 model setups per frame. Two shared
+    # detectors cover all face checks:
+    #   - face_mesh : landmarks/bbox (get_lm) and head pose (estimate_head_pose)
+    #   - face_det  : blur and brightness (both use FaceDetection)
+    # Settings match what each check created internally, so results are identical.
+    face_mesh = mp.solutions.face_mesh.FaceMesh(
+        static_image_mode=True,
+        max_num_faces=2,
+        min_detection_confidence=0.5,
+        refine_landmarks=True,
+    )
+    face_det = mp.solutions.face_detection.FaceDetection(
+        model_selection=1, min_detection_confidence=0.5)
 
-        # 1) face detection (once) -> landmarks + bbox
-        ok, msg, landmarks, bbox, _ = get_lm(img, input_color_space=cspace)
-        if not ok:
-            # No usable face this frame. For a turn video, that's expected on
-            # some frames (profile turns) — record as REVIEW, not FAIL.
-            add("check_face_detected", "REVIEW",
+    try:
+        for sf in iter_sampled_frames(path, sample_fps=sample_fps):
+            frames_seen += 1
+            img = sf.image
+            cspace = sf.color_space  # "BGR" or "RGB" — pass through so colors are right
+
+            # 1) face detection (once) -> landmarks + bbox
+            ok, msg, landmarks, bbox, _ = get_lm(
+                img, detector=face_mesh, input_color_space=cspace)
+            if not ok:
+                # No usable face this frame. For a turn video, that's expected on
+                # some frames (profile turns) — record as REVIEW, not FAIL.
+                add("check_face_detected", "REVIEW",
+                    f"frame={sf.frame_index} {msg}", sf.frame_index)
+                continue
+            add("check_face_detected", "PASS",
+                f"frame={sf.frame_index} face ok", sf.frame_index)
+
+            # 2) face size (consumes bbox, no re-detection)
+            ok, msg = check_face_min_size(bbox, min_width=min_w, min_height=min_h)
+            add("check_face_size", _bool_to_status(ok),
                 f"frame={sf.frame_index} {msg}", sf.frame_index)
-            continue
-        add("check_face_detected", "PASS",
-            f"frame={sf.frame_index} face ok", sf.frame_index)
 
-        # 2) face size (consumes bbox, no re-detection)
-        ok, msg = check_face_min_size(bbox, min_width=min_w, min_height=min_h)
-        add("check_face_size", _bool_to_status(ok),
+            # 3) head fully visible (consumes landmarks)
+            ok, msg = check_head_fully(landmarks, img.shape[0], margin_px=hf_margin)
+            add("check_head_fully", _bool_to_status(ok),
+                f"frame={sf.frame_index} {msg}", sf.frame_index)
+
+            # 3b) eyes open (consumes landmarks, no re-detection)
+            ok, msg = check_eye_status(landmarks, ear_th)
+            add("check_eyes_open", _bool_to_status(ok),
             f"frame={sf.frame_index} {msg}", sf.frame_index)
+        
+            # 4) blur (needs image + face-detection model)
+            ok, msg = check_face_blur(
+                img, blur_th, detector=face_det, input_color_space=cspace)
+            add("check_face_blur", _bool_to_status(ok),
+                f"frame={sf.frame_index} {msg}", sf.frame_index)
 
-        # 3) head fully visible (consumes landmarks)
-        ok, msg = check_head_fully(landmarks, img.shape[0], margin_px=hf_margin)
-        add("check_head_fully", _bool_to_status(ok),
-            f"frame={sf.frame_index} {msg}", sf.frame_index)
+            # 5) brightness
+            ok, msg = check_lightpol(img, dark_th, bright_th, diff_th, margin,
+                                     detector=face_det, input_color_space=cspace)
+            add("check_brightness", _bool_to_status(ok),
+                f"frame={sf.frame_index} {msg}", sf.frame_index)
 
-        # 4) blur (needs image + face-detection model)
-        ok, msg = check_face_blur(img, blur_th, input_color_space=cspace)
-        add("check_face_blur", _bool_to_status(ok),
-            f"frame={sf.frame_index} {msg}", sf.frame_index)
-
-        # 5) brightness
-        ok, msg = check_lightpol(img, dark_th, bright_th, diff_th, margin,
-                                 input_color_space=cspace)
-        add("check_brightness", _bool_to_status(ok),
-            f"frame={sf.frame_index} {msg}", sf.frame_index)
-
-        # 6) head pose — COLLECT angles only (no judgement yet)
-        ok, info = estimate_head_pose(img, input_color_space=cspace)
-        if ok:
-            angles.append({
-                "frame_index": sf.frame_index,
-                "timestamp_sec": sf.timestamp_sec,
-                "yaw": info["yaw"], 
-                "pitch": info["pitch"], 
-                "roll": info["roll"],
-            })
+            # 6) head pose — COLLECT angles only (no judgement yet)
+            ok, info = estimate_head_pose(
+                img, detector=face_mesh, input_color_space=cspace)
+            if ok:
+                angles.append({
+                    "frame_index": sf.frame_index,
+                    "timestamp_sec": sf.timestamp_sec,
+                    "yaw": info["yaw"],
+                    "pitch": info["pitch"],
+                    "roll": info["roll"],
+                })
+    finally:
+        # Always release the models, even if a frame raises mid-loop.
+        face_mesh.close()
+        face_det.close()
 
     add("frames_sampled", "PASS", f"sampled {frames_seen} frames")
     return rows, angles

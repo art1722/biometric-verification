@@ -13,6 +13,7 @@ import csv
 import os
 import re
 import sys
+import time
 
 try:
     import yaml
@@ -69,6 +70,13 @@ def print_csv(rows, args_csv=None):
                 w.writerow([*r.as_tuple(), r.frame_index])
         print(f"\nwrote {len(rows)} rows to {args_csv}")    
         
+def format_duration(seconds):
+    """Human-readable elapsed time: '3.4s' or '1m 05.2s' for longer runs."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, secs = divmod(seconds, 60)
+    return f"{int(minutes)}m {secs:04.1f}s"
+
 def print_results(rows, angles, args_csv=None):
     print_rows(rows)
     print_name_status(rows)
@@ -91,8 +99,12 @@ def main():
     print(f"Running face_rgb pipeline on: {args.video}")
     print(f"volunteer id: {vid} | sample_fps: {args.sample_fps}\n")
 
+    start = time.perf_counter()
     rows, angles = run_face_rgb(args.video, vid, config, sample_fps=args.sample_fps)
+    elapsed = time.perf_counter() - start
+
     print_results(rows, angles, args_csv=args.csv)
+    print(f"\n=== done in {format_duration(elapsed)} ===")
 
 
 if __name__ == "__main__":
