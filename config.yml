@@ -243,7 +243,12 @@ face:
     head_fully_visible:
       margin_px: 10                  # [REPO]
     eyes_open:
-      ear_threshold: 0.37            # [REPO]
+      ear_threshold: 0.25            # [DESIGN] hard low cutoff for clearly-closed
+                                     # eyes. Repo's 0.37 sliced through natural
+                                     # open-eye EAR (video 002: open = 0.35-0.40).
+                                     # MediaPipe-landmark EAR scale differs from
+                                     # dlib literature (0.2) — CALIBRATE with a
+                                     # deliberate closed-eye clip. [CONFIRM]
     head_pose:
       left_th: -0.3                  # [REPO]
       right_th: 0.3                  # [REPO]
@@ -328,6 +333,15 @@ walk:
     check_sync_enabled: false        # [DESIGN] simultaneous required, but no timestamp method defined
 
 report:
+  # Frame-level aggregation policy: a frame-level check FAILs the file only if
+  # MORE than this fraction of its JUDGED frames (pass+fail+review; SKIPs
+  # excluded) failed. A blink or a 2% transient on sampled frames is normal
+  # human behaviour, not a QC defect. Same idea for REVIEW.
+  # Applies ONLY to level=frame checks; video/sequence checks keep
+  # worst-status aggregation. [DESIGN] ratio values to confirm. [CONFIRM]
+  aggregation:
+    frame_fail_ratio: 0.25
+    frame_review_ratio: 0.25
   columns:
     - "volunteer_id"
     - "data_type"

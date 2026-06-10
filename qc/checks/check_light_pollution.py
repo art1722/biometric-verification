@@ -1,18 +1,24 @@
-"""Brightness / light-pollution check (ported from func/check_light_pollution.py).
+"""Brightness check (ported from func/check_light_pollution.py).
 
 Spec requirement (source of truth): the face must be well-lit, bright enough to
 see facial detail clearly (not too dark, not blown out).
 
-Method (from the repo): detect the face, take the central face region (trimmed
-by a margin), and measure mean brightness on the HSV V channel. Classify as:
+Method: detect the face, take the central face region (trimmed by a margin),
+and measure mean brightness on the HSV V channel. Classify as:
   - too_dark   if face brightness < dark_threshold
   - too_bright if face brightness > bright_threshold
-  - backlight  if |face - background| brightness differs by > diff_threshold
   - normal     otherwise (the only PASS state)
 
 Changes from the repo:
 - ARRAY-FIRST + DETECTOR REUSE, same pattern as the other checks.
 - Returns the measured brightness/status in the message.
+- BACKLIGHT CLASSIFICATION REMOVED (2026-06): the repo flagged
+  |face - background| > diff_threshold as "backlight", but the project spec
+  contains no backlight/background requirement — only "face bright enough to
+  see facial detail". The rule false-failed well-lit faces against bright
+  outdoor backgrounds (video 002 frames 1242-1254: face V=162-166, clearly
+  visible). The spec-traceable harms are already covered by too_dark /
+  too_bright on the face itself.
 """
 
 from __future__ import annotations
@@ -39,13 +45,12 @@ def check_lightpol(
     image: Any,
     dark_threshold: float = 35.0,
     bright_threshold: float = 200.0,
-    diff_threshold: float = 20.0,
     margin: float = 0.1,
     *,
     detector: Optional[Any] = None,
     input_color_space: Literal["BGR", "RGB"] = "BGR",
 ):
-    """Check the face is neither too dark, too bright, nor backlit.
+    """Check the face is neither too dark nor too bright.
 
     Returns:
         (success, message). success True only when status == "normal".
@@ -89,22 +94,12 @@ def check_lightpol(
     if face_v.size == 0:
         return (False, "empty_face_region")
 
-    # background = everything outside the face box
-    mask = np.ones((h, w), dtype=np.uint8) * 255
-    mask[y_min:y_min + bh, x_min:x_min + bw] = 0
-    background_v = cv2.bitwise_and(hsv[:, :, 2], hsv[:, :, 2], mask=mask)
-    background_vals = background_v[background_v > 0]
-
     face_brightness = float(np.mean(face_v))
-    bg_brightness = float(np.mean(background_vals)) if background_vals.size else None
-    diff = abs(face_brightness - bg_brightness) if bg_brightness is not None else None
 
     if face_brightness < dark_threshold:
         status = "too_dark"
     elif face_brightness > bright_threshold:
         status = "too_bright"
-    elif diff is not None and diff > diff_threshold:
-        status = "backlight"
     else:
         status = "normal"
 

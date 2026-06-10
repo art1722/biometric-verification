@@ -1,3 +1,3 @@
-from .check_row import CheckRow, CheckStatus
+from .check_row import CheckRow, CheckStatus, CheckLevel
 
-__all__ = ["CheckRow", "CheckStatus"]
+__all__ = ["CheckRow", "CheckStatus", "CheckLevel"]

@@ -417,15 +417,24 @@ def iter_sampled_frames(
 
     try:
         if indices is not None:
+            seen_indices = set()
+            
             for frame_index in indices:
+                if frame_index in seen_indices:
+                    continue
+                seen_indices.add(frame_index)
+
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
                 ok, frame = cap.read()
+
                 if not ok or frame is None:
-                    raise VideoReadError(
-                        f"could not decode frame {frame_index} from {meta.path}"
-                    )
+                    # Common near the end of MP4 files when metadata says the frame exists
+                    # but OpenCV cannot decode it. Skip instead of crashing the whole QC.
+                    continue
+
                 image, color_space = _convert_color(frame, as_rgb=as_rgb)
                 timestamp_sec = _timestamp_for_index(frame_index, meta.fps, cap)
+
                 yield SampledFrame(
                     frame_index=frame_index,
                     timestamp_sec=timestamp_sec,
@@ -433,6 +442,7 @@ def iter_sampled_frames(
                     image=image,
                     color_space=color_space,
                 )
+
             return
 
         # Fallback path when frame count is unavailable. Read sequentially.
@@ -483,7 +493,7 @@ def sample_video_frames(
     *,
     sample_fps: Optional[float] = 1.0,
     include_first_frame: bool = True,
-    include_last_frame: bool = True,
+    include_last_frame: bool = False,
     max_frames: Optional[int] = 600,
     start_sec: float = 0.0,
     end_sec: Optional[float] = None,

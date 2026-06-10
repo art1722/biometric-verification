@@ -4,9 +4,19 @@ This is a REPORT-ONLY scan. It does not move, rename, or modify anything - it
 walks the delivery folder, parses every filename, groups files by volunteer id,
 and reports two things:
 
-  1. Unrecognised files - names that match no known spec pattern.
+  1. Unrecognised files - names that match no known spec pattern, even after
+     relaxing extension case. Where the name starts with digits + '_', the
+     digits are used to ATTRIBUTE the file to a volunteer id so that a
+     volunteer whose every file is malformed still shows up in the
+     completeness report (instead of silently vanishing).
   2. Per-volunteer completeness - which of the 17 required files each
      volunteer is missing (or has duplicated).
+  3. Wrong extension case - files that match a pattern only after lowercasing
+     the extension (e.g. '.JPG' -> '.jpg'; cameras commonly write uppercase).
+     These COUNT as found for completeness, but are reported as
+     'wrong_extension_case' so the deviation stays visible.
+     [DESIGN] accept-and-warn policy; whether the contractor must rename to
+     lowercase is pending confirmation. [CONFIRM]
 
 Patterns are loaded from config.yml (filenames.required) so the naming
 convention lives in ONE place. Until Phase 0 confirms the ID-padding rule,
@@ -72,42 +82,77 @@ def load_required(config_path):
     return required, [k for k, _ in required]
 
 
+# Loose fallback for UNRECOGNISED names: leading digits + '_' look like a
+# volunteer id. Used only to ATTRIBUTE the file in the report, never to
+# accept it.
+LOOSE_ID = re.compile(r"^(\d+)_")
+
+
 def classify(filename, required):
-    """Return (data_key, volunteer_id) if recognised, else (None, None)."""
+    """Return (data_key, volunteer_id, case_ok).
+
+    case_ok=False means the name matched a pattern ONLY after lowercasing its
+    extension (e.g. '.JPG' -> '.jpg'). Unrecognised -> (None, None, True).
+    """
     name = os.path.basename(filename)
     for key, pat in required:
         m = pat.match(name)
         if m:
-            return key, m.group("volunteer_id")
-    return None, None
+            return key, m.group("volunteer_id"), True
+
+    stem, ext = os.path.splitext(name)
+    if ext and ext != ext.lower():
+        relaxed = stem + ext.lower()
+        for key, pat in required:
+            m = pat.match(relaxed)
+            if m:
+                return key, m.group("volunteer_id"), False
+
+    return None, None, True
 
 
 def scan(delivery_folder, required):
-    """Walk the folder. Return (volunteers, unrecognised).
+    """Walk the folder. Return (volunteers, unrecognised, case_issues).
 
     volunteers: dict  volunteer_id -> dict  data_key -> [list of paths]
                 (a list, so duplicates are visible)
-    unrecognised: list of paths that matched no pattern
+    unrecognised: list of {"volunteer_guess": str ('' if none), "path": str}
+    case_issues:  list of {"volunteer": str, "item": str, "path": str}
+                  (recognised only after lowercasing the extension)
     """
     volunteers = {}
     unrecognised = []
+    case_issues = []
 
     for root, _, files in os.walk(delivery_folder):
         for name in sorted(files):
             path = os.path.join(root, name)
-            key, vid = classify(name, required)
+            key, vid, case_ok = classify(name, required)
             if key is None:
-                unrecognised.append(path)
+                m = LOOSE_ID.match(name)
+                guess = m.group(1) if m else ""
+                if guess:
+                    # Surface this volunteer in the completeness report even
+                    # if every one of their files is malformed.
+                    volunteers.setdefault(guess, {})
+                unrecognised.append({"volunteer_guess": guess, "path": path})
                 continue
+            if not case_ok:
+                case_issues.append({"volunteer": vid, "item": key, "path": path})
             volunteers.setdefault(vid, {}).setdefault(key, []).append(path)
-    return volunteers, unrecognised
+    return volunteers, unrecognised, case_issues
 
 
-def build_report(volunteers, unrecognised, required_keys):
+def build_report(volunteers, unrecognised, case_issues, required_keys):
     """Turn the raw scan into a structured report (used for both JSON and CSV)."""
     per_volunteer = []
     complete = 0
     incomplete = 0
+
+    case_by_vid = {}
+    for c in case_issues:
+        case_by_vid.setdefault(c["volunteer"], []).append(
+            {"item": c["item"], "path": c["path"]})
 
     for vid in sorted(volunteers):
         found = volunteers[vid]
@@ -116,6 +161,9 @@ def build_report(volunteers, unrecognised, required_keys):
             {"item": k, "paths": sorted(paths)}
             for k, paths in found.items() if len(paths) > 1
         ]
+        wrong_case = case_by_vid.get(vid, [])
+        # Wrong-case files COUNT as found, so they don't make a volunteer
+        # INCOMPLETE — but they are reported. [DESIGN][CONFIRM]
         status = "COMPLETE" if (not missing and not duplicates) else "INCOMPLETE"
         if status == "COMPLETE":
             complete += 1
@@ -126,6 +174,7 @@ def build_report(volunteers, unrecognised, required_keys):
             "status": status,
             "missing": missing,
             "duplicates": duplicates,
+            "wrong_extension_case": wrong_case,
             "found_count": sum(len(p) for p in found.values()),
         })
 
@@ -135,6 +184,7 @@ def build_report(volunteers, unrecognised, required_keys):
             "complete": complete,
             "incomplete": incomplete,
             "unrecognised_file_count": len(unrecognised),
+            "wrong_extension_case_count": len(case_issues),
         },
         "volunteers": per_volunteer,
         "unrecognised_files": unrecognised,
@@ -150,24 +200,33 @@ def write_csv_long(report, path):
     """Long / tidy format: one row per issue.
 
     Columns: volunteer, status, issue_type, item, path
+    The volunteer cell is never left empty (pandas would read it as NaN and
+    promote the whole column to float): unattributable files get 'UNKNOWN'.
     """
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(["volunteer", "status", "issue_type", "item", "path"])
 
         for v in report["volunteers"]:
-            if v["status"] == "COMPLETE":
-                w.writerow([v["volunteer"], "COMPLETE", "", "", ""])
-                continue
+            wrote_any = False
             for m in v["missing"]:
-                w.writerow([v["volunteer"], "INCOMPLETE", "missing", m, ""])
+                w.writerow([v["volunteer"], v["status"], "missing", m, ""])
+                wrote_any = True
             for d in v["duplicates"]:
                 for p in d["paths"]:
-                    w.writerow([v["volunteer"], "INCOMPLETE", "duplicate",
+                    w.writerow([v["volunteer"], v["status"], "duplicate",
                                 d["item"], p])
+                    wrote_any = True
+            for c in v["wrong_extension_case"]:
+                w.writerow([v["volunteer"], v["status"],
+                            "wrong_extension_case", c["item"], c["path"]])
+                wrote_any = True
+            if not wrote_any:
+                w.writerow([v["volunteer"], "COMPLETE", "", "", ""])
 
-        for p in report["unrecognised_files"]:
-            w.writerow(["", "UNRECOGNISED", "unrecognised", "", p])
+        for u in report["unrecognised_files"]:
+            w.writerow([u["volunteer_guess"] or "UNKNOWN", "UNRECOGNISED",
+                        "unrecognised", "", u["path"]])
 
 
 def main():
@@ -180,8 +239,8 @@ def main():
 
     required, required_keys = load_required(args.config)
 
-    volunteers, unrecognised = scan(args.delivery_folder, required)
-    report = build_report(volunteers, unrecognised, required_keys)
+    volunteers, unrecognised, case_issues = scan(args.delivery_folder, required)
+    report = build_report(volunteers, unrecognised, case_issues, required_keys)
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     csv_path = args.out
@@ -196,6 +255,7 @@ def main():
     print(f"volunteers: {s['volunteers']}  "
           f"({s['complete']} complete, {s['incomplete']} incomplete)")
     print(f"unrecognised files: {s['unrecognised_file_count']}")
+    print(f"wrong extension case: {s['wrong_extension_case_count']}")
     print(f"reports   : {csv_path}  +  {json_path}")
 
     if s["incomplete"]:
@@ -205,12 +265,21 @@ def main():
                 print(f"  {v['volunteer']}: missing {len(v['missing'])} "
                       f"-> {', '.join(v['missing'])}")
 
+    if case_issues:
+        print("\nWrong extension case (counted as found; ask contractor to "
+              "use lowercase):")
+        for c in case_issues:
+            print(f"  - {c['path']}")
+
     if unrecognised:
         print("\nUnrecognised files (check names against the spec):")
-        for p in unrecognised:
-            print(f"  - {p}")
+        for u in unrecognised:
+            who = f"  [volunteer {u['volunteer_guess']}?]" if u["volunteer_guess"] else ""
+            print(f"  - {u['path']}{who}")
 
-    return 0 if (s["complete"] == s["volunteers"] and not unrecognised) else 1
+    clean = (s["complete"] == s["volunteers"]
+             and not unrecognised and not case_issues)
+    return 0 if clean else 1
 
 
 if __name__ == "__main__":
