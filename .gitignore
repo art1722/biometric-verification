@@ -31,6 +31,7 @@ reports/*.json
 reports/*.xlsx
 reports/*.xls
 reports/*.xltx
+reports/*.txt
 
 # Large media files, in case they appear outside data folders
 *.mp4

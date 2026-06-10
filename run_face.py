@@ -31,6 +31,8 @@ def parse_args():
     ap.add_argument("--config", default="config.yml")
     ap.add_argument("--sample-fps", type=float, default=1.0)
     ap.add_argument("--csv", default=None, help="optional: also write rows to this CSV")
+    ap.add_argument("--summary", default=None,
+                    help="optional: also write the summary (tally + angle range) to this text file")
     return ap.parse_args()
 
 def parse_volunteer_id(path):
@@ -45,20 +47,31 @@ def print_rows(rows):
 
 def print_name_status(rows):
     tally = Counter((r.check_name, r.status) for r in rows)
-    print("\n=== tally (check_name -> status x count) ===")
+    lines = ["\n=== tally (check_name -> status x count) ==="]
     for (name, status), n in sorted(tally.items()):
-        print(f"  {name:22} {status:7} x{n}")
+        lines.append(f"  {name:22} {status:7} x{n}")
+    text = "\n".join(lines)
+    print(text)
+    return text
 
-def print_angle(angles):
-    print(f"\n=== head-pose angles collected: {len(angles)} frames ===")
-    if angles:
-        yaws = [a["yaw"] for a in angles]
-        pitches = [a["pitch"] for a in angles]
-        print(f"  yaw   range: {min(yaws):+.1f} .. {max(yaws):+.1f}")
-        print(f"  pitch range: {min(pitches):+.1f} .. {max(pitches):+.1f}")
-        print("  (a real turn video should show yaw swinging negative->positive as the head"
-              " turns left->right, and pitch swinging as it looks down->up)")
-        
+def print_angle(timeline):
+    # timeline now has ONE entry per sampled frame, gaps included.
+    # Gap frames carry yaw/pitch = None, so filter them out before min/max.
+    measured = [t for t in timeline if t.get("yaw") is not None]
+    gaps = [t for t in timeline if not t.get("face_detected")]
+    lines = [f"\n=== head-pose angles collected: {len(measured)} of "
+             f"{len(timeline)} frames ({len(gaps)} detection gaps) ==="]
+    if measured:
+        yaws = [t["yaw"] for t in measured]
+        pitches = [t["pitch"] for t in measured]
+        lines.append(f"  yaw   range: {min(yaws):+.1f} .. {max(yaws):+.1f}")
+        lines.append(f"  pitch range: {min(pitches):+.1f} .. {max(pitches):+.1f}")
+        lines.append("  (a real turn video should show yaw swinging negative->positive as the head"
+                     " turns left->right, and pitch swinging as it looks down->up)")
+    text = "\n".join(lines)
+    print(text)
+    return text
+
 def print_csv(rows, args_csv=None):
     if args_csv:
         os.makedirs(os.path.dirname(args_csv) or ".", exist_ok=True)
@@ -68,8 +81,8 @@ def print_csv(rows, args_csv=None):
                         "check_name", "status", "reason", "frame_index"])
             for r in rows:
                 w.writerow([*r.as_tuple(), r.frame_index])
-        print(f"\nwrote {len(rows)} rows to {args_csv}")    
-        
+        print(f"\nwrote {len(rows)} rows to {args_csv}")
+
 def format_duration(seconds):
     """Human-readable elapsed time: '3.4s' or '1m 05.2s' for longer runs."""
     if seconds < 60:
@@ -77,12 +90,24 @@ def format_duration(seconds):
     minutes, secs = divmod(seconds, 60)
     return f"{int(minutes)}m {secs:04.1f}s"
 
-def print_results(rows, angles, args_csv=None):
+def write_summary(path, video, vid, sample_fps, tally_text, angle_text, elapsed_text):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"Running face_rgb pipeline on: {video}\n")
+        f.write(f"volunteer id: {vid} | sample_fps: {sample_fps}\n")
+        f.write(tally_text + "\n")
+        f.write(angle_text + "\n")
+        f.write(f"\n=== done in {elapsed_text} ===\n")
+    print(f"wrote summary to {path}")
+
+def print_results(rows, timeline, args_csv=None):
     print_rows(rows)
-    print_name_status(rows)
-    print_angle(angles)
+    tally_text = print_name_status(rows)
+    angle_text = print_angle(timeline)
     print_csv(rows, args_csv)
-    
+    return tally_text, angle_text
+
+
 def main():
     args = parse_args()
 
@@ -100,12 +125,16 @@ def main():
     print(f"volunteer id: {vid} | sample_fps: {args.sample_fps}\n")
 
     start = time.perf_counter()
-    rows, angles = run_face_rgb(args.video, vid, config, sample_fps=args.sample_fps)
+    rows, timeline = run_face_rgb(args.video, vid, config, sample_fps=args.sample_fps)
     elapsed = time.perf_counter() - start
 
-    print_results(rows, angles, args_csv=args.csv)
-    print(f"\n=== done in {format_duration(elapsed)} ===")
+    tally_text, angle_text = print_results(rows, timeline, args_csv=args.csv)
+    elapsed_text = format_duration(elapsed)
+    print(f"\n=== done in {elapsed_text} ===")
 
+    if args.summary:
+        write_summary(args.summary, args.video, vid, args.sample_fps,
+                      tally_text, angle_text, elapsed_text)
 
 if __name__ == "__main__":
     main()

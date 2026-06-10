@@ -49,6 +49,7 @@ from qc.checks.check_face_blur import check_face_blur
 from qc.checks.check_light_pollution import check_lightpol
 from qc.checks.check_head_pose import estimate_head_pose
 from qc.checks.check_eye import check_eye_status
+from qc.checks.check_turn_sequence_seg import check_turn_sequence_seg
 from qc.checks import check_metadata as md
 from qc.schemas import CheckRow
 
@@ -76,10 +77,14 @@ def run_face_rgb(
         sample_fps: how densely to sample frames for the per-frame checks.
 
     Returns:
-        (rows, angles) where:
-          rows   = list[CheckRow] for every check on every level
-          angles = list[dict] of {frame_index, timestamp_sec, yaw, pitch, roll}
-                   collected for the future turn-sequence check.
+        (rows, timeline) where:
+          rows     = list[CheckRow] for every check on every level
+          timeline = list[dict], ONE entry per sampled frame (gaps included):
+                     {frame_index, timestamp_sec, face_detected, yaw, pitch, roll}
+                     On a detection gap, face_detected=False and yaw/pitch/roll=None.
+                     This is the data the turn-sequence check consumes: the None-yaw
+                     gap frames are the signal for a deep (profile) turn whose peak
+                     MediaPipe could not measure.
     """
     filename = os.path.basename(path)
     rows: list[CheckRow] = []
@@ -131,8 +136,22 @@ def run_face_rgb(
         return rows, []
 
     # ---- per-frame checks ----
-    angles: list[dict] = []
+    # ONE timeline entry per sampled frame, gaps included. The turn-sequence
+    # check reads this: a gap (face_detected=False, yaw=None) bracketed by
+    # front-facing frames is the signature of a deep profile turn whose peak
+    # MediaPipe could not measure.
+    timeline: list[dict] = []
     frames_seen = 0
+
+    def add_frame(sf, *, face_detected, info=None):
+        timeline.append({
+            "frame_index": sf.frame_index,
+            "timestamp_sec": sf.timestamp_sec,
+            "face_detected": face_detected,
+            "yaw": info["yaw"] if info else None,
+            "pitch": info["pitch"] if info else None,
+            "roll": info["roll"] if info else None,
+        })
 
     # Create the detectors ONCE and reuse them for every frame and every check
     # that needs them. Building a MediaPipe model is expensive; doing it per
@@ -164,6 +183,10 @@ def run_face_rgb(
                 # some frames (profile turns) — record as REVIEW, not FAIL.
                 add("check_face_detected", "REVIEW",
                     f"frame={sf.frame_index} {msg}", sf.frame_index)
+                # Gap frame: still record it on the timeline so the turn-sequence
+                # check can SEE the gap (face_detected=False, yaw=None) rather than
+                # finding the frame simply absent.
+                add_frame(sf, face_detected=False)
                 continue
             add("check_face_detected", "PASS",
                 f"frame={sf.frame_index} face ok", sf.frame_index)
@@ -198,18 +221,26 @@ def run_face_rgb(
             # 6) head pose — COLLECT angles only (no judgement yet)
             ok, info = estimate_head_pose(
                 img, detector=face_mesh, input_color_space=cspace)
-            if ok:
-                angles.append({
-                    "frame_index": sf.frame_index,
-                    "timestamp_sec": sf.timestamp_sec,
-                    "yaw": info["yaw"],
-                    "pitch": info["pitch"],
-                    "roll": info["roll"],
-                })
+            # Face was detected this frame (we got past get_lm), so face_detected
+            # is True regardless of whether the pose estimate itself succeeded.
+            # If pose failed, info stays None -> yaw/pitch/roll recorded as None.
+            add_frame(sf, face_detected=True, info=info if ok else None)
     finally:
         # Always release the models, even if a frame raises mid-loop.
         face_mesh.close()
         face_det.close()
 
     add("frames_sampled", "PASS", f"sampled {frames_seen} frames")
-    return rows, angles
+
+    # ---- turn-sequence check (consumes the whole timeline at once) ----
+    # Runs only if enabled in config for this stream. Uses the SAME sample_fps
+    # the timeline was built at, so hold-duration -> frame-count is correct.
+    if face_cfg.get("turn_sequence", {}).get("enabled", True):
+        def emit_turn_row(check_name, status, reason, frame_index=None):
+            return CheckRow(volunteer_id, DATA_TYPE, filename,
+                            check_name, status, reason, frame_index)
+        turn_rows = check_turn_sequence_seg(
+            timeline, config, sample_fps=sample_fps, emit_row=emit_turn_row)
+        rows.extend(turn_rows)
+
+    return rows, timeline
