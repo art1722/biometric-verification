@@ -273,7 +273,7 @@ def run_face_rgb(
 
             # 4) checks valid on EVERY detected frame, frontal or not:
             #    full head-to-neck must be visible throughout the video.
-            ok, msg = check_head_fully(landmarks, img.shape[0], margin_px=hf_margin)
+            ok, msg = check_head_fully(landmarks, img.shape[0], img.shape[1], margin_px=hf_margin)
             add("check_head_fully", _bool_to_status(ok),
                 f"frame={sf.frame_index} {msg}", sf.frame_index)
 

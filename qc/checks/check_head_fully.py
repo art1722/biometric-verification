@@ -24,9 +24,11 @@ logger = logging.getLogger(__name__)
 # MediaPipe Face Mesh indices (same as the repo).
 _TOP_OF_HEAD_IDX = 10
 _CHIN_IDX = 152
+_LEFT_CHEEK_IDX = 127
+_RIGHT_CHEEK_IDX = 356
 
 
-def check_head_fully(landmarks, image_height: int, margin_px: int = 10):
+def check_head_fully(landmarks, image_height: int, image_width: int, margin_px: int = 10):
     """Check the head is fully inside the frame (top + chin not cut).
 
     Args:
@@ -45,16 +47,24 @@ def check_head_fully(landmarks, image_height: int, margin_px: int = 10):
     try:
         top_y = landmarks[_TOP_OF_HEAD_IDX][1]
         chin_y = landmarks[_CHIN_IDX][1]
+        left_cheek_x = landmarks[_LEFT_CHEEK_IDX][0]
+        right_cheek_x = landmarks[_RIGHT_CHEEK_IDX][0]
     except (IndexError, TypeError):
         return (False, "Landmark list missing required points")
 
     top_cut = top_y < margin_px
     chin_cut = chin_y > image_height - margin_px
-
+    left_cut = left_cheek_x < margin_px
+    right_cut = right_cheek_x > image_width - margin_px
+    
     if top_cut and chin_cut:
         return (False, "Top of head and chin might be cut")
     if top_cut:
         return (False, "Top of head might be cut")
     if chin_cut:
         return (False, "Chin might be cut")
+    if left_cut:
+        return (False, "Left cheek might be cut")
+    if right_cut:
+        return (False, "Right cheek might be cut")
     return (True, "Head is fully visible")

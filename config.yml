@@ -225,7 +225,7 @@ face:
 
     tolerance:
       side_yaw_tolerance_deg: 30      # [DESIGN] guess - spec says ~90deg turn
-      tilt_pitch_tolerance_deg: 15    # [DESIGN] guess
+      tilt_pitch_tolerance_deg: 30    # [DESIGN] guess
       min_detected_step_ratio: 0.6    # [DESIGN] guess - fraction of states seen
       front_zone_yaw_deg: 15          # [DESIGN] guess - calibrate vs opening front hold
       front_zone_pitch_deg: 15        # [DESIGN] guess - calibrate vs opening front hold

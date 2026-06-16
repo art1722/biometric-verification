@@ -266,7 +266,7 @@ class OverlayWriter:
 
         panel_h = line_h * len(names) + pad * 2
         panel_w = pad * 2 + col2_rel + max_val_w + pad
-        panel_w = min(panel_w, w - int(20 * s))   # never overflow the frame
+        panel_w = min(panel_w, w - int(20 * s))
         y0 = h - panel_h - int(16 * s)
         x0 = int(12 * s)
         # near-opaque dark panel for strong contrast (your "light text on dark"
