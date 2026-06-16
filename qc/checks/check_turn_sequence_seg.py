@@ -54,21 +54,22 @@ def _hold_frames(config, key, sample_fps, default_sec=2.0):
     return max(1, math.floor(secs * sample_fps))
 
 
-def _build_segments(labels, timeline):
-    """Collapse per-frame labels into [(label, start_idx, end_idx, n_frames)].
+def _absorb_gaps(labels):
+    """First pass of segmentation: relabel absorbable GAP runs.
 
-    - Contiguous same-label frames merge into one segment.
-    - A GAP run is absorbed into the turn it sits between when both neighbours
-      are the SAME turn direction (front -> left -> [gap] -> left ...), or when
-      one neighbour is a turn and the other is front (the gap is the peak of
-      that turn): the gap takes the turn's label. An unbracketed/ambiguous gap
-      keeps label GAP.
-    - NEUTRALish (dead-band) frames are treated as transition noise and merged
-      into whichever neighbouring segment they touch; a standalone NEUTRALish
-      run stays as its own 'mid' segment.
+    A GAP run is absorbed into a turn when its neighbours include exactly ONE
+    turn direction (front -> left -> [gap] -> left, or left -> [gap] -> front,
+    or a trailing/leading gap with a single turn shoulder): the gap takes that
+    turn's label, because a detected over-floor frame adjacent to the gap is
+    positive evidence the gap is that turn's profile peak. An unbracketed gap
+    (front..gap..front) or an ambiguous one (left..gap..right) keeps label GAP.
+
+    Returns the relabeled list (input is not mutated). This is the SINGLE
+    definition of "expected gap" — both segment building and the per-frame
+    detection-row split (split_gap_frames) use it, so the two can never
+    disagree about which gaps a turn explains.
     """
     n = len(labels)
-    # First pass: relabel absorbable gaps.
     lab = list(labels)
     i = 0
     while i < n:
@@ -89,6 +90,96 @@ def _build_segments(labels, timeline):
         # else: ambiguous gap (e.g. front..gap..front with no turn shoulder, or
         # two different turn neighbours) -> leave as GAP for honest reporting.
         i = j
+    return lab
+
+
+def split_gap_frames(timeline, config):
+    """Classify every no-pose frame of the timeline as an EXPECTED or
+    UNEXPECTED gap, using the same absorption rule as segment building.
+
+    expected   : the gap run was absorbed into a turn (>= 1 detected
+                 over-floor frame immediately adjacent) -> the protocol asked
+                 the face to be unmeasurable here; not a defect.
+    unexpected : no adjacent turn evidence -> the face should have been
+                 measurable here; a real defect.
+
+    Returns (expected, unexpected):
+        expected   : dict {timeline_index: turn_direction}
+        unexpected : list [timeline_index]
+
+    Note: a frame counts as a gap here when classify_frame says GAP, i.e.
+    face_detected is False OR the pose could not be computed. The caller
+    decides which of those frames have a detection row to re-status.
+    """
+    th = TurnThresholds.from_config(config)
+    labels = [classify_frame(e, th) for e in timeline]
+    absorbed = _absorb_gaps(labels)
+    expected: dict = {}
+    unexpected: list = []
+    for i, orig in enumerate(labels):
+        if orig != GAP:
+            continue
+        if absorbed[i] in DIRECTIONS:
+            expected[i] = absorbed[i]
+        else:
+            unexpected.append(i)
+    return expected, unexpected
+
+
+_VALID_STATUSES = {"PASS", "FAIL", "REVIEW", "SKIP"}
+
+
+def apply_gap_split_to_detection_rows(rows, timeline, gap_row_positions, config):
+    """Re-status the check_face_detected rows of no-face frames in place.
+
+    Args:
+        rows: the pipeline's full list[CheckRow] (mutated in place).
+        timeline: the per-frame timeline the rows were built from.
+        gap_row_positions: dict {timeline_index: index into rows} pointing at
+            the check_face_detected row emitted for each NO-FACE frame.
+            (Multiple-face frames must NOT be included — that is a different
+            defect class and stays at its original status.)
+        config: loaded config dict; policy read from face.checks.detection:
+            expected_gap_status   (default SKIP)
+            unexpected_gap_status (default FAIL)
+    """
+    from dataclasses import replace
+
+    det_cfg = (config.get("face", {}).get("checks", {}).get("detection", {}) or {})
+    exp_status = str(det_cfg.get("expected_gap_status", "SKIP")).upper()
+    unexp_status = str(det_cfg.get("unexpected_gap_status", "FAIL")).upper()
+    if exp_status not in _VALID_STATUSES:
+        exp_status = "SKIP"
+    if unexp_status not in _VALID_STATUSES:
+        unexp_status = "FAIL"
+
+    expected, unexpected = split_gap_frames(timeline, config)
+
+    for t_idx, r_idx in gap_row_positions.items():
+        row = rows[r_idx]
+        if t_idx in expected:
+            rows[r_idx] = replace(
+                row, status=exp_status,
+                reason=f"{row.reason}; expected gap (peak of {expected[t_idx]} turn)")
+        elif t_idx in unexpected:
+            rows[r_idx] = replace(
+                row, status=unexp_status,
+                reason=f"{row.reason}; unexpected gap (no adjacent turn evidence)")
+        # else: timeline entry wasn't a gap by classify_frame (shouldn't
+        # happen for a no-face frame) — leave the row untouched.
+
+
+def _build_segments(labels, timeline):
+    """Collapse per-frame labels into [(label, start_idx, end_idx, n_frames)].
+
+    - Contiguous same-label frames merge into one segment.
+    - A GAP run is absorbed into the turn it sits between (see _absorb_gaps).
+    - NEUTRALish (dead-band) frames are treated as transition noise and merged
+      into whichever neighbouring segment they touch; a standalone NEUTRALish
+      run stays as its own 'mid' segment.
+    """
+    n = len(labels)
+    lab = _absorb_gaps(labels)
 
     # Second pass: collapse runs.
     segs = []

@@ -57,7 +57,9 @@ from qc.checks.check_face_blur import check_face_blur
 from qc.checks.check_light_pollution import check_lightpol
 from qc.checks.check_head_pose import estimate_head_pose
 from qc.checks.check_eye import check_eye_status
-from qc.checks.check_turn_sequence_seg import check_turn_sequence_seg
+from qc.checks.check_turn_sequence_seg import (
+    check_turn_sequence_seg, apply_gap_split_to_detection_rows,
+)
 from qc.checks._turn_common import TurnThresholds, classify_frame, FRONT
 from qc.checks import check_metadata as md
 from qc.schemas import CheckRow
@@ -76,6 +78,7 @@ def run_face_rgb(
     config: dict,
     *,
     sample_fps: float = 1.0,
+    overlay: "Any | None" = None,
 ):
     """Run the full face_rgb pipeline on one video.
 
@@ -98,10 +101,17 @@ def run_face_rgb(
     filename = os.path.basename(path)
     rows: list[CheckRow] = []
 
+    # Per-frame check results for the overlay, populated only while overlay is
+    # on. Maps check_name -> (status, reason) for the frame currently being
+    # processed; reset at the top of each frame. None-overlay => stays unused.
+    _frame_checks: dict[str, tuple] = {}
+
     def add(check_name, status, reason, frame_index=None, level="frame"):
         rows.append(CheckRow(volunteer_id, DATA_TYPE, filename,
                              check_name, status, reason, frame_index,
                              level=level))
+        if overlay is not None and level == "frame":
+            _frame_checks[check_name] = (status, reason)
 
     # ---- pull thresholds from config (spec is source of truth) ----
     face_cfg = config.get("face", {})
@@ -153,6 +163,12 @@ def run_face_rgb(
     # MediaPipe could not measure.
     timeline: list[dict] = []
     frames_seen = 0
+    # Positions of the check_face_detected rows for NO-FACE frames, keyed by
+    # timeline index, so they can be re-statused (expected/unexpected gap)
+    # once the whole timeline exists. Multiple-face frames are NOT tracked:
+    # a second face is a different defect class (someone else in frame), not
+    # a detector limitation, so its row keeps the conservative REVIEW.
+    gap_row_positions: dict[int, int] = {}
 
     def add_frame(sf, *, face_detected, info=None):
         timeline.append({
@@ -201,19 +217,42 @@ def run_face_rgb(
             frames_seen += 1
             img = sf.image
             cspace = sf.color_space  # "BGR" or "RGB" — pass through so colors are right
+            if overlay is not None:
+                _frame_checks.clear()
 
             # 1) face detection (once) -> landmarks + bbox
             ok, msg, landmarks, bbox, _ = get_lm(
                 img, detector=face_mesh, input_color_space=cspace)
             if not ok:
-                # No usable face this frame. For a turn video, that's expected on
-                # some frames (profile turns) — record as REVIEW, not FAIL.
-                add("check_face_detected", "REVIEW",
-                    f"frame={sf.frame_index} {msg}", sf.frame_index)
+                # No usable face this frame. Two distinct cases:
+                #
+                #   "No faces ..."  -> a detection gap. Whether acceptable depends
+                #     on WHERE it sits, known only once the whole timeline exists.
+                #     Start at SKIP (the expected-gap value) as a safe provisional;
+                #     the gap split after the loop re-statuses it to SKIP (expected,
+                #     inside a turn) or FAIL (unexpected, elsewhere). REVIEW is no
+                #     longer used: with no human review capacity, every row must
+                #     resolve to PASS / FAIL / SKIP.
+                #
+                #   "Multiple faces ..." -> a real defect (a second person in
+                #     frame). The spec wants ONE clearly-visible subject, so this
+                #     FAILs outright and is NOT tracked for the gap split.
+                if msg.startswith("No faces"):
+                    add("check_face_detected", "SKIP",
+                        f"frame={sf.frame_index} {msg}", sf.frame_index)
+                    gap_row_positions[len(timeline)] = len(rows) - 1
+                else:
+                    add("check_face_detected", "FAIL",
+                        f"frame={sf.frame_index} {msg}", sf.frame_index)
                 # Gap frame: still record it on the timeline so the turn-sequence
                 # check can SEE the gap (face_detected=False, yaw=None) rather than
                 # finding the frame simply absent.
                 add_frame(sf, face_detected=False)
+                if overlay is not None:
+                    overlay.add_frame(
+                        img, cspace, sf.frame_index, sf.timestamp_sec,
+                        face_detected=False, landmarks=None, bbox=None,
+                        pose=None, label="no-face", checks=dict(_frame_checks))
                 continue
             add("check_face_detected", "PASS",
                 f"frame={sf.frame_index} face ok", sf.frame_index)
@@ -223,6 +262,7 @@ def run_face_rgb(
             # decides which quality checks are valid to run below.
             ok, info = estimate_head_pose(
                 img, detector=face_mesh, input_color_space=cspace)
+            pose_ok = ok  # preserve: `ok` is reused by later checks below
             # Face was detected this frame (we got past get_lm), so face_detected
             # is True regardless of whether the pose estimate itself succeeded.
             # If pose failed, info stays None -> yaw/pitch/roll recorded as None.
@@ -246,6 +286,12 @@ def run_face_rgb(
                     add(name, "SKIP",
                         f"frame={sf.frame_index} non-frontal (label={label}); not judged",
                         sf.frame_index)
+                if overlay is not None:
+                    overlay.add_frame(
+                        img, cspace, sf.frame_index, sf.timestamp_sec,
+                        face_detected=True, landmarks=landmarks, bbox=bbox,
+                        pose=(info if pose_ok else None), label=label,
+                        checks=dict(_frame_checks))
                 continue
 
             # face size (consumes bbox, no re-detection)
@@ -269,6 +315,13 @@ def run_face_rgb(
                                      detector=face_det, input_color_space=cspace)
             add("check_brightness", _bool_to_status(ok),
                 f"frame={sf.frame_index} {msg}", sf.frame_index)
+
+            if overlay is not None:
+                overlay.add_frame(
+                    img, cspace, sf.frame_index, sf.timestamp_sec,
+                    face_detected=True, landmarks=landmarks, bbox=bbox,
+                    pose=(info if pose_ok else None), label=label,
+                    checks=dict(_frame_checks))
     finally:
         # Always release the models, even if a frame raises mid-loop.
         face_mesh.close()
@@ -276,10 +329,22 @@ def run_face_rgb(
 
     add("frames_sampled", "PASS", f"sampled {frames_seen} frames", level="video")
 
+    # ---- expected/unexpected gap split for check_face_detected ----
+    # Re-status the no-face rows now that the whole timeline exists:
+    #   gap inside an absorbed turn -> expected   (default SKIP, not judged)
+    #   gap anywhere else           -> unexpected (default FAIL, counts in ratio)
+    # Statuses come from config face.checks.detection. Only meaningful for a
+    # turn-protocol video, so it is gated on the same flag as the turn check;
+    # with the turn check disabled, no-face rows keep the legacy REVIEW.
+    turn_enabled = face_cfg.get("turn_sequence", {}).get("enabled", True)
+    if turn_enabled and gap_row_positions:
+        apply_gap_split_to_detection_rows(
+            rows, timeline, gap_row_positions, config)
+
     # ---- turn-sequence check (consumes the whole timeline at once) ----
     # Runs only if enabled in config for this stream. Uses the SAME sample_fps
     # the timeline was built at, so hold-duration -> frame-count is correct.
-    if face_cfg.get("turn_sequence", {}).get("enabled", True):
+    if turn_enabled:
         def emit_turn_row(check_name, status, reason, frame_index=None):
             return CheckRow(volunteer_id, DATA_TYPE, filename,
                             check_name, status, reason, frame_index,

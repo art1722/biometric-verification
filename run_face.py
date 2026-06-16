@@ -47,6 +47,10 @@ def parse_args():
                     help="optional: also write the summary (tally + angle range) to this text file")
     ap.add_argument("--result-csv", default=None,
                     help="optional: write final aggregated result CSV")
+    ap.add_argument("--overlay", default=None,
+                    help="optional: write a debug overlay video (bbox + landmarks "
+                         "+ pose + per-check status drawn on each sampled frame) "
+                         "to this .mp4 path")
     return ap.parse_args()
 
 def parse_volunteer_id(path):
@@ -368,7 +372,24 @@ def main():
     print(f"volunteer id: {vid} | sample_fps: {args.sample_fps}\n")
 
     start = time.perf_counter()
-    rows, timeline = run_face_rgb(args.video, vid, config, sample_fps=args.sample_fps)
+
+    overlay = None
+    if args.overlay:
+        from qc.utils.overlay import OverlayWriter
+        # play sampled frames back at the sampling rate (clamped to >=1 fps)
+        
+        # from qc.utils.overlay_below import OverlayWriter
+        overlay = OverlayWriter(
+            args.overlay, fps=args.sample_fps,
+            volunteer_id=vid, filename=os.path.basename(args.video))
+
+    rows, timeline = run_face_rgb(
+        args.video, vid, config, sample_fps=args.sample_fps, overlay=overlay)
+
+    if overlay is not None:
+        overlay.close()
+        print(f"overlay video: {args.overlay} ({overlay.frames_written} frames)")
+
     elapsed = time.perf_counter() - start
 
     tally_text, angle_text = print_results(rows, timeline, args_csv=args.csv)

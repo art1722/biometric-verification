@@ -5,10 +5,11 @@ produced. They run no model and read no pixels, so they are cheap and run once
 per video (not per frame).
 
 Each returns (status, message) where status is one of the config status
-strings: PASS / FAIL / REVIEW / SKIP. Metadata that could not be read (None)
-yields REVIEW, not FAIL — "we couldn't measure it" is different from "it failed",
-and a human should confirm rather than auto-rejecting (screening-filter
-philosophy).
+strings: PASS / FAIL / SKIP. Metadata that could not be read (None) now yields
+FAIL, not REVIEW: with no human-review capacity in this project, a value that
+cannot be verified against the spec cannot be passed, so the strict default is
+to reject. ("We couldn't measure it" is treated as "it doesn't demonstrably
+meet spec.")
 
 Spec values (source of truth):
   - container: MPEG-4 / .mp4, and RGB (3-channel) for the rgb stream
@@ -33,7 +34,7 @@ def check_container(meta, *, require_rgb: bool = True, expected_ext: str = ".mp4
         return (FAIL, f"extension={meta.extension} != {expected_ext}")
     if require_rgb:
         if meta.channel_count is None:
-            return (REVIEW, "channel count unknown")
+            return (FAIL, "channel count unknown (cannot verify RGB)")
         if meta.channel_count < 3:
             return (FAIL, f"channels={meta.channel_count} (not RGB color)")
     return (PASS, f"container ok ({meta.extension}, "
@@ -42,7 +43,7 @@ def check_container(meta, *, require_rgb: bool = True, expected_ext: str = ".mp4
 
 def check_fps(meta, *, min_fps: float = 5.0):
     if meta.fps is None:
-        return (REVIEW, "fps unknown")
+        return (FAIL, "fps unknown (cannot verify against spec)")
     if meta.fps >= min_fps:
         return (PASS, f"fps={meta.fps:.2f} >= {min_fps}")
     return (FAIL, f"fps={meta.fps:.2f} < {min_fps}")
@@ -50,7 +51,7 @@ def check_fps(meta, *, min_fps: float = 5.0):
 
 def check_duration(meta, *, min_duration_sec: float = 40.0):
     if meta.duration_sec is None:
-        return (REVIEW, "duration unknown")
+        return (FAIL, "duration unknown (cannot verify against spec)")
     if meta.duration_sec >= min_duration_sec:
         return (PASS, f"duration={meta.duration_sec:.1f} >= {min_duration_sec}")
     return (FAIL, f"duration={meta.duration_sec:.1f} < {min_duration_sec}")
@@ -58,7 +59,7 @@ def check_duration(meta, *, min_duration_sec: float = 40.0):
 
 def check_resolution(meta, *, min_width: int = 180, min_height: int = 180):
     if meta.width is None or meta.height is None:
-        return (REVIEW, "resolution unknown")
+        return (FAIL, "resolution unknown (cannot verify against spec)")
     if meta.width >= min_width and meta.height >= min_height:
         return (PASS, f"resolution={meta.width}x{meta.height} "
                       f">= {min_width}x{min_height}")

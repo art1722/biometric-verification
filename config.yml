@@ -231,6 +231,21 @@ face:
       front_zone_pitch_deg: 15        # [DESIGN] guess - calibrate vs opening front hold
 
   checks:
+    detection:                       # [DESIGN] 2026-06: expected/unexpected gap split.
+                                     # A no-face frame is judged by WHERE it sits:
+                                     #   expected   = its gap run was absorbed into a
+                                     #                turn (>=1 detected over-floor
+                                     #                frame immediately adjacent) ->
+                                     #                the protocol asked the face to be
+                                     #                unmeasurable here; not a defect.
+                                     #   unexpected = anywhere else (e.g. during a front
+                                     #                hold) -> the face should have been
+                                     #                visible; a real defect.
+                                     # Frames with MULTIPLE faces are a different defect
+                                     # class (someone else in frame) and always stay
+                                     # REVIEW regardless of these settings.
+      expected_gap_status: "SKIP"    # [CONFIRM] not judged; excluded from fail ratio
+      unexpected_gap_status: "FAIL"  # [CONFIRM] counts toward frame_fail_ratio
     face_size:
       threshold_px: 180              # [SPEC], not repo 150
     blur:
