@@ -31,6 +31,7 @@ from typing import Any, Optional
 
 import cv2
 import numpy as np
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ _GREY = (190, 190, 190)
 _WHITE = (255, 255, 255)
 _BLACK = (0, 0, 0)
 _PANEL = (20, 20, 20)      # near-black panel behind the check list
+_HEAD_FULLY_IDXS = (10, 152, 127, 356)
 
 _STATUS_COLOR = {
     "PASS": _GREEN,
@@ -93,12 +95,21 @@ class OverlayWriter:
         self._writer: Optional[cv2.VideoWriter] = None
         self._size: Optional[tuple[int, int]] = None  # (w, h)
         self._frames_written = 0
+        self._ref_face_dim_min: Optional[int] = None
 
     # -- internal ----------------------------------------------------------
 
     def _ensure_writer(self, w: int, h: int):
         if self._writer is not None:
             return
+        # cv2.VideoWriter fails SILENTLY if the output directory does not exist
+        # (isOpened() returns False, no exception) — unlike the CSV/summary
+        # writers, which os.makedirs their own dir. Create it here so a nested
+        # path like reports/201/overlay.mp4 works the same as the other outputs.
+        out_dir = os.path.dirname(self.out_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+            
         # mp4v is broadly available in OpenCV builds and writes .mp4.
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         self._writer = cv2.VideoWriter(self.out_path, fourcc, self.fps, (w, h))
@@ -142,7 +153,7 @@ class OverlayWriter:
         #  -> h/720 (still too big) -> h/900 (this). To resize, change the 900.0:
         #  smaller divisor = bigger text, larger divisor = smaller text.
         s = h / 900.0
-        fs_head = 0.95 * s      # header (id / file) — text tracks the FRAME
+        fs_head = 0.85 * s      # header (id / file) — text tracks the FRAME
         fs_sub = 0.85 * s       # frame/time + pose line
 
         # --- decide bbox color from the worst frame-level status ---
@@ -162,34 +173,52 @@ class OverlayWriter:
         # stays frame-scaled because legibility should track the frame.
         if bbox is not None:
             _bw, _bh = bbox[2], bbox[3]
-            face_dim = max(_bw, _bh)
+            face_dim_min = min(_bw, _bh)
         else:
-            face_dim = h // 4   # fallback if no face this frame
-
-        lm_radius = max(1, min(3, int(round(face_dim * 0.003))))
-        box_thick = max(1, min(9, int(round(face_dim * 0.009))))
+            face_dim_min = h // 4   # fallback if no face this frame
         
-        fs_box = max(0.5, face_dim * 0.005)   # the WxH label on the box
+        if self._ref_face_dim_min is None and bbox is not None:
+            self._ref_face_dim_min = face_dim_min
 
+        ref_face_dim_min = self._ref_face_dim_min or face_dim_min
+        
+        lm_radius = max(1, min(3, int(round(face_dim_min * 0.003))))
+        box_thick = max(1, min(20, int(round(ref_face_dim_min * 0.02))))
+
+        # The WxH label scales with the SMALLER side of the box (min, not max),
+        # so a tall/narrow box doesn't get an oversized label. Clamped so it
+        # never vanishes on a tiny far face or explodes on a close-up.
+        fs_box = max(0.25, min(6, face_dim_min * 0.004))   # the WxH label on the box
+        box_lbl_thick = max(1, min(8, int(round(ref_face_dim_min * 0.01))))
+        
         # --- landmarks (faint) ---
         if landmarks:
-            for (px, py, _z) in landmarks:
+            for i, (px, py, _z) in enumerate(landmarks):
                 if 0 <= px < w and 0 <= py < h:
-                    cv2.circle(img, (px, py), lm_radius, (210, 210, 210),
-                               -1, cv2.LINE_AA)
+                    if i in _HEAD_FULLY_IDXS:
+                        cv2.circle(img, (px, py), lm_radius * 3, _RED, -1, cv2.LINE_AA)
+                    else:
+                        cv2.circle(img, (px, py), lm_radius, (210, 210, 210), -1, cv2.LINE_AA)
 
         # --- bounding box ---
         if bbox is not None:
             bx, by, bw, bh = bbox
             cv2.rectangle(img, (bx, by), (bx + bw, by + bh),
                           box_color, box_thick)
-            # Draw the WxH label INSIDE the box's top-left corner. Placing it
-            # above the box (the old behavior) collided with the header/pose
-            # lines whenever the face was large and the box reached near the top
-            # of the frame. Inside-the-corner is always clear of the header.
-            lbl_x = bx + int(8 * s)
-            lbl_y = by + int(28 * s)
-            _put(img, f"{bw}x{bh}", (lbl_x, lbl_y), box_color, fs_box)
+            # Draw the WxH label INSIDE the box's top-left corner, but clamp it
+            # so the full text stays within the frame even when the box is tiny
+            # or its corner sits at the frame edge. cv2 text origin is the
+            # BOTTOM-left of the text, so we offset by the text height.
+            label = f"{bw}x{bh}"
+            (tw, th), _base = cv2.getTextSize(label, _FONT, fs_box, box_lbl_thick)
+            pad = int(8 * s)
+            lbl_x = bx + pad
+            lbl_y = by + th + pad
+            # keep the whole glyph box on-screen (account for the outline width)
+            margin = box_lbl_thick + 3
+            lbl_x = max(margin, min(lbl_x, w - tw - margin))
+            lbl_y = max(th + margin, min(lbl_y, h - margin))
+            _put(img, label, (lbl_x, lbl_y), box_color, fs_box, box_lbl_thick)
 
         # --- header panel (same translucency as the bottom check panel) ---
         # The white/colored header text is hard to read over bright skies or
@@ -212,7 +241,7 @@ class OverlayWriter:
             pose_line = f"label={label or 'no-face'}"
         header_lines.append(pose_line)
 
-        h_thick = max(2, int(round(2 * s)))
+        h_thick = max(0.5, int(round(1.25 * s)))
         h_w = max(cv2.getTextSize(t, _FONT, fs_head, h_thick)[0][0]
                   for t in header_lines)
         hpad = int(10 * s)
@@ -227,13 +256,13 @@ class OverlayWriter:
 
         # --- header strip (scaled), drawn on top of the panel ---
         ly = int(34 * s)
-        _put(img, header_lines[0], (hx, ly), _WHITE, fs_head)
+        _put(img, header_lines[0], (hx, ly), _WHITE, fs_head, h_thick)
         ly += int(34 * s)
-        _put(img, header_lines[1], (hx, ly), _WHITE, fs_sub)
+        _put(img, header_lines[1], (hx, ly), _WHITE, fs_sub, h_thick)
 
         # --- pose readout ---
         ly += int(32 * s)
-        _put(img, pose_line, (hx, ly), box_color, fs_sub)
+        _put(img, pose_line, (hx, ly), box_color, fs_sub, h_thick)
 
         # --- per-check panel (bottom-left), one line per check ---
         self._draw_check_panel(img, checks, w, h, s)
@@ -245,7 +274,7 @@ class OverlayWriter:
         if not checks:
             return
         fs = 0.85 * s                       # check-line font scale
-        thick = max(2, int(round(2 * s)))
+        thick = max(0.5, int(round(1.25 * s)))
         line_h = int(34 * s)                # row height
         pad = int(12 * s)
         names = sorted(checks.keys())
@@ -277,14 +306,22 @@ class OverlayWriter:
         cv2.addWeighted(overlay, 0.55, img, 0.45, 0, img)
 
         y = y0 + pad + int(26 * s)
-        col2 = x0 + pad + col2_rel          # absolute value-column x
+
+        status_x = x0 + pad
+        name_x = status_x + int(95 * s)
+        reason_x = name_x + int(320 * s)
+
         for name in names:
             status, reason = checks[name]
             color = _STATUS_COLOR.get(status, _WHITE)
             short = _shorten_reason(reason)
-            _put(img, f"{status:5s} {name}", (x0 + pad, y), color, fs, thick)
+
+            _put(img, status, (status_x, y), color, fs, thick)
+            _put(img, name, (name_x, y), color, fs, thick)
+
             if short:
-                _put(img, short, (col2, y), color, fs, thick)
+                _put(img, short, (reason_x, y), color, fs, thick)
+
             y += line_h
 
     def close(self):

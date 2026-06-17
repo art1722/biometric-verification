@@ -198,6 +198,8 @@ def check_turn_sequence_seg(timeline, config, *, sample_fps=1.0, emit_row=None):
     th = TurnThresholds.from_config(config)
     ts_cfg = config.get("face", {}).get("turn_sequence", {})
     order_policy = ts_cfg.get("order_policy", "REVIEW")
+    short_hold_policy = ts_cfg.get("short_hold_policy", "REVIEW")
+    unconfirmed_gap_policy = ts_cfg.get("unconfirmed_gap_policy", "REVIEW")
     accepted_orders = ts_cfg.get("accepted_orders", {}) or {}
 
     if emit_row is None:
@@ -267,7 +269,7 @@ def check_turn_sequence_seg(timeline, config, *, sample_fps=1.0, emit_row=None):
     # Short-hold reporting.
     for (label, nfr, need) in short_holds:
         if label in DIRECTIONS or label == FRONT:
-            rows.append(emit_row(f"{CHECK}_{label}_hold", "REVIEW",
+            rows.append(emit_row(f"{CHECK}_{label}_hold", short_hold_policy,
                                  f"{label} held {nfr} frame(s) < {need} (too short)"))
 
     # Presence cross-check: which directions appear in the kept structure.
@@ -278,11 +280,21 @@ def check_turn_sequence_seg(timeline, config, *, sample_fps=1.0, emit_row=None):
     for d in present:
         rows.append(emit_row(f"{CHECK}_{d}", "PASS", f"{d}: present as a segment"))
 
-    # Overall verdict.
+    # Overall verdict — explicit precedence, worst failure mode wins.
+    #   1. A missing direction is an unambiguous defect           -> FAIL
+    #      (unless an unconfirmed gap might hide it -> defer to REVIEW below).
+    #   2. Order mismatch                                         -> order_policy
+    #   3. Short hold (turn not held long enough)                 -> short_hold_policy
+    #   4. Unconfirmed gap (Phase 1 can't positively confirm)     -> REVIEW
+    #   5. Everything matched                                     -> PASS
     if missing and not has_unconfirmed_gap:
         overall = "FAIL"
-    elif not match_name or has_unconfirmed_gap or short_holds:
-        overall = "REVIEW" if (match_name or has_unconfirmed_gap) else order_policy
+    elif not match_name:
+        overall = order_policy
+    elif short_holds:
+        overall = short_hold_policy
+    elif has_unconfirmed_gap:
+        overall = unconfirmed_gap_policy
     else:
         overall = "PASS"
     rows.append(emit_row(CHECK, overall,

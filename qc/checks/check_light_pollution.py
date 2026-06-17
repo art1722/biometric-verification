@@ -103,5 +103,17 @@ def check_lightpol(
     else:
         status = "normal"
 
-    msg = f"brightness={face_brightness:.0f} status={status}"
+    b = int(round(face_brightness))
+    lo = int(round(dark_threshold))
+    hi = int(round(bright_threshold))
+
+    if status == "normal":
+        msg = f"brightness normal; {lo} <= {b} <={hi}"
+    elif status == "too_dark":
+        msg = f"brightness={b} < {lo}; too_dark"
+    elif status == "too_bright":
+        msg = f"brightness={b} > {hi}; too_bright"
+    else:
+        msg = f"brightness={b}; min_thr={lo}; max_thr={hi}; status={status}"
+
     return (status == "normal", msg)

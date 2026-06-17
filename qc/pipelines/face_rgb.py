@@ -77,8 +77,9 @@ def run_face_rgb(
     volunteer_id: str,
     config: dict,
     *,
-    sample_fps: float = 1.0,
+    sample_fps: float | None = None,
     overlay: "Any | None" = None,
+    progress=None,
 ):
     """Run the full face_rgb pipeline on one video.
 
@@ -107,11 +108,23 @@ def run_face_rgb(
     _frame_checks: dict[str, tuple] = {}
 
     def add(check_name, status, reason, frame_index=None, level="frame"):
-        rows.append(CheckRow(volunteer_id, DATA_TYPE, filename,
-                             check_name, status, reason, frame_index,
-                             level=level))
+        row = CheckRow(
+            volunteer_id,
+            DATA_TYPE,
+            filename,
+            check_name,
+            status,
+            reason,
+            frame_index,
+            level=level,
+        )
+        rows.append(row)
+
         if overlay is not None and level == "frame":
             _frame_checks[check_name] = (status, reason)
+
+        if progress is not None:
+            progress(row)
 
     # ---- pull thresholds from config (spec is source of truth) ----
     face_cfg = config.get("face", {})
@@ -137,6 +150,13 @@ def run_face_rgb(
     
     # ---- video-level checks (once) ----
     meta = probe_video(path)
+    
+    # The turn-sequence check converts hold-seconds -> frame counts, so it needs
+    # a concrete fps. When sampling natively (sample_fps is None = every frame),
+    # the effective rate IS the source's native fps. Resolve it once here.
+    effective_fps = sample_fps
+    if effective_fps is None:
+        effective_fps = meta.fps if (meta.fps and meta.fps > 0) else 30.0
 
     status, reason = md.check_container(meta, require_rgb=True)
     add("check_container", status, reason, level="video")
@@ -187,14 +207,25 @@ def run_face_rgb(
     #   - face_mesh : landmarks/bbox (get_lm) and head pose (estimate_head_pose)
     #   - face_det  : blur and brightness (both use FaceDetection)
     # Settings match what each check created internally, so results are identical.
+    # Detection params come from config.models — the single source of truth.
+    # Both get_lm AND estimate_head_pose receive THIS shared instance, so
+    # "face detected" and "pose measurable" can never disagree (they are the
+    # same model with the same settings). Previously these were hard-coded
+    # (max_num_faces=2, conf=0.5), silently ignoring config and manufacturing
+    # detection gaps. [Phase 1 #1 fix]
+    mp_cfg = config.get("models", {}).get("mediapipe", {})
+    fd_cfg = config.get("models", {}).get("face_detection", {})
+
     face_mesh = mp.solutions.face_mesh.FaceMesh(
-        static_image_mode=True,
-        max_num_faces=2,
-        min_detection_confidence=0.5,
-        refine_landmarks=True,
+        static_image_mode=mp_cfg.get("static_image_mode", True),
+        max_num_faces=mp_cfg.get("max_num_faces", 10),
+        min_detection_confidence=mp_cfg.get("min_detection_confidence", 0.6),
+        refine_landmarks=mp_cfg.get("refine_landmarks", True),
     )
     face_det = mp.solutions.face_detection.FaceDetection(
-        model_selection=1, min_detection_confidence=0.5)
+        model_selection=fd_cfg.get("model_selection", 1),
+        min_detection_confidence=fd_cfg.get("min_detection_confidence", 0.5),
+    )
 
     # Thresholds for per-frame position classification (front / left / right /
     # up / down / mid / gap) — same config + same classify_frame the
@@ -213,7 +244,11 @@ def run_face_rgb(
                          "check_face_blur", "check_brightness")
 
     try:
-        for sf in iter_sampled_frames(path, sample_fps=sample_fps):
+        # Native sampling (sample_fps=None) must keep every frame so the overlay
+        # is a true 1:1 copy -> disable the 600-frame cap. Down-sampling keeps it.
+        _max_frames = None if sample_fps is None else 600
+        for sf in iter_sampled_frames(path, sample_fps=sample_fps,
+                                      max_frames=_max_frames):
             frames_seen += 1
             img = sf.image
             cspace = sf.color_space  # "BGR" or "RGB" — pass through so colors are right
@@ -255,7 +290,7 @@ def run_face_rgb(
                         pose=None, label="no-face", checks=dict(_frame_checks))
                 continue
             add("check_face_detected", "PASS",
-                f"frame={sf.frame_index} face ok", sf.frame_index)
+                f"frame={sf.frame_index} face detected", sf.frame_index)
 
             # 2) head pose FIRST (moved up) — the timeline entry it produces is
             # what classifies this frame as front / turn / mid, and that label
@@ -350,7 +385,7 @@ def run_face_rgb(
                             check_name, status, reason, frame_index,
                             level="sequence")
         turn_rows = check_turn_sequence_seg(
-            timeline, config, sample_fps=sample_fps, emit_row=emit_turn_row)
+            timeline, config, sample_fps=effective_fps, emit_row=emit_turn_row)
         rows.extend(turn_rows)
 
     return rows, timeline

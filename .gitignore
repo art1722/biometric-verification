@@ -26,12 +26,7 @@ mock_data_collection/
 organized/
 
 # Generated reports
-reports/*.csv
-reports/*.json
-reports/*.xlsx
-reports/*.xls
-reports/*.xltx
-reports/*.txt
+reports/
 
 # Large media files, in case they appear outside data folders
 *.mp4
