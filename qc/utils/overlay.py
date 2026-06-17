@@ -87,8 +87,11 @@ class OverlayWriter:
     def __init__(self, out_path: str, *, fps: float,
                  volunteer_id: str, filename: str):
         self.out_path = out_path
-        # Output fps: play sampled frames at the sampling rate so 5fps sampling
-        # plays at 5fps. Clamp to a sane floor so a <1fps sample still plays.
+        # Output fps = the rate frames were sampled at, so the overlay's duration
+        # matches the source (the writer is fed one frame per sampled frame).
+        # Clamp to a 1.0 floor: mp4v/many players choke on sub-1fps streams, so
+        # a sample rate below 1 fps will play slightly FASTER than real time
+        # (duration shortens) — an accepted edge for an otherwise-unplayable file.
         self.fps = max(float(fps), 1.0)
         self.volunteer_id = volunteer_id
         self.filename = filename

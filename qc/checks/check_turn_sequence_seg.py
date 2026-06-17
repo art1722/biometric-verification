@@ -93,6 +93,51 @@ def _absorb_gaps(labels):
     return lab
 
 
+def _bridge_short_interruptions(labels, max_frames):
+    """Remove tiny label flickers inside a stable segment.
+
+    Example:
+        down, down, front, down, down
+    becomes:
+        down, down, down, down, down
+
+    This is for threshold jitter, not for real protocol holds.
+    """
+    lab = list(labels)
+    stable = (FRONT,) + DIRECTIONS
+
+    changed = True
+    while changed:
+        changed = False
+        n = len(lab)
+        i = 0
+
+        while i < n:
+            j = i + 1
+            while j < n and lab[j] == lab[i]:
+                j += 1
+
+            run_label = lab[i]
+            run_len = j - i
+            prev_label = lab[i - 1] if i > 0 else None
+            next_label = lab[j] if j < n else None
+
+            if (
+                run_len <= max_frames
+                and prev_label == next_label
+                and prev_label in stable
+                and run_label != prev_label
+            ):
+                for k in range(i, j):
+                    lab[k] = prev_label
+                changed = True
+
+            i = j
+
+    return lab
+
+
+
 def split_gap_frames(timeline, config):
     """Classify every no-pose frame of the timeline as an EXPECTED or
     UNEXPECTED gap, using the same absorption rule as segment building.
@@ -169,7 +214,7 @@ def apply_gap_split_to_detection_rows(rows, timeline, gap_row_positions, config)
         # happen for a no-face frame) — leave the row untouched.
 
 
-def _build_segments(labels, timeline):
+def _build_segments(labels, timeline, *, config=None, sample_fps=1.0):
     """Collapse per-frame labels into [(label, start_idx, end_idx, n_frames)].
 
     - Contiguous same-label frames merge into one segment.
@@ -180,6 +225,14 @@ def _build_segments(labels, timeline):
     """
     n = len(labels)
     lab = _absorb_gaps(labels)
+
+    ts_cfg = config.get("face", {}).get("turn_sequence", {}) if config else {}
+    tol_cfg = ts_cfg.get("tolerance", {}) or {}
+
+    jitter_sec = float(tol_cfg.get("label_jitter_tolerance_sec", 0.15))
+    max_jitter_frames = max(1, math.ceil(jitter_sec * sample_fps))
+
+    lab = _bridge_short_interruptions(lab, max_jitter_frames)
 
     # Second pass: collapse runs.
     segs = []
@@ -214,7 +267,7 @@ def check_turn_sequence_seg(timeline, config, *, sample_fps=1.0, emit_row=None):
                              "no front-facing frame anywhere; cannot validate turns"))
         return rows
 
-    segs = _build_segments(labels, timeline)
+    segs = _build_segments(labels, timeline, config=config, sample_fps=sample_fps)
 
     # Drop too-short HOLD segments (turns/fronts shorter than their minimum).
     # Keep them recorded as short_holds for the report.
@@ -267,10 +320,16 @@ def check_turn_sequence_seg(timeline, config, *, sample_fps=1.0, emit_row=None):
                             "; matches no accepted order")))
 
     # Short-hold reporting.
-    for (label, nfr, need) in short_holds:
-        if label in DIRECTIONS or label == FRONT:
-            rows.append(emit_row(f"{CHECK}_{label}_hold", short_hold_policy,
-                                 f"{label} held {nfr} frame(s) < {need} (too short)"))
+    # If the final structure already matches an accepted order, these short holds
+    # are treated as jitter/blips, not real failed holds.
+    if not match_name:
+        for (label, nfr, need) in short_holds:
+            if label in DIRECTIONS or label == FRONT:
+                rows.append(emit_row(
+                    f"{CHECK}_{label}_hold",
+                    short_hold_policy,
+                    f"{label} held {nfr} frame(s) < {need} (too short)"
+            ))
 
     # Presence cross-check: which directions appear in the kept structure.
     present = [d for d in DIRECTIONS if d in structure]
@@ -291,7 +350,7 @@ def check_turn_sequence_seg(timeline, config, *, sample_fps=1.0, emit_row=None):
         overall = "FAIL"
     elif not match_name:
         overall = order_policy
-    elif short_holds:
+    elif short_holds and not match_name:
         overall = short_hold_policy
     elif has_unconfirmed_gap:
         overall = unconfirmed_gap_policy

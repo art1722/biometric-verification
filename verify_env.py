@@ -76,6 +76,38 @@ if mp is not None:
         fail("mp.solutions MISSING — this is the broken-install symptom. "
              "Try: pip install -r requirements.txt --force-reinstall")
 
+    # --- Tasks API + Face Landmarker model bundle (needed for blendshape eyes) ---
+    import os
+    MODEL_PATH = os.path.join("models", "face_landmarker.task")
+    DL_URL = ("https://storage.googleapis.com/mediapipe-models/face_landmarker/"
+              "face_landmarker/float16/1/face_landmarker.task")
+    try:
+        _ = mp.tasks.vision.FaceLandmarker
+        ok("mp.tasks.vision.FaceLandmarker present (Tasks API works)")
+    except Exception as e:
+        fail(f"mp.tasks.vision.FaceLandmarker missing: {e}")
+
+    if os.path.isfile(MODEL_PATH):
+        ok(f"face_landmarker model bundle found: {MODEL_PATH}")
+        try:
+            BaseOptions = mp.tasks.BaseOptions
+            FLO = mp.tasks.vision.FaceLandmarkerOptions
+            VRM = mp.tasks.vision.RunningMode
+            det = mp.tasks.vision.FaceLandmarker.create_from_options(
+                FLO(base_options=BaseOptions(model_asset_path=MODEL_PATH),
+                    running_mode=VRM.IMAGE, num_faces=1,
+                    output_face_blendshapes=True))
+            det.close()
+            ok("created + closed a FaceLandmarker with blendshapes enabled")
+        except Exception as e:
+            fail(f"could not create FaceLandmarker from {MODEL_PATH}: {e}")
+    else:
+        fail(f"face_landmarker model bundle MISSING: {MODEL_PATH}\n"
+             f"        Download it once with:\n"
+             f"          mkdir -p models\n"
+             f"          curl -L -o {MODEL_PATH} \\\n"
+             f"            {DL_URL}")
+
 print()
 if problems:
     print(f"{len(problems)} problem(s) found — fix before running the pipeline.")

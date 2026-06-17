@@ -1,25 +1,35 @@
-"""Eyes-open check (EAR — Eye Aspect Ratio).
+"""Eyes-open check — MediaPipe Face Landmarker **blendshapes** (new method).
 
 Spec requirement (source of truth): the volunteer's eyes must be open in the
 face capture.
 
-Method (from the repo): for each eye, take 6 Face Mesh landmarks and compute
-the Eye Aspect Ratio = (vertical_1 + vertical_2) / (2 * horizontal). A low EAR
-means the lid gap is small relative to the eye width, i.e. the eye is closed.
-A threshold (config: face.checks.eyes_open.ear_threshold, repo default 0.37)
-separates open from closed. Both eyes must exceed it to PASS.
+Why this replaced the EAR ratio
+--------------------------------
+The previous method computed an Eye Aspect Ratio (EAR) from six face-mesh
+landmarks per eye: (vertical_1 + vertical_2) / (2 * horizontal). We were
+advised to stop using that landmark ratio and use a model instead. The
+problems with EAR here were concrete:
+  - its absolute scale is mesh-dependent, so the open/closed threshold had to
+    be hand-calibrated per setup (config note: repo 0.37 cut through video
+    002's natural open-eye EAR of 0.35-0.40);
+  - it degrades off-frontal, exactly where this protocol turns the head.
 
-Contract (matches check_face_size / check_head_fully)
------------------------------------------------------
-This check does NOT touch the image or run a model. It CONSUMES the `landmarks`
-produced once by get_lm, so the face is detected a single time per frame. The
-pipeline only calls this after get_lm has already succeeded, so landmarks are
-guaranteed present here.
+New signal: the Face Landmarker Tasks API emits 52 blendshape coefficients,
+including ``eyeBlinkLeft`` and ``eyeBlinkRight`` — a TRAINED per-eye closed-ness
+score in [0, 1]. High score = eye closed (this is the inverse of EAR). An eye
+counts as OPEN when its blink score is BELOW the threshold.
 
-    check_eye_status(landmarks, ear_threshold) -> (success, message)
+    eye open   <=>  eyeBlink < blink_threshold
 
-landmarks are get_lm's PIXEL-space (x, y, z) tuples; EAR is a ratio of
-distances so the pixel scaling cancels out.
+The model is run ONCE per frame by qc/checks/face_landmarker.py; this check
+just CONSUMES the resulting blendshape dict, so it still touches no image and
+runs no model of its own — same contract as before, new input.
+
+    check_eye_status(blendshapes, blink_threshold) -> (success, message)
+
+A geometric EAR fallback (check_eye_status_ear) is kept for the rare case the
+model returns landmarks but no blendshapes, and so the old behaviour stays
+auditable. The pipeline uses the blendshape path.
 """
 
 from __future__ import annotations
@@ -31,8 +41,49 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Eye landmark indices (MediaPipe Face Mesh), order [p1, p2, p3, p4, p5, p6]:
-# p1, p4 horizontal corners; p2-p6 and p3-p5 vertical pairs.
+# Blendshape category names emitted by the Face Landmarker model.
+BLINK_LEFT = "eyeBlinkLeft"
+BLINK_RIGHT = "eyeBlinkRight"
+
+
+def check_eye_status(blendshapes: Optional[dict],
+                     blink_threshold: float = 0.5) -> Tuple[bool, str]:
+    """Check whether both eyes are open, using blendshape blink scores.
+
+    Args:
+        blendshapes: {category_name: score} from the Face Landmarker (see
+            face_landmarker.detect_face). May be None if the model produced no
+            blendshapes for the frame.
+        blink_threshold: blink score AT OR ABOVE which an eye counts as CLOSED
+            (config: face.checks.eyes_open.blink_threshold). Both eyes must be
+            below it to PASS.
+
+    Returns:
+        (success, message). success is False when either eye is closed or the
+        blink scores are unavailable. Message includes the measured scores.
+    """
+    if not blendshapes:
+        return (False, "No blendshapes provided")
+
+    left = blendshapes.get(BLINK_LEFT)
+    right = blendshapes.get(BLINK_RIGHT)
+
+    if left is None or right is None:
+        return (False, "Blink blendshapes missing (eyeBlinkLeft/Right)")
+
+    # Low blink score = open. Both eyes must be open to pass.
+    if left < blink_threshold and right < blink_threshold:
+        return (True,
+                f"eyes open (blinkL={left:.2f}, blinkR={right:.2f} < {blink_threshold})")
+    return (False,
+            f"eye(s) closed (blinkL={left:.2f}, blinkR={right:.2f} >= {blink_threshold})")
+
+
+# --------------------------------------------------------------------------
+# Legacy EAR fallback — kept for auditability and for frames where the model
+# returns landmarks but no blendshapes. NOT used by the pipeline's main path.
+# --------------------------------------------------------------------------
+
 LEFT_EYE_INDICES = [33, 160, 159, 133, 158, 157]
 RIGHT_EYE_INDICES = [362, 387, 386, 263, 385, 384]
 
@@ -60,19 +111,9 @@ def calculate_ear(landmarks: List[Tuple[int, int, float]],
         return None
 
 
-def check_eye_status(landmarks: List[Tuple[int, int, float]],
-                     ear_threshold: float = 0.37) -> Tuple[bool, str]:
-    """Check whether both eyes are open.
-
-    Args:
-        landmarks: get_lm's pixel-space (x, y, z) tuples (guaranteed non-None
-            by the pipeline, which only calls this after get_lm succeeds).
-        ear_threshold: EAR above which an eye counts as open (config-driven).
-
-    Returns:
-        (success, message). success is False when either eye is closed or the
-        EAR could not be computed. Message includes the measured EAR values.
-    """
+def check_eye_status_ear(landmarks: List[Tuple[int, int, float]],
+                         ear_threshold: float = 0.25) -> Tuple[bool, str]:
+    """Legacy EAR-based eyes-open check (fallback only)."""
     if landmarks is None:
         return (False, "No landmarks provided")
 
@@ -83,5 +124,5 @@ def check_eye_status(landmarks: List[Tuple[int, int, float]],
         return (False, "Could not compute EAR")
 
     if left_ear > ear_threshold and right_ear > ear_threshold:
-        return (True, f"eyes open (L={left_ear:.2f}, R={right_ear:.2f} > {ear_threshold})")
-    return (False, f"eye(s) closed (L={left_ear:.2f}, R={right_ear:.2f} <= {ear_threshold})")
+        return (True, f"eyes open (EAR L={left_ear:.2f}, R={right_ear:.2f} > {ear_threshold})")
+    return (False, f"eye(s) closed (EAR L={left_ear:.2f}, R={right_ear:.2f} <= {ear_threshold})")

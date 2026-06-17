@@ -50,7 +50,7 @@ from typing import Any, Optional
 import mediapipe as mp
 
 from qc.utils.video import probe_video, iter_sampled_frames
-from qc.checks.get_landmarks import get_lm
+from qc.checks.face_landmarker import create_face_landmarker, detect_face
 from qc.checks.check_face_size import check_face_min_size
 from qc.checks.check_head_fully import check_head_fully
 from qc.checks.check_face_blur import check_face_blur
@@ -146,7 +146,7 @@ def run_face_rgb(
     hf_margin = hf_cfg.get("margin_px", 10)
 
     eye_cfg = face_cfg.get("checks", {}).get("eyes_open", {})
-    ear_th = eye_cfg.get("ear_threshold", 0.37)
+    blink_th = eye_cfg.get("blink_threshold", 0.5)
     
     # ---- video-level checks (once) ----
     meta = probe_video(path)
@@ -190,37 +190,40 @@ def run_face_rgb(
     # a detector limitation, so its row keeps the conservative REVIEW.
     gap_row_positions: dict[int, int] = {}
 
-    def add_frame(sf, *, face_detected, info=None):
+    def add_frame(sf, *, face_detected, info=None, bbox=None):
         timeline.append({
             "frame_index": sf.frame_index,
             "timestamp_sec": sf.timestamp_sec,
             "face_detected": face_detected,
+            "label_width": bbox[2] if bbox else None,
+            "label_height": bbox[3] if bbox else None,
             "yaw": info["yaw"] if info else None,
             "pitch": info["pitch"] if info else None,
             "roll": info["roll"] if info else None,
         })
 
-    # Create the detectors ONCE and reuse them for every frame and every check
-    # that needs them. Building a MediaPipe model is expensive; doing it per
-    # call (the previous behavior) meant ~4 model setups per frame. Two shared
-    # detectors cover all face checks:
-    #   - face_mesh : landmarks/bbox (get_lm) and head pose (estimate_head_pose)
-    #   - face_det  : blur and brightness (both use FaceDetection)
-    # Settings match what each check created internally, so results are identical.
-    # Detection params come from config.models — the single source of truth.
-    # Both get_lm AND estimate_head_pose receive THIS shared instance, so
-    # "face detected" and "pose measurable" can never disagree (they are the
-    # same model with the same settings). Previously these were hard-coded
-    # (max_num_faces=2, conf=0.5), silently ignoring config and manufacturing
-    # detection gaps. [Phase 1 #1 fix]
+
+    # Create the detectors ONCE and reuse them for every frame. After the
+    # Tasks-API migration there are two shared detectors:
+    #   - face_landmarker : the NEW Tasks-API model. ONE inference per frame
+    #     yields landmarks (face_size / head_fully / head pose) AND 52
+    #     blendshapes (eyeBlinkLeft/Right -> eyes-open). Blendshapes do not
+    #     exist on the legacy solutions API, which is why eyes-open was migrated.
+    #   - face_det : legacy FaceDetection, still used by blur and brightness.
+    #     Those two genuinely need a face-region box from this model (not just
+    #     landmarks), so it is kept rather than folded into the landmarker.
+    # Landmarker params come from config.models.mediapipe (same keys as before);
+    # the model bundle path from config.models.face_landmarker.model_path.
     mp_cfg = config.get("models", {}).get("mediapipe", {})
+    fl_cfg = config.get("models", {}).get("face_landmarker", {})
     fd_cfg = config.get("models", {}).get("face_detection", {})
 
-    face_mesh = mp.solutions.face_mesh.FaceMesh(
-        static_image_mode=mp_cfg.get("static_image_mode", True),
-        max_num_faces=mp_cfg.get("max_num_faces", 10),
-        min_detection_confidence=mp_cfg.get("min_detection_confidence", 0.6),
-        refine_landmarks=mp_cfg.get("refine_landmarks", True),
+    face_landmarker = create_face_landmarker(
+        model_path=fl_cfg.get("model_path", "models/face_landmarker.task"),
+        num_faces=mp_cfg.get("max_num_faces", 10),
+        min_face_detection_confidence=mp_cfg.get("min_detection_confidence", 0.6),
+        min_face_presence_confidence=fl_cfg.get("min_face_presence_confidence", 0.5),
+        min_tracking_confidence=fl_cfg.get("min_tracking_confidence", 0.5),
     )
     face_det = mp.solutions.face_detection.FaceDetection(
         model_selection=fd_cfg.get("model_selection", 1),
@@ -255,9 +258,16 @@ def run_face_rgb(
             if overlay is not None:
                 _frame_checks.clear()
 
-            # 1) face detection (once) -> landmarks + bbox
-            ok, msg, landmarks, bbox, _ = get_lm(
-                img, detector=face_mesh, input_color_space=cspace)
+            # 1) face detection (once) -> landmarks + bbox + blendshapes.
+            # ONE Tasks-API inference yields everything the frame needs.
+            fr = detect_face(
+                img, detector=face_landmarker, input_color_space=cspace)
+            ok = fr.ok
+            msg = fr.message
+            landmarks = fr.landmarks_px          # pixel-space, get_lm-compatible
+            bbox = fr.bbox
+            blendshapes = fr.blendshapes
+            norm_landmarks = fr.landmarks_norm   # raw normalized, for head pose
             if not ok:
                 # No usable face this frame. Two distinct cases:
                 #
@@ -296,12 +306,12 @@ def run_face_rgb(
             # what classifies this frame as front / turn / mid, and that label
             # decides which quality checks are valid to run below.
             ok, info = estimate_head_pose(
-                img, detector=face_mesh, input_color_space=cspace)
+                landmarks=norm_landmarks, input_color_space=cspace)
             pose_ok = ok  # preserve: `ok` is reused by later checks below
             # Face was detected this frame (we got past get_lm), so face_detected
             # is True regardless of whether the pose estimate itself succeeded.
             # If pose failed, info stays None -> yaw/pitch/roll recorded as None.
-            add_frame(sf, face_detected=True, info=info if ok else None)
+            add_frame(sf, face_detected=True, info=info if ok else None, bbox=bbox)
 
             # 3) classify this frame from the entry just appended.
             label = classify_frame(timeline[-1], turn_th)
@@ -335,7 +345,8 @@ def run_face_rgb(
                 f"frame={sf.frame_index} {msg}", sf.frame_index)
 
             # eyes open (consumes landmarks, no re-detection)
-            ok, msg = check_eye_status(landmarks, ear_th)
+            # eyes open (consumes blendshapes from the same detection; no model)
+            ok, msg = check_eye_status(blendshapes, blink_th)
             add("check_eyes_open", _bool_to_status(ok),
                 f"frame={sf.frame_index} {msg}", sf.frame_index)
 
@@ -359,7 +370,7 @@ def run_face_rgb(
                     checks=dict(_frame_checks))
     finally:
         # Always release the models, even if a frame raises mid-loop.
-        face_mesh.close()
+        face_landmarker.close()
         face_det.close()
 
     add("frames_sampled", "PASS", f"sampled {frames_seen} frames", level="video")

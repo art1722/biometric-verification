@@ -97,37 +97,57 @@ def calculate_angles(face_landmarks):
 
 
 def estimate_head_pose(
-    image,
+    image=None,
     *,
     detector=None,
+    landmarks=None,
     input_color_space: Literal["BGR", "RGB"] = "BGR",
     left_th=-10.0, right_th=10.0, down_th=-10.0, up_th=15.0,
     til_left_th=-10.0, til_right_th=10.0,
 ):
     """Estimate head pose using the researcher's notebook algorithm.
 
+    Two ways to supply the face:
+      - landmarks=<raw normalized landmark list>: PREFERRED. The pipeline runs
+        the shared Face Landmarker once per frame and passes the already-found
+        normalized landmarks here, so NO model runs in this function. This is
+        the path used after the Tasks-API migration.
+      - image (+ optional legacy detector): standalone fallback. If no
+        landmarks are given, this still works on its own using the legacy
+        solutions FaceMesh, preserving the original behaviour for ad-hoc use.
+
+    The angle math (calculate_angles) is the researcher's, untouched: it reads
+    normalized .x/.y/.z, which is exactly what both paths feed it.
+
     Returns (success, info) where info = {yaw, pitch, roll, direction}.
     """
-    img = _to_bgr(image, input_color_space)
-    if img is None or getattr(img, "size", 0) == 0:
-        return (False, {"reason": "Cannot read image"})
+    if landmarks is not None:
+        # Fast path: consume the shared detection. No image, no model.
+        face_landmarks = landmarks
+    elif image is None:
+        return (False, {"reason": "estimate_head_pose needs either landmarks= or image="})
+    else:
+        img = _to_bgr(image, input_color_space)
+        if img is None or getattr(img, "size", 0) == 0:
+            return (False, {"reason": "Cannot read image"})
 
-    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    owns = detector is None
-    if owns:
-        detector = mp.solutions.face_mesh.FaceMesh(
-            static_image_mode=True, max_num_faces=1, refine_landmarks=True)
-    try:
-        results = detector.process(rgb)
-    finally:
+        owns = detector is None
         if owns:
-            detector.close()
+            detector = mp.solutions.face_mesh.FaceMesh(
+                static_image_mode=True, max_num_faces=1, refine_landmarks=True)
+        try:
+            results = detector.process(rgb)
+        finally:
+            if owns:
+                detector.close()
 
-    if not results.multi_face_landmarks:
-        return (False, {"reason": "No face detected"})
+        if not results.multi_face_landmarks:
+            return (False, {"reason": "No face detected"})
 
-    face_landmarks = results.multi_face_landmarks[0].landmark
+        face_landmarks = results.multi_face_landmarks[0].landmark
+
     try:
         pitch, yaw, roll = calculate_angles(face_landmarks)
     except (ZeroDivisionError, FloatingPointError, ValueError) as e:

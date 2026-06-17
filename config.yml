@@ -58,10 +58,19 @@ video:
 
 models:
   mediapipe:
-    static_image_mode: true          # [REPO]
+    static_image_mode: true          # [REPO] (legacy face_det only; landmarker uses running_mode=IMAGE)
     max_num_faces: 10                # [REPO] repo used 10; pipelines take first/largest
     min_detection_confidence: 0.6    # [REPO]
     refine_landmarks: true
+
+  # Tasks-API Face Landmarker — produces landmarks AND blendshapes in one pass.
+  # Required for the blendshape-based eyes-open check (eyeBlinkLeft/Right).
+  # Download the .task bundle once (see verify_env.py / README):
+  #   https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
+  face_landmarker:                   # [DESIGN] new in Tasks-API migration
+    model_path: "models/face_landmarker.task"   # [CONFIRM] where the bundle lives
+    min_face_presence_confidence: 0.5
+    min_tracking_confidence: 0.5
 
   face_detection:
     model_selection: 1               # [REPO]
@@ -204,6 +213,8 @@ face:
                                 # CANNOT assess the frame — setting FAIL means such files
                                 # are rejected outright. Set to "REVIEW" only if a human
                                 # will actually look.
+    tolerance:
+      label_jitter_tolerance_sec: 0.15
 
     accepted_orders:
       spec:
@@ -270,12 +281,18 @@ face:
     head_fully_visible:
       margin_px: 10                  # [REPO]
     eyes_open:
-      ear_threshold: 0.25            # [DESIGN] hard low cutoff for clearly-closed
-                                     # eyes. Repo's 0.37 sliced through natural
-                                     # open-eye EAR (video 002: open = 0.35-0.40).
-                                     # MediaPipe-landmark EAR scale differs from
-                                     # dlib literature (0.2) — CALIBRATE with a
-                                     # deliberate closed-eye clip. [CONFIRM]
+      blink_threshold: 0.5           # [DESIGN] Face Landmarker blendshape method.
+                                     # eyeBlinkLeft/Right is a trained closed-ness
+                                     # score in [0,1]; an eye is OPEN when its
+                                     # blink score < this. 0.5 is the natural
+                                     # midpoint starting point — CALIBRATE with a
+                                     # deliberate closed-eye clip, since the model
+                                     # tends to read clearly-closed eyes near ~0.9
+                                     # and open eyes near ~0.0-0.1. [CONFIRM]
+                                     # (Replaced the old EAR ratio + ear_threshold,
+                                     # which needed per-video calibration and broke
+                                     # off-frontal. EAR kept only as a fallback in
+                                     # check_eye.check_eye_status_ear.)
     head_pose:
       left_th: -0.3                  # [REPO]
       right_th: 0.3                  # [REPO]

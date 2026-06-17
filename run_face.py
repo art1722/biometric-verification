@@ -47,6 +47,8 @@ def parse_args():
                      "native fps (every frame), so the overlay is 1:1 with "
                      "the original (same length, same speed).")
     ap.add_argument("--csv", default=None, help="optional: also write rows to this CSV")
+    ap.add_argument("--detail-header-csv", default=None,
+                    help="optional: per-frame pose/geometry CSV")
     ap.add_argument("--summary", default=None,
                     help="optional: also write the summary (tally + angle range) to this text file")
     ap.add_argument("--result-csv", default=None,
@@ -105,6 +107,9 @@ def apply_default_output_paths(args, vid):
     if args.csv is None:
         args.csv = os.path.join(out_dir, f"{stem}_detail.csv")
 
+    if args.detail_header_csv is None:
+        args.detail_header_csv = os.path.join(out_dir, f"{stem}_detail_header.csv")
+
     if args.result_csv is None:
         args.result_csv = os.path.join(out_dir, f"{stem}_result.csv")
     
@@ -150,20 +155,26 @@ def print_angle(timeline):
     print(text)
     return text
 
-def print_csv(rows, args_csv=None):
+def print_csv(rows, timeline=None, args_csv=None):
+    t_by_frame = {}
+    if timeline:
+        t_by_frame = {t["frame_index"]: t["timestamp_sec"] for t in timeline}
     if args_csv:
         os.makedirs(os.path.dirname(args_csv) or ".", exist_ok=True)
         with open(args_csv, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
             w.writerow(["volunteer_id", "data_type", "filename",
-                        "check_level", "check_name", "status", "reason",
-                        "frame_index"])
+                        "frame_index", "time",
+                        "check_level", "check_name", "status", "reason"])
             for r in rows:
-                # as_tuple() already ends with frame_index — do NOT append it
-                # again (the old double-append produced an 8th unnamed column
-                # that broke pandas/Excel parsing of the detail CSV).
-                w.writerow(r.as_tuple())
+                t = t_by_frame.get(r.frame_index, "")
+                t_str = "" if t == "" or t is None else f"{t:.3f}"
+                # r.as_tuple() = (vol, dtype, fname, level, name, status, reason, frame_index)
+                vol, dtype, fname, level, name, status, reason, fidx = r.as_tuple()
+                w.writerow([vol, dtype, fname, fidx, t_str,
+                            level, name, status, reason])
         print(f"\nwrote {len(rows)} rows to {args_csv}")
+
 
 def format_duration(seconds):
     """Human-readable elapsed time: '3.4s' or '1m 05.2s' for longer runs."""
@@ -454,12 +465,34 @@ def write_summary(path, video, vid, sample_fps, tally_text, angle_text, elapsed_
         f.write(f"\n=== done in {elapsed_text} ===\n")
     print(f"wrote summary to {path}")
 
+def write_detail_header_csv(path, rows, timeline):
+    """One row per sampled frame: pose + bbox geometry (the timeline)."""
+    if rows:
+        vid, dtype, fname = rows[0].volunteer_id, rows[0].data_type, rows[0].filename
+    else:
+        vid = dtype = fname = ""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fields = ["volunteer_id", "data_type", "file_name", "frame_index",
+              "time", "label_width", "label_height", "yaw", "pitch", "roll"]
+    def fmt(v, nd=1):
+        return "" if v is None else f"{v:.{nd}f}"
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(fields)
+        for t in timeline:
+            w.writerow([
+                vid, dtype, fname, t["frame_index"],
+                fmt(t.get("timestamp_sec"), 3),
+                fmt(t.get("label_width"), 0), fmt(t.get("label_height"), 0),
+                fmt(t.get("yaw")), fmt(t.get("pitch")), fmt(t.get("roll")),
+            ])
+    print(f"wrote detail header CSV to {path}")
 
 def print_results(rows, timeline, args_csv=None):
     print_rows(rows)
     tally_text = print_name_status(rows)
     angle_text = print_angle(timeline)
-    print_csv(rows, args_csv)
+    print_csv(rows, timeline, args_csv)
     return tally_text, angle_text
 
 
@@ -486,12 +519,24 @@ def main():
     )
     apply_default_output_paths(args, vid)
 
-    # Resolve the source's native fps once: needed for overlay playback speed
-    # and for defaulting --sample-fps to "native" (every frame).
+    # Resolve the source's native fps once: needed for defaulting --sample-fps
+    # to "native" (every frame) and for computing the overlay's playback fps.
     meta = probe_video(args.video)
     native_fps = meta.fps if (meta.fps and meta.fps > 0) else None
     sample_fps = args.sample_fps            # None = native / every frame
-    overlay_fps = native_fps if native_fps else 30.0
+
+    # Overlay playback fps MUST equal the rate frames were actually sampled at,
+    # or the overlay's duration won't match the source. The overlay receives
+    # ONLY the sampled frames (one per kept source frame), so:
+    #   - sample_fps given (e.g. 5)  -> ~5*duration frames -> play at 5 fps
+    #   - sample_fps None (native)   -> every frame kept    -> play at native fps
+    # Writing those sampled frames at native fps (the old behaviour) replays a
+    # sparse stream too fast: 48s sampled at 5fps -> 240 frames / 30fps = 8s.
+    # This mirrors effective_fps inside the face_rgb pipeline so the two agree.
+    if sample_fps is not None and sample_fps > 0:
+        overlay_fps = float(sample_fps)
+    else:
+        overlay_fps = native_fps if native_fps else 30.0
 
     sample_fps_label = "native (every frame)" if sample_fps is None else sample_fps
     print(f"Running face_rgb pipeline on: {args.video}")
@@ -503,8 +548,9 @@ def main():
     overlay = None
     if args.overlay:
         from qc.utils.overlay import OverlayWriter
-        # Overlay plays at the SOURCE's native fps so its length/speed match
-        # the original, regardless of how densely we sampled.
+        # Overlay plays at the rate frames were SAMPLED (overlay_fps, resolved
+        # above), so its duration matches the source. Sparse sampling looks
+        # choppy but stays time-accurate, which is what the QC reviewer needs.
         overlay = OverlayWriter(
             args.overlay, fps=overlay_fps,
             volunteer_id=vid, filename=os.path.basename(args.video))
@@ -527,6 +573,9 @@ def main():
     elapsed = time.perf_counter() - start
 
     tally_text, angle_text = print_results(rows, timeline, args_csv=args.csv)
+
+    if args.detail_header_csv:
+        write_detail_header_csv(args.detail_header_csv, rows, timeline)
 
     if args.result_csv:
         write_result_csv(args.result_csv, args.overall_csv, rows, timeline, config=config)
