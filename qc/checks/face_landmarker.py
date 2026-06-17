@@ -131,18 +131,8 @@ def create_face_landmarker(
     FaceLandmarkerOptions = mp.tasks.vision.FaceLandmarkerOptions
     VisionRunningMode = mp.tasks.vision.RunningMode
 
-    # Load the .task bundle as BYTES and pass model_asset_buffer, NOT
-    # model_asset_path. On Windows, model_asset_path re-resolves the given path
-    # relative to MediaPipe's own site-packages dir, so an ABSOLUTE path like
-    # 'C:\proj\models\face_landmarker.task' becomes the impossible
-    # 'site-packages/C:\proj\...' and fails with errno=22 (EINVAL). Reading the
-    # bytes ourselves sidesteps MediaPipe's path handling entirely and works the
-    # same on Windows, Linux, and macOS.
-    with open(model_path, "rb") as f:
-        model_bytes = f.read()
-
     options = FaceLandmarkerOptions(
-        base_options=BaseOptions(model_asset_buffer=model_bytes),
+        base_options=BaseOptions(model_asset_path=model_path),
         running_mode=VisionRunningMode.IMAGE,
         num_faces=num_faces,
         min_face_detection_confidence=min_face_detection_confidence,

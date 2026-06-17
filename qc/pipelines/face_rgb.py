@@ -138,14 +138,7 @@ def run_face_rgb(
     min_dur = meta_cfg.get("min_duration_sec", 40)
     min_w = face_cfg.get("size", {}).get("min_head_width_px", 180)
     min_h = face_cfg.get("size", {}).get("min_head_height_px", 180)
-    
-    # New blur score is Tenengrad/Sobel after normalization, not raw Laplacian.
-    blur_th = blur_cfg.get("threshold", 35.0)
-    blur_resize_px = blur_cfg.get("resize_px", 224)
-    blur_crop_margin = blur_cfg.get("crop_margin", 0.15)
-    blur_min_luma = blur_cfg.get("min_luma", 35.0)
-    blur_min_contrast = blur_cfg.get("min_contrast", 4.0)
-    
+    blur_th = blur_cfg.get("threshold", 90)
     dark_th = bright_cfg.get("dark_threshold", 35)
     bright_th = bright_cfg.get("bright_threshold", 200)
     diff_th = bright_cfg.get("diff_threshold", 20)
@@ -357,34 +350,17 @@ def run_face_rgb(
             add("check_eyes_open", _bool_to_status(ok),
                 f"frame={sf.frame_index} {msg}", sf.frame_index)
 
-            # brightness first. If exposure is bad, blur is not a reliable
-            # independent judgment; do not double-fail the same root cause.
-            bright_ok, bright_msg = check_lightpol(
-                img, dark_th, bright_th, margin,
-                detector=face_det, input_color_space=cspace)
-            add("check_brightness", _bool_to_status(bright_ok),
-                f"frame={sf.frame_index} {bright_msg}", sf.frame_index)
+            # blur (needs image + face-detection model)
+            ok, msg = check_face_blur(
+                img, blur_th, detector=face_det, input_color_space=cspace)
+            add("check_face_blur", _bool_to_status(ok),
+                f"frame={sf.frame_index} {msg}", sf.frame_index)
 
-            if not bright_ok:
-                add("check_face_blur", "SKIP",
-                    f"frame={sf.frame_index} brightness failed; blur not judged: {bright_msg}",
-                    sf.frame_index)
-            else:
-                # Reuse the bbox from FaceLandmarker. This avoids a second face
-                # detection whose crop may disagree with the rest of the frame checks.
-                blur_ok, blur_msg = check_face_blur(
-                    img,
-                    blur_th,
-                    bbox=bbox,
-                    input_color_space=cspace,
-                    resize_px=blur_resize_px,
-                    crop_margin=blur_crop_margin,
-                    min_luma=blur_min_luma,
-                    min_contrast=blur_min_contrast,
-                )
-                blur_status = "SKIP" if blur_ok is None else _bool_to_status(blur_ok)
-                add("check_face_blur", blur_status,
-                    f"frame={sf.frame_index} {blur_msg}", sf.frame_index)
+            # brightness
+            ok, msg = check_lightpol(img, dark_th, bright_th, margin,
+                                     detector=face_det, input_color_space=cspace)
+            add("check_brightness", _bool_to_status(ok),
+                f"frame={sf.frame_index} {msg}", sf.frame_index)
 
             if overlay is not None:
                 overlay.add_frame(

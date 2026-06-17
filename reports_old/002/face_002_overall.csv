@@ -1,2 +1,0 @@
-﻿volunteer_id,data_type,filename,check_level,check_name,final_status,total,pass,fail,review,skip,reason,frames_sampled,detection_gaps,yaw_min,yaw_max,pitch_min,pitch_max
-002,face_rgb,002_face_rgb.mp4,overall,OVERALL,PASS,17,17,0,0,0,all checks passed,240,21,-80.1,76.5,-32.5,32.2
