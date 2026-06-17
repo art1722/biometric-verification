@@ -1,2 +1,0 @@
-﻿volunteer_id,data_type,filename,check_level,check_name,final_status,total,pass,fail,review,skip,reason,frames_sampled,detection_gaps,yaw_min,yaw_max,pitch_min,pitch_max
-001,face_rgb,001_face_rgb.mp4,overall,OVERALL,FAIL,18,13,5,0,0,"failed checks: check_duration, check_turn_sequence, check_turn_sequence_front_hold, check_turn_sequence_structure, check_face_size",129,0,-56.2,54.9,-55.7,53.0

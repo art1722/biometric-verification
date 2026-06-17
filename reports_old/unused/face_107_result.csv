@@ -1,9 +1,0 @@
-﻿volunteer_id,data_type,filename,check_level,check_name,final_status,total,pass,fail,review,skip,reason,frames_sampled,detection_gaps,yaw_min,yaw_max,pitch_min,pitch_max
-107,face_rgb,107_face_rgb.jpg,video,check_container,FAIL,1,0,1,0,0,extension=.jpg != .mp4,,,,,,
-107,face_rgb,107_face_rgb.jpg,video,check_duration,FAIL,1,0,1,0,0,duration=0.0 < 40,,,,,,
-107,face_rgb,107_face_rgb.jpg,video,check_fps,PASS,1,1,0,0,0,fps=25.00 >= 5,,,,,,
-107,face_rgb,107_face_rgb.jpg,video,check_resolution,PASS,1,1,0,0,0,resolution=4032x3024 >= 180x180,,,,,,
-107,face_rgb,107_face_rgb.jpg,video,frames_sampled,PASS,1,1,0,0,0,sampled 1 frames,,,,,,
-107,face_rgb,107_face_rgb.jpg,sequence,check_turn_sequence,FAIL,1,0,1,0,0,no front-facing frame anywhere; cannot validate turns,,,,,,
-107,face_rgb,107_face_rgb.jpg,frame,check_face_detected,REVIEW,1,0,0,1,0,frame=0 No faces detected [judged fail-ratio=100% (max 25%)],,,,,,
-107,face_rgb,107_face_rgb.jpg,overall,OVERALL,FAIL,7,3,3,1,0,"failed checks: check_container, check_duration, check_turn_sequence",1,1,,,,
