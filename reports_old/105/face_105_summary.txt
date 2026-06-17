@@ -1,0 +1,13 @@
+Running face_rgb pipeline on: data\105_face_rgb.mp4
+volunteer id: 105 | sample_fps: 1.0
+
+=== tally (check_name -> status x count) ===
+  check_container        FAIL    x1
+  check_duration         FAIL    x1
+  check_fps              FAIL    x1
+  check_resolution       FAIL    x1
+  frame_checks           SKIP    x1
+
+=== head-pose angles collected: 0 of 0 frames (0 detection gaps) ===
+
+=== done in 1.7s ===

@@ -1,0 +1,40 @@
+﻿volunteer_id,data_type,filename,check_level,check_name,status,reason,frame_index
+106,face_rgb,106_face_rgb.mkv,video,check_container,FAIL,extension=.mkv != .mp4,
+106,face_rgb,106_face_rgb.mkv,video,check_fps,PASS,fps=29.97 >= 5,
+106,face_rgb,106_face_rgb.mkv,video,check_duration,FAIL,duration=6.5 < 40,
+106,face_rgb,106_face_rgb.mkv,video,check_resolution,FAIL,resolution=160x160 < 180x180,
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=0 No faces detected; unexpected gap (no adjacent turn evidence),0
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=6 No faces detected; unexpected gap (no adjacent turn evidence),6
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=12 No faces detected; unexpected gap (no adjacent turn evidence),12
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=18 No faces detected; unexpected gap (no adjacent turn evidence),18
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=24 No faces detected; unexpected gap (no adjacent turn evidence),24
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=30 No faces detected; unexpected gap (no adjacent turn evidence),30
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=36 No faces detected; unexpected gap (no adjacent turn evidence),36
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=42 No faces detected; unexpected gap (no adjacent turn evidence),42
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=48 No faces detected; unexpected gap (no adjacent turn evidence),48
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=54 No faces detected; unexpected gap (no adjacent turn evidence),54
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=60 No faces detected; unexpected gap (no adjacent turn evidence),60
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=66 No faces detected; unexpected gap (no adjacent turn evidence),66
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=72 No faces detected; unexpected gap (no adjacent turn evidence),72
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=78 No faces detected; unexpected gap (no adjacent turn evidence),78
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=84 No faces detected; unexpected gap (no adjacent turn evidence),84
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=90 No faces detected; unexpected gap (no adjacent turn evidence),90
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=96 No faces detected; unexpected gap (no adjacent turn evidence),96
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=102 No faces detected; unexpected gap (no adjacent turn evidence),102
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=108 No faces detected; unexpected gap (no adjacent turn evidence),108
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=114 No faces detected; unexpected gap (no adjacent turn evidence),114
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=120 No faces detected; unexpected gap (no adjacent turn evidence),120
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=126 No faces detected; unexpected gap (no adjacent turn evidence),126
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=132 No faces detected; unexpected gap (no adjacent turn evidence),132
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=138 No faces detected; unexpected gap (no adjacent turn evidence),138
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=144 No faces detected; unexpected gap (no adjacent turn evidence),144
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=150 No faces detected; unexpected gap (no adjacent turn evidence),150
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=156 No faces detected; unexpected gap (no adjacent turn evidence),156
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=162 No faces detected; unexpected gap (no adjacent turn evidence),162
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=168 No faces detected; unexpected gap (no adjacent turn evidence),168
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=174 No faces detected; unexpected gap (no adjacent turn evidence),174
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=180 No faces detected; unexpected gap (no adjacent turn evidence),180
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=186 No faces detected; unexpected gap (no adjacent turn evidence),186
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,frame=192 No faces detected; unexpected gap (no adjacent turn evidence),192
+106,face_rgb,106_face_rgb.mkv,video,frames_sampled,PASS,sampled 33 frames,
+106,face_rgb,106_face_rgb.mkv,sequence,check_turn_sequence,FAIL,no front-facing frame anywhere; cannot validate turns,

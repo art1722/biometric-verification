@@ -1,0 +1,7 @@
+﻿volunteer_id,data_type,filename,check_level,check_name,final_status,total,pass,fail,review,skip,reason,frames_sampled,detection_gaps,yaw_min,yaw_max,pitch_min,pitch_max
+105,face_rgb,105_face_rgb.mp4,video,check_container,FAIL,1,0,1,0,0,unreadable: OpenCV could not open video,,,,,,
+105,face_rgb,105_face_rgb.mp4,video,check_duration,FAIL,1,0,1,0,0,duration unknown (cannot verify against spec),,,,,,
+105,face_rgb,105_face_rgb.mp4,video,check_fps,FAIL,1,0,1,0,0,fps unknown (cannot verify against spec),,,,,,
+105,face_rgb,105_face_rgb.mp4,video,check_resolution,FAIL,1,0,1,0,0,resolution unknown (cannot verify against spec),,,,,,
+105,face_rgb,105_face_rgb.mp4,video,frame_checks,SKIP,1,0,0,0,1,video unreadable; frame checks skipped,,,,,,
+105,face_rgb,105_face_rgb.mp4,overall,OVERALL,FAIL,5,0,4,0,1,"failed checks: check_container, check_duration, check_fps, check_resolution",0,0,,,,

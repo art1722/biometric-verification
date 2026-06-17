@@ -339,19 +339,47 @@ class OverlayWriter:
 
 
 def _shorten_reason(reason: Optional[str]) -> str:
-    """Pull the measured value out of a check reason for compact display.
+    """Make CSV/debug reasons human-readable for the video overlay.
 
-    Reasons look like 'frame=60 blur variance=49.1 < 90'. The 'frame=NNN'
-    prefix is redundant (the header already shows it), so strip it and keep
-    the informative tail.
+    Keep detailed values in CSV, but avoid showing technical fields like
+    luma/contrast/method/bbox on the overlay.
     """
     if not reason:
         return ""
+
     r = reason
-    # drop a leading 'frame=NNN ' token if present
+
+    # Drop leading "frame=NNN " because the overlay header already shows frame.
     if r.startswith("frame="):
         sp = r.find(" ")
         if sp != -1:
             r = r[sp + 1:]
-    # keep it short enough for the panel
+
+    # Blur reason from check_face_blur.py:
+    # "sharpness=67.2 threshold=35.0; luma=107.6; contrast=37.9; method=..."
+    if r.startswith("sharpness=") and "threshold=" in r:
+        try:
+            sharp_txt = r.split("sharpness=", 1)[1].split()[0]
+            th_txt = r.split("threshold=", 1)[1].split(";", 1)[0].strip()
+
+            sharp = float(sharp_txt)
+            th = float(th_txt)
+            ratio = sharp / th if th > 0 else 0.0
+            
+            op = ">=" if sharp >= th else "<"
+            return f"sharpness {sharp:.1f} {op} {th:.1f}"
+
+        except Exception:
+            # Fallback: keep only "sharpness=... threshold=..."
+            return r.split(";", 1)[0]
+
+    # Blur SKIP caused by brightness failure.
+    if r.startswith("brightness failed; blur not judged"):
+        return "not judged: brightness failed"
+
+    # Blur SKIP caused by blur checker guards.
+    if r.startswith("blur not judged:"):
+        return r.replace("blur not judged:", "not judged:", 1)[:46]
+
+    # Default behavior for other checks.
     return r[:46]

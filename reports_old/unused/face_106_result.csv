@@ -1,0 +1,9 @@
+﻿volunteer_id,data_type,filename,check_level,check_name,final_status,total,pass,fail,review,skip,reason,frames_sampled,detection_gaps,yaw_min,yaw_max,pitch_min,pitch_max
+106,face_rgb,106_face_rgb.mkv,video,check_container,FAIL,1,0,1,0,0,extension=.mkv != .mp4,,,,,,
+106,face_rgb,106_face_rgb.mkv,video,check_duration,FAIL,1,0,1,0,0,duration=6.5 < 40,,,,,,
+106,face_rgb,106_face_rgb.mkv,video,check_fps,PASS,1,1,0,0,0,fps=29.97 >= 5,,,,,,
+106,face_rgb,106_face_rgb.mkv,video,check_resolution,FAIL,1,0,1,0,0,resolution=160x160 < 180x180,,,,,,
+106,face_rgb,106_face_rgb.mkv,video,frames_sampled,PASS,1,1,0,0,0,sampled 33 frames,,,,,,
+106,face_rgb,106_face_rgb.mkv,sequence,check_turn_sequence,FAIL,1,0,1,0,0,no front-facing frame anywhere; cannot validate turns,,,,,,
+106,face_rgb,106_face_rgb.mkv,frame,check_face_detected,FAIL,33,0,33,0,0,frame=0 No faces detected; unexpected gap (no adjacent turn evidence) [judged fail-ratio=100% (max 25%)],,,,,,
+106,face_rgb,106_face_rgb.mkv,overall,OVERALL,FAIL,7,2,5,0,0,"failed checks: check_container, check_duration, check_resolution, check_turn_sequence, check_face_detected",33,33,,,,
