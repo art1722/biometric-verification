@@ -1,0 +1,6 @@
+﻿volunteer_id,data_type,filename,check_level,check_name,status,reason,frame_index
+105,face_rgb,105_face_rgb.mp4,video,check_container,FAIL,unreadable: OpenCV could not open video,
+105,face_rgb,105_face_rgb.mp4,video,check_fps,FAIL,fps unknown (cannot verify against spec),
+105,face_rgb,105_face_rgb.mp4,video,check_duration,FAIL,duration unknown (cannot verify against spec),
+105,face_rgb,105_face_rgb.mp4,video,check_resolution,FAIL,resolution unknown (cannot verify against spec),
+105,face_rgb,105_face_rgb.mp4,video,frame_checks,SKIP,video unreadable; frame checks skipped,

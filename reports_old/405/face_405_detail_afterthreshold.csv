@@ -1,0 +1,267 @@
+﻿volunteer_id,data_type,filename,check_level,check_name,status,reason,frame_index
+405,face_rgb,405_face_rgb.mp4,video,check_container,PASS,"container ok (.mp4, 3 channels, codec=h264)",
+405,face_rgb,405_face_rgb.mp4,video,check_fps,PASS,fps=30.00 >= 5,
+405,face_rgb,405_face_rgb.mp4,video,check_duration,PASS,duration=44.0 >= 40,
+405,face_rgb,405_face_rgb.mp4,video,check_resolution,PASS,resolution=3840x2160 >= 180x180,
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=0 face ok,0
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=0 Head is fully visible,0
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=0 face=628x700 >= 180x180,0
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=0 eyes open (L=0.37, R=0.37 > 0.25)",0
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=0 blur variance=1.3 < 90,0
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=0 brightness=49 status=normal,0
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=30 face ok,30
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=30 Head is fully visible,30
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=30 face=648x728 >= 180x180,30
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=30 eyes open (L=0.36, R=0.37 > 0.25)",30
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=30 blur variance=2.1 < 90,30
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=30 brightness=50 status=normal,30
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=60 face ok,60
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=60 Head is fully visible,60
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=60 face=627x744 >= 180x180,60
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=60 eyes open (L=0.38, R=0.37 > 0.25)",60
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=60 blur variance=2.0 < 90,60
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=60 brightness=50 status=normal,60
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=90 face ok,90
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=90 Head is fully visible,90
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=90 face=612x703 >= 180x180,90
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=90 eyes open (L=0.36, R=0.37 > 0.25)",90
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=90 blur variance=2.2 < 90,90
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=90 brightness=50 status=normal,90
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=120 face ok,120
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=120 Head is fully visible,120
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=120 face=615x723 >= 180x180,120
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=120 eyes open (L=0.37, R=0.38 > 0.25)",120
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=120 blur variance=2.3 < 90,120
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=120 brightness=49 status=normal,120
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=150 face ok,150
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=150 Head is fully visible,150
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=150 face=619x722 >= 180x180,150
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=150 eyes open (L=0.36, R=0.37 > 0.25)",150
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=150 blur variance=2.2 < 90,150
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=150 brightness=50 status=normal,150
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=180 face ok,180
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=180 Head is fully visible,180
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=180 non-frontal (label=left); not judged,180
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=180 non-frontal (label=left); not judged,180
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=180 non-frontal (label=left); not judged,180
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=180 non-frontal (label=left); not judged,180
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=210 face ok,210
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=210 Head is fully visible,210
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=210 non-frontal (label=left); not judged,210
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=210 non-frontal (label=left); not judged,210
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=210 non-frontal (label=left); not judged,210
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=210 non-frontal (label=left); not judged,210
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=240 face ok,240
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=240 Head is fully visible,240
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=240 non-frontal (label=left); not judged,240
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=240 non-frontal (label=left); not judged,240
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=240 non-frontal (label=left); not judged,240
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=240 non-frontal (label=left); not judged,240
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=270 face ok,270
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=270 Head is fully visible,270
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=270 non-frontal (label=left); not judged,270
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=270 non-frontal (label=left); not judged,270
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=270 non-frontal (label=left); not judged,270
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=270 non-frontal (label=left); not judged,270
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=300 face ok,300
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=300 Head is fully visible,300
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=300 non-frontal (label=left); not judged,300
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=300 non-frontal (label=left); not judged,300
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=300 non-frontal (label=left); not judged,300
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=300 non-frontal (label=left); not judged,300
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=330 face ok,330
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=330 Head is fully visible,330
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=330 non-frontal (label=left); not judged,330
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=330 non-frontal (label=left); not judged,330
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=330 non-frontal (label=left); not judged,330
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=330 non-frontal (label=left); not judged,330
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=360 face ok,360
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=360 Head is fully visible,360
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=360 face=638x741 >= 180x180,360
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=360 eyes open (L=0.36, R=0.39 > 0.25)",360
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=360 blur variance=2.0 < 90,360
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=360 brightness=48 status=normal,360
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=390 face ok,390
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=390 Head is fully visible,390
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=390 face=641x757 >= 180x180,390
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=390 eyes open (L=0.36, R=0.38 > 0.25)",390
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=390 blur variance=2.7 < 90,390
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=390 brightness=49 status=normal,390
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=420 face ok,420
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=420 Head is fully visible,420
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=420 face=643x765 >= 180x180,420
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=420 eyes open (L=0.37, R=0.38 > 0.25)",420
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=420 blur variance=2.7 < 90,420
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=420 brightness=49 status=normal,420
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=450 face ok,450
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=450 Head is fully visible,450
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=450 non-frontal (label=mid); not judged,450
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=450 non-frontal (label=mid); not judged,450
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=450 non-frontal (label=mid); not judged,450
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=450 non-frontal (label=mid); not judged,450
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=480 face ok,480
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=480 Head is fully visible,480
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=480 non-frontal (label=right); not judged,480
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=480 non-frontal (label=right); not judged,480
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=480 non-frontal (label=right); not judged,480
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=480 non-frontal (label=right); not judged,480
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=510 face ok,510
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=510 Head is fully visible,510
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=510 non-frontal (label=right); not judged,510
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=510 non-frontal (label=right); not judged,510
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=510 non-frontal (label=right); not judged,510
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=510 non-frontal (label=right); not judged,510
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=540 face ok,540
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=540 Head is fully visible,540
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=540 non-frontal (label=right); not judged,540
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=540 non-frontal (label=right); not judged,540
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=540 non-frontal (label=right); not judged,540
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=540 non-frontal (label=right); not judged,540
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=570 face ok,570
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=570 Head is fully visible,570
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=570 non-frontal (label=right); not judged,570
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=570 non-frontal (label=right); not judged,570
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=570 non-frontal (label=right); not judged,570
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=570 non-frontal (label=right); not judged,570
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=600 face ok,600
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=600 Head is fully visible,600
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=600 face=642x753 >= 180x180,600
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=600 eyes open (L=0.37, R=0.37 > 0.25)",600
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=600 blur variance=2.2 < 90,600
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=600 brightness=48 status=normal,600
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=630 face ok,630
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=630 Head is fully visible,630
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=630 face=650x763 >= 180x180,630
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=630 eyes open (L=0.38, R=0.38 > 0.25)",630
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=630 blur variance=2.6 < 90,630
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=630 brightness=49 status=normal,630
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=660 face ok,660
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=660 Head is fully visible,660
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=660 face=643x763 >= 180x180,660
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=660 eyes open (L=0.38, R=0.37 > 0.25)",660
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=660 blur variance=2.6 < 90,660
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=660 brightness=50 status=normal,660
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=690 face ok,690
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=690 Head is fully visible,690
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=690 face=636x741 >= 180x180,690
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=690 eyes open (L=0.38, R=0.37 > 0.25)",690
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=690 blur variance=2.6 < 90,690
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=690 brightness=50 status=normal,690
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=720 face ok,720
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=720 Head is fully visible,720
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=720 non-frontal (label=up); not judged,720
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=720 non-frontal (label=up); not judged,720
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=720 non-frontal (label=up); not judged,720
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=720 non-frontal (label=up); not judged,720
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=750 face ok,750
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=750 Head is fully visible,750
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=750 non-frontal (label=up); not judged,750
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=750 non-frontal (label=up); not judged,750
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=750 non-frontal (label=up); not judged,750
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=750 non-frontal (label=up); not judged,750
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=780 face ok,780
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=780 Head is fully visible,780
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=780 non-frontal (label=up); not judged,780
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=780 non-frontal (label=up); not judged,780
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=780 non-frontal (label=up); not judged,780
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=780 non-frontal (label=up); not judged,780
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=810 face ok,810
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=810 Head is fully visible,810
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=810 non-frontal (label=up); not judged,810
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=810 non-frontal (label=up); not judged,810
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=810 non-frontal (label=up); not judged,810
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=810 non-frontal (label=up); not judged,810
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=840 face ok,840
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=840 Head is fully visible,840
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=840 face=648x771 >= 180x180,840
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=840 eyes open (L=0.37, R=0.38 > 0.25)",840
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=840 blur variance=2.2 < 90,840
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=840 brightness=49 status=normal,840
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=870 face ok,870
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=870 Head is fully visible,870
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=870 face=640x770 >= 180x180,870
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=870 eyes open (L=0.35, R=0.37 > 0.25)",870
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=870 blur variance=2.6 < 90,870
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=870 brightness=50 status=normal,870
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=900 face ok,900
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=900 Head is fully visible,900
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=900 face=639x762 >= 180x180,900
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=900 eyes open (L=0.35, R=0.36 > 0.25)",900
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=900 blur variance=2.6 < 90,900
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=900 brightness=50 status=normal,900
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=930 face ok,930
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=930 Head is fully visible,930
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=930 face=645x769 >= 180x180,930
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=930 eyes open (L=0.37, R=0.39 > 0.25)",930
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=930 blur variance=2.8 < 90,930
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=930 brightness=49 status=normal,930
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=960 face ok,960
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=960 Head is fully visible,960
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=960 face=641x761 >= 180x180,960
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=960 eyes open (L=0.35, R=0.37 > 0.25)",960
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=960 blur variance=2.1 < 90,960
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=960 brightness=49 status=normal,960
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=990 face ok,990
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=990 Head is fully visible,990
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=990 non-frontal (label=down); not judged,990
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=990 non-frontal (label=down); not judged,990
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=990 non-frontal (label=down); not judged,990
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=990 non-frontal (label=down); not judged,990
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=1020 face ok,1020
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=1020 Head is fully visible,1020
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=1020 non-frontal (label=down); not judged,1020
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=1020 non-frontal (label=down); not judged,1020
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=1020 non-frontal (label=down); not judged,1020
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=1020 non-frontal (label=down); not judged,1020
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=1050 face ok,1050
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=1050 Head is fully visible,1050
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=1050 non-frontal (label=down); not judged,1050
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=1050 non-frontal (label=down); not judged,1050
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=1050 non-frontal (label=down); not judged,1050
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=1050 non-frontal (label=down); not judged,1050
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=1080 face ok,1080
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=1080 Head is fully visible,1080
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=1080 non-frontal (label=down); not judged,1080
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=1080 non-frontal (label=down); not judged,1080
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=1080 non-frontal (label=down); not judged,1080
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=1080 non-frontal (label=down); not judged,1080
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=1110 face ok,1110
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=1110 Head is fully visible,1110
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=1110 face=643x771 >= 180x180,1110
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=1110 eyes open (L=0.38, R=0.39 > 0.25)",1110
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=1110 blur variance=2.4 < 90,1110
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=1110 brightness=49 status=normal,1110
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=1140 face ok,1140
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=1140 Head is fully visible,1140
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=1140 face=632x758 >= 180x180,1140
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=1140 eyes open (L=0.37, R=0.38 > 0.25)",1140
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=1140 blur variance=2.9 < 90,1140
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=1140 brightness=49 status=normal,1140
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=1170 face ok,1170
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=1170 Head is fully visible,1170
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=1170 face=632x756 >= 180x180,1170
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=1170 eyes open (L=0.37, R=0.38 > 0.25)",1170
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=1170 blur variance=2.7 < 90,1170
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=1170 brightness=49 status=normal,1170
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=1200 face ok,1200
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=1200 Head is fully visible,1200
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,PASS,frame=1200 face=642x756 >= 180x180,1200
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,PASS,"frame=1200 eyes open (L=0.37, R=0.36 > 0.25)",1200
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,FAIL,frame=1200 blur variance=1.6 < 90,1200
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,PASS,frame=1200 brightness=49 status=normal,1200
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,PASS,frame=1230 face ok,1230
+405,face_rgb,405_face_rgb.mp4,frame,check_head_fully,PASS,frame=1230 Head is fully visible,1230
+405,face_rgb,405_face_rgb.mp4,frame,check_face_size,SKIP,frame=1230 non-frontal (label=down); not judged,1230
+405,face_rgb,405_face_rgb.mp4,frame,check_eyes_open,SKIP,frame=1230 non-frontal (label=down); not judged,1230
+405,face_rgb,405_face_rgb.mp4,frame,check_face_blur,SKIP,frame=1230 non-frontal (label=down); not judged,1230
+405,face_rgb,405_face_rgb.mp4,frame,check_brightness,SKIP,frame=1230 non-frontal (label=down); not judged,1230
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,SKIP,frame=1260 No faces detected; expected gap (peak of down turn),1260
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,SKIP,frame=1290 No faces detected; expected gap (peak of down turn),1290
+405,face_rgb,405_face_rgb.mp4,frame,check_face_detected,SKIP,frame=1319 No faces detected; expected gap (peak of down turn),1319
+405,face_rgb,405_face_rgb.mp4,video,frames_sampled,PASS,sampled 45 frames,
+405,face_rgb,405_face_rgb.mp4,sequence,check_turn_sequence_structure,FAIL,observed: front -> left -> front -> right -> front -> up -> front -> down -> front -> down; matches no accepted order,
+405,face_rgb,405_face_rgb.mp4,sequence,check_turn_sequence_left,PASS,left: present as a segment,
+405,face_rgb,405_face_rgb.mp4,sequence,check_turn_sequence_right,PASS,right: present as a segment,
+405,face_rgb,405_face_rgb.mp4,sequence,check_turn_sequence_down,PASS,down: present as a segment,
+405,face_rgb,405_face_rgb.mp4,sequence,check_turn_sequence_up,PASS,up: present as a segment,
+405,face_rgb,405_face_rgb.mp4,sequence,check_turn_sequence,FAIL,"structure mismatch; present=['left', 'right', 'down', 'up']; missing=none; short_holds=0; unconfirmed_gap=False",

@@ -1,0 +1,377 @@
+{
+  "summary": {
+    "volunteers": 15,
+    "complete": 1,
+    "incomplete": 14,
+    "unrecognised_file_count": 6
+  },
+  "volunteers": [
+    {
+      "volunteer": "001",
+      "status": "INCOMPLETE",
+      "missing": [
+        "palm_L_N",
+        "palm_L_RL",
+        "palm_L_RR",
+        "palm_L_PU",
+        "palm_L_PD",
+        "palm_R_N",
+        "palm_R_RL",
+        "palm_R_RR",
+        "palm_R_PU",
+        "palm_R_PD",
+        "walk_F",
+        "walk_S"
+      ],
+      "duplicates": [],
+      "found_count": 5
+    },
+    {
+      "volunteer": "002",
+      "status": "INCOMPLETE",
+      "missing": [
+        "face_depth",
+        "face_ir1",
+        "face_ir2",
+        "face_thermal",
+        "palm_L_N",
+        "palm_L_RL",
+        "palm_L_RR",
+        "palm_L_PU",
+        "palm_L_PD",
+        "palm_R_N",
+        "palm_R_RL",
+        "palm_R_RR",
+        "palm_R_PU",
+        "palm_R_PD",
+        "walk_F",
+        "walk_S"
+      ],
+      "duplicates": [],
+      "found_count": 1
+    },
+    {
+      "volunteer": "003",
+      "status": "INCOMPLETE",
+      "missing": [
+        "face_depth",
+        "face_ir1",
+        "face_ir2",
+        "face_thermal",
+        "palm_L_N",
+        "palm_L_RL",
+        "palm_L_RR",
+        "palm_L_PU",
+        "palm_L_PD",
+        "palm_R_N",
+        "palm_R_RL",
+        "palm_R_RR",
+        "palm_R_PU",
+        "palm_R_PD",
+        "walk_F",
+        "walk_S"
+      ],
+      "duplicates": [],
+      "found_count": 1
+    },
+    {
+      "volunteer": "004",
+      "status": "INCOMPLETE",
+      "missing": [
+        "face_depth",
+        "face_ir1",
+        "face_ir2",
+        "face_thermal",
+        "palm_L_N",
+        "palm_L_RL",
+        "palm_L_RR",
+        "palm_L_PU",
+        "palm_L_PD",
+        "palm_R_N",
+        "palm_R_RL",
+        "palm_R_RR",
+        "palm_R_PU",
+        "palm_R_PD",
+        "walk_F",
+        "walk_S"
+      ],
+      "duplicates": [],
+      "found_count": 1
+    },
+    {
+      "volunteer": "101",
+      "status": "INCOMPLETE",
+      "missing": [
+        "face_depth",
+        "face_ir1",
+        "face_ir2",
+        "face_thermal",
+        "palm_L_N",
+        "palm_L_RL",
+        "palm_L_RR",
+        "palm_L_PU",
+        "palm_L_PD",
+        "palm_R_N",
+        "palm_R_RL",
+        "palm_R_RR",
+        "palm_R_PU",
+        "palm_R_PD",
+        "walk_F",
+        "walk_S"
+      ],
+      "duplicates": [],
+      "found_count": 1
+    },
+    {
+      "volunteer": "103",
+      "status": "INCOMPLETE",
+      "missing": [
+        "face_depth",
+        "face_ir1",
+        "face_ir2",
+        "face_thermal",
+        "palm_L_N",
+        "palm_L_RL",
+        "palm_L_RR",
+        "palm_L_PU",
+        "palm_L_PD",
+        "palm_R_N",
+        "palm_R_RL",
+        "palm_R_RR",
+        "palm_R_PU",
+        "palm_R_PD",
+        "walk_F",
+        "walk_S"
+      ],
+      "duplicates": [],
+      "found_count": 1
+    },
+    {
+      "volunteer": "105",
+      "status": "INCOMPLETE",
+      "missing": [
+        "face_depth",
+        "face_ir1",
+        "face_ir2",
+        "face_thermal",
+        "palm_L_N",
+        "palm_L_RL",
+        "palm_L_RR",
+        "palm_L_PU",
+        "palm_L_PD",
+        "palm_R_N",
+        "palm_R_RL",
+        "palm_R_RR",
+        "palm_R_PU",
+        "palm_R_PD",
+        "walk_F",
+        "walk_S"
+      ],
+      "duplicates": [],
+      "found_count": 1
+    },
+    {
+      "volunteer": "107",
+      "status": "INCOMPLETE",
+      "missing": [
+        "face_rgb",
+        "face_depth",
+        "face_ir1",
+        "face_ir2",
+        "face_thermal",
+        "palm_L_N",
+        "palm_L_RL",
+        "palm_L_RR",
+        "palm_L_PU",
+        "palm_L_PD",
+        "palm_R_N",
+        "palm_R_RL",
+        "palm_R_RR",
+        "palm_R_PU",
+        "palm_R_PD",
+        "walk_F",
+        "walk_S"
+      ],
+      "duplicates": [],
+      "found_count": 0
+    },
+    {
+      "volunteer": "201",
+      "status": "INCOMPLETE",
+      "missing": [
+        "face_depth",
+        "face_ir1",
+        "face_ir2",
+        "face_thermal",
+        "palm_L_N",
+        "palm_L_RL",
+        "palm_L_RR",
+        "palm_L_PU",
+        "palm_L_PD",
+        "palm_R_N",
+        "palm_R_RL",
+        "palm_R_RR",
+        "palm_R_PU",
+        "palm_R_PD",
+        "walk_F",
+        "walk_S"
+      ],
+      "duplicates": [],
+      "found_count": 1
+    },
+    {
+      "volunteer": "205",
+      "status": "INCOMPLETE",
+      "missing": [
+        "face_depth",
+        "face_ir1",
+        "face_ir2",
+        "face_thermal",
+        "palm_L_N",
+        "palm_L_RL",
+        "palm_L_RR",
+        "palm_L_PU",
+        "palm_L_PD",
+        "palm_R_N",
+        "palm_R_RL",
+        "palm_R_RR",
+        "palm_R_PU",
+        "palm_R_PD",
+        "walk_F",
+        "walk_S"
+      ],
+      "duplicates": [],
+      "found_count": 1
+    },
+    {
+      "volunteer": "208",
+      "status": "INCOMPLETE",
+      "missing": [
+        "face_depth",
+        "face_ir1",
+        "face_ir2",
+        "face_thermal",
+        "palm_L_N",
+        "palm_L_RL",
+        "palm_L_RR",
+        "palm_L_PU",
+        "palm_L_PD",
+        "palm_R_N",
+        "palm_R_RL",
+        "palm_R_RR",
+        "palm_R_PU",
+        "palm_R_PD",
+        "walk_F",
+        "walk_S"
+      ],
+      "duplicates": [],
+      "found_count": 1
+    },
+    {
+      "volunteer": "211",
+      "status": "INCOMPLETE",
+      "missing": [
+        "face_depth",
+        "face_ir1",
+        "face_ir2",
+        "face_thermal",
+        "palm_L_N",
+        "palm_L_RL",
+        "palm_L_RR",
+        "palm_L_PU",
+        "palm_L_PD",
+        "palm_R_N",
+        "palm_R_RL",
+        "palm_R_RR",
+        "palm_R_PU",
+        "palm_R_PD",
+        "walk_F",
+        "walk_S"
+      ],
+      "duplicates": [],
+      "found_count": 1
+    },
+    {
+      "volunteer": "30032",
+      "status": "COMPLETE",
+      "missing": [],
+      "duplicates": [],
+      "found_count": 17
+    },
+    {
+      "volunteer": "405",
+      "status": "INCOMPLETE",
+      "missing": [
+        "face_depth",
+        "face_ir1",
+        "face_ir2",
+        "face_thermal",
+        "palm_L_N",
+        "palm_L_RL",
+        "palm_L_RR",
+        "palm_L_PU",
+        "palm_L_PD",
+        "palm_R_N",
+        "palm_R_RL",
+        "palm_R_RR",
+        "palm_R_PU",
+        "palm_R_PD",
+        "walk_F",
+        "walk_S"
+      ],
+      "duplicates": [],
+      "found_count": 1
+    },
+    {
+      "volunteer": "56789",
+      "status": "INCOMPLETE",
+      "missing": [
+        "face_rgb",
+        "face_depth",
+        "face_ir1",
+        "face_ir2",
+        "face_thermal",
+        "palm_L_N",
+        "palm_L_RL",
+        "palm_L_RR",
+        "palm_L_PU",
+        "palm_L_PD",
+        "palm_R_N",
+        "palm_R_RL",
+        "palm_R_RR",
+        "palm_R_PU",
+        "palm_R_PD",
+        "walk_F",
+        "walk_S"
+      ],
+      "duplicates": [],
+      "found_count": 0
+    }
+  ],
+  "unrecognised_files": [
+    {
+      "volunteer_guess": "002",
+      "path": "data\\002_face_rgb_flipped.mp4"
+    },
+    {
+      "volunteer_guess": "002",
+      "path": "data\\002_face_rgb_lowfps.mp4"
+    },
+    {
+      "volunteer_guess": "107",
+      "path": "data\\107_face_rgb.jpg"
+    },
+    {
+      "volunteer_guess": "56789",
+      "path": "data\\56789_face_RGB.mp4"
+    },
+    {
+      "volunteer_guess": "",
+      "path": "data\\_face_rgb.mp4"
+    },
+    {
+      "volunteer_guess": "",
+      "path": "data\\strange,'.mp4"
+    }
+  ]
+}

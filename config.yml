@@ -213,9 +213,6 @@ face:
                                 # CANNOT assess the frame — setting FAIL means such files
                                 # are rejected outright. Set to "REVIEW" only if a human
                                 # will actually look.
-    tolerance:
-      label_jitter_tolerance_sec: 0.15
-
     accepted_orders:
       spec:
         - "front"
@@ -252,6 +249,7 @@ face:
       min_detected_step_ratio: 0.6    # [DESIGN] guess - fraction of states seen
       front_zone_yaw_deg: 15          # [DESIGN] guess - calibrate vs opening front hold
       front_zone_pitch_deg: 15        # [DESIGN] guess - calibrate vs opening front hold
+      label_jitter_tolerance_sec: 0.15
 
   checks:
     detection:                       # [DESIGN] 2026-06: expected/unexpected gap split.
@@ -272,7 +270,11 @@ face:
     face_size:
       threshold_px: 180              # [SPEC], not repo 150
     blur:
-      threshold: 90                  # [REPO]
+      threshold: 50.0                # [DESIGN] Tenengrad/Sobel after CLAHE, not old Laplacian=90
+      resize_px: 224                 # [DESIGN] fixed crop size makes scores less face-size dependent
+      crop_margin: 0.15              # [DESIGN] inner face crop; reduces hair/background edge bias
+      min_luma: 35.0                 # [DESIGN] below this, blur is SKIP; brightness owns the FAIL
+      min_contrast: 4.0              # [DESIGN] below this, blur is SKIP; insufficient edge evidence
     brightness:
       dark_threshold: 35             # [REPO]
       bright_threshold: 200          # [REPO]

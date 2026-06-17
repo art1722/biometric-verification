@@ -1,0 +1,8 @@
+﻿volunteer_id,data_type,filename,check_level,check_name,status,reason,frame_index
+107,face_rgb,107_face_rgb.jpg,video,check_container,FAIL,extension=.jpg != .mp4,
+107,face_rgb,107_face_rgb.jpg,video,check_fps,PASS,fps=25.00 >= 5,
+107,face_rgb,107_face_rgb.jpg,video,check_duration,FAIL,duration=0.0 < 40,
+107,face_rgb,107_face_rgb.jpg,video,check_resolution,PASS,resolution=4032x3024 >= 180x180,
+107,face_rgb,107_face_rgb.jpg,frame,check_face_detected,REVIEW,frame=0 No faces detected,0
+107,face_rgb,107_face_rgb.jpg,video,frames_sampled,PASS,sampled 1 frames,
+107,face_rgb,107_face_rgb.jpg,sequence,check_turn_sequence,FAIL,no front-facing frame anywhere; cannot validate turns,

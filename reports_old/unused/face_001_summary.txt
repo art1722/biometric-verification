@@ -1,0 +1,35 @@
+Running face_rgb pipeline on: data\001_face_rgb.mp4
+volunteer id: 001 | sample_fps: 5.0
+
+=== tally (check_name -> status x count) ===
+  check_brightness       PASS    x80
+  check_brightness       SKIP    x49
+  check_container        PASS    x1
+  check_duration         FAIL    x1
+  check_eyes_open        PASS    x80
+  check_eyes_open        SKIP    x49
+  check_face_blur        FAIL    x1
+  check_face_blur        PASS    x79
+  check_face_blur        SKIP    x49
+  check_face_detected    PASS    x129
+  check_face_size        FAIL    x79
+  check_face_size        PASS    x1
+  check_face_size        SKIP    x49
+  check_fps              PASS    x1
+  check_head_fully       PASS    x129
+  check_resolution       PASS    x1
+  check_turn_sequence    REVIEW  x1
+  check_turn_sequence_down PASS    x1
+  check_turn_sequence_front_hold REVIEW  x3
+  check_turn_sequence_left PASS    x1
+  check_turn_sequence_right PASS    x1
+  check_turn_sequence_structure REVIEW  x1
+  check_turn_sequence_up PASS    x1
+  frames_sampled         PASS    x1
+
+=== head-pose angles collected: 129 of 129 frames (0 detection gaps) ===
+  yaw   range: -56.5 .. +54.9
+  pitch range: -55.7 .. +52.6
+  (a real turn video should show yaw swinging negative->positive as the head turns left->right, and pitch swinging as it looks down->up)
+
+=== done in 4.5s ===
