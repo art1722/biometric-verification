@@ -20,16 +20,68 @@ Run:
 """
 import argparse
 import glob
+import json
 import os
 import sys
 
 import pandas as pd
 import streamlit as st
+import altair as alt
+import yaml
 
 STATUS_COLORS = {
-    "PASS": "#2E7D5B", "FAIL": "#C0392B",
-    "SKIP": "#B08D2E", "REVIEW": "#7A5AA0", "ERROR": "#5A6473",
+    "PASS": "#2E7D5B",
+    "FAIL": "#C0392B",
+    "SKIP": "#B08D2E",
+    "REVIEW": "#7A5AA0",
+    "ERROR": "#5A6473",
+
+    # filename validation statuses
+    "COMPLETE": "#2E7D5B",
+    "INCOMPLETE": "#C0392B",
+    "UNRECOGNISED": "#C0392B",
+    "NO_REPORT": "#5A6473",
 }
+
+REPORT_CHECK_ORDER = {
+    # 1) Video/file-level checks
+    "check_container": 10,
+    "check_fps": 20,
+    "check_duration": 30,
+    "check_resolution": 40,
+    "frames_sampled": 50,
+    "frame_checks": 60,
+
+    # 2) Face evidence / landmark availability
+    "check_face_detected": 100,
+    "check_head_fully": 110,
+
+    # 3) Frontal-frame quality checks
+    "check_face_size": 200,
+    "check_eyes_open": 210,
+    "check_brightness": 220,
+    "check_face_blur": 230,
+
+    # 4) Turn-protocol checks
+    "check_turn_left": 300,
+    "check_turn_right": 310,
+    "check_turn_down": 320,
+    "check_turn_up": 330,
+    "check_turn_sequence": 340,
+}
+
+
+def ordered_checks(*status_maps):
+    """Return check names in the same researcher-facing order as result CSV."""
+    checks = set()
+    for m in status_maps:
+        checks |= set(m)
+
+    return sorted(
+        checks,
+        key=lambda c: (REPORT_CHECK_ORDER.get(c, 9999), c),
+    )
+    
 
 
 def parse_cli():
@@ -64,6 +116,116 @@ def load_csv(path):
         return None
     return pd.read_csv(path, dtype={"volunteer_id": str})
 
+@st.cache_data(show_spinner=False)
+def load_config(config_path="config.yml"):
+    """Load config.yml for dashboard-only visualization settings."""
+    if not os.path.exists(config_path):
+        return {}
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+def render_pose_threshold_chart(df, *, x_col, y_col, title, threshold, height=260):
+    """Render one pose axis with positive/negative turn threshold lines.
+
+    Uses turn threshold only:
+    - yaw: +/- side_yaw_tolerance_deg
+    - pitch: +/- tilt_pitch_tolerance_deg
+
+    Does not plot roll.
+    """
+    if x_col not in df.columns or y_col not in df.columns:
+        st.info(f"No {y_col} data available.")
+        return
+
+    plot = df[[x_col, y_col]].copy()
+    plot[x_col] = pd.to_numeric(plot[x_col], errors="coerce")
+    plot[y_col] = pd.to_numeric(plot[y_col], errors="coerce")
+    plot = plot.dropna(subset=[x_col, y_col])
+
+    if plot.empty:
+        st.info(f"No valid {y_col} values to plot.")
+        return
+
+    # Keep threshold domain visible even if the measured values are small.
+    y_abs = max(
+        float(plot[y_col].abs().max()),
+        float(abs(threshold)),
+    )
+    y_limit = max(10.0, y_abs * 1.15)
+
+    line = (
+        alt.Chart(plot)
+        .mark_line()
+        .encode(
+            x=alt.X(f"{x_col}:Q", title=x_col),
+            y=alt.Y(
+                f"{y_col}:Q",
+                title=f"{y_col} (deg)",
+                scale=alt.Scale(domain=[-y_limit, y_limit]),
+            ),
+            tooltip=[
+                alt.Tooltip(f"{x_col}:Q", title=x_col),
+                alt.Tooltip(f"{y_col}:Q", title=f"{y_col}°", format=".1f"),
+            ],
+        )
+    )
+
+    threshold_df = pd.DataFrame({
+        y_col: [threshold, -threshold],
+        "label": [
+            f"+turn threshold ({threshold:g}°)",
+            f"-turn threshold ({threshold:g}°)",
+        ],
+    })
+
+    rules = (
+        alt.Chart(threshold_df)
+        .mark_rule(strokeDash=[6, 4])
+        .encode(
+            y=f"{y_col}:Q",
+            tooltip=[
+                alt.Tooltip("label:N", title="threshold"),
+                alt.Tooltip(f"{y_col}:Q", title="value", format=".1f"),
+            ],
+        )
+    )
+
+    labels = (
+        alt.Chart(threshold_df)
+        .mark_text(
+            align="left",
+            dx=6,
+            dy=-6,
+        )
+        .encode(
+            x=alt.value(5),
+            y=f"{y_col}:Q",
+            text="label:N",
+        )
+    )
+
+    chart = (
+        (line + rules + labels)
+        .properties(title=title, height=height)
+        .interactive()
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
+def get_turn_thresholds(config):
+    """Return turn-floor thresholds, not front-zone thresholds."""
+    tol = (
+        config.get("face", {})
+        .get("turn_sequence", {})
+        .get("tolerance", {})
+        or {}
+    )
+
+    yaw_turn = float(tol.get("side_yaw_tolerance_deg", 30))
+    pitch_turn = float(tol.get("tilt_pitch_tolerance_deg", 15))
+
+    return yaw_turn, pitch_turn
 
 def load_volunteer(reports_dir, vid):
     return {
@@ -72,6 +234,179 @@ def load_volunteer(reports_dir, vid):
         "detail": load_csv(_find(reports_dir, vid, "_detail")),
         "header": load_csv(_find(reports_dir, vid, "_detail_header")),
     }
+    
+@st.cache_data(show_spinner=False)
+def load_filename_report(reports_dir):
+    """Load validate_filenames.py output from reports/filenames.json or CSV.
+
+    Prefer JSON because missing/duplicates are preserved as lists.
+    Fall back to CSV if JSON is absent.
+    """
+    json_path = os.path.join(reports_dir, "filenames.json")
+    csv_path = os.path.join(reports_dir, "filenames.csv")
+
+    if os.path.exists(json_path):
+        with open(json_path, "r", encoding="utf-8") as f:
+            return {"kind": "json", "data": json.load(f)}
+
+    if os.path.exists(csv_path):
+        return {
+            "kind": "csv",
+            "data": pd.read_csv(csv_path, dtype={"volunteer": str}),
+        }
+
+    return None
+
+
+def filename_issues_for_volunteer(reports_dir, vid):
+    """Return filename-completeness issues for one volunteer."""
+    report = load_filename_report(reports_dir)
+
+    empty = {
+        "status": "NO_REPORT",
+        "missing": [],
+        "duplicates": [],
+        "unrecognised": [],
+        "found_count": "",
+    }
+
+    if report is None:
+        return empty
+
+    if report["kind"] == "json":
+        data = report["data"]
+
+        volunteers = data.get("volunteers", [])
+        item = next(
+            (v for v in volunteers if str(v.get("volunteer", "")) == str(vid)),
+            None,
+        )
+
+        unrecognised = [
+            u.get("path", "")
+            for u in data.get("unrecognised_files", [])
+            if str(u.get("volunteer_guess", "")) == str(vid)
+        ]
+
+        if item is None:
+            if unrecognised:
+                return {
+                    "status": "INCOMPLETE",
+                    "missing": [],
+                    "duplicates": [],
+                    "unrecognised": unrecognised,
+                    "found_count": "",
+                }
+            return empty
+
+        return {
+            "status": item.get("status", "INCOMPLETE"),
+            "missing": item.get("missing", []) or [],
+            "duplicates": item.get("duplicates", []) or [],
+            "unrecognised": unrecognised,
+            "found_count": item.get("found_count", ""),
+        }
+
+    # CSV fallback: long/tidy format
+    df = report["data"]
+    if df is None or df.empty or "volunteer" not in df.columns:
+        return empty
+
+    d = df[df["volunteer"].astype(str).eq(str(vid))].copy()
+    if d.empty:
+        return empty
+
+    for c in ["status", "issue_type", "item", "path"]:
+        if c in d.columns:
+            d[c] = d[c].fillna("").astype(str)
+
+    missing = d.loc[d["issue_type"].eq("missing"), "item"].tolist()
+    duplicate_rows = d[d["issue_type"].eq("duplicate")]
+    unrecognised = d.loc[d["issue_type"].eq("unrecognised"), "path"].tolist()
+
+    duplicates = []
+    if not duplicate_rows.empty:
+        for item, g in duplicate_rows.groupby("item"):
+            duplicates.append({
+                "item": item,
+                "paths": g["path"].tolist(),
+            })
+
+    status = "COMPLETE"
+    if missing or duplicates or unrecognised:
+        status = "INCOMPLETE"
+
+    return {
+        "status": status,
+        "missing": missing,
+        "duplicates": duplicates,
+        "unrecognised": unrecognised,
+        "found_count": "",
+    }
+
+
+def render_filename_summary(reports_dir, vid, compact=False):
+    """Render filename validation result for the selected volunteer."""
+    info = filename_issues_for_volunteer(reports_dir, vid)
+    status = info["status"]
+
+    st.markdown(
+        f"**Volunteer file delivery** &nbsp; {status_pill(status)}",
+        unsafe_allow_html=True,
+    )
+
+    if status == "NO_REPORT":
+        st.caption(
+            "No filename validation report found. "
+            "Run `python validate_filenames.py data --out reports/filenames.csv`."
+        )
+        return
+
+    missing = info["missing"]
+    duplicates = info["duplicates"]
+    unrecognised = info["unrecognised"]
+
+    if not missing and not duplicates and not unrecognised:
+        found = info.get("found_count", "")
+        suffix = f" Found files: {found}." if found != "" else ""
+        st.caption("All required files are present; no duplicates or unrecognised files." + suffix)
+        return
+
+    if missing:
+        st.error("Missing files: " + ", ".join(f"`{m}`" for m in missing))
+
+    if duplicates:
+        dup_names = [d.get("item", "") for d in duplicates]
+        st.warning("Duplicate items: " + ", ".join(f"`{d}`" for d in dup_names))
+
+    if unrecognised:
+        st.warning(f"Unrecognised files attributed to this volunteer: {len(unrecognised)}")
+
+    if not compact:
+        with st.expander("Filename issue details"):
+            if duplicates:
+                st.markdown("**Duplicates**")
+                for d in duplicates:
+                    st.write(d.get("item", ""))
+                    for p in d.get("paths", []):
+                        st.code(p)
+
+            if unrecognised:
+                st.markdown("**Unrecognised files**")
+                for p in unrecognised:
+                    st.code(p)
+
+def render_face_qc_summary(status, reason):
+    """Render the per-face-rgb QC result separately from file delivery."""
+    st.markdown(
+        f"**Face RGB QC** &nbsp; {status_pill(status)}",
+        unsafe_allow_html=True,
+    )
+
+    if reason:
+        st.caption(reason)
+    else:
+        st.caption("No face RGB QC reason available.")
 
 
 def status_pill(status):
@@ -97,9 +432,16 @@ def render_single(reports_dir, vid):
         st.warning(f"No overall result found for {vid}.")
         return
 
-    st.markdown(f"### Volunteer {vid} &nbsp; {status_pill(status)}",
-                unsafe_allow_html=True)
-    st.caption(reason or "")
+    st.markdown(f"### Volunteer {vid}", unsafe_allow_html=True)
+    render_filename_summary(reports_dir, vid)
+
+    st.markdown("")
+    render_face_qc_summary(status, reason)
+
+    st.divider()
+    
+    st.subheader("Face RGB Result")
+
 
     # quick facts from the overall row
     c1, c2, c3, c4 = st.columns(4)
@@ -124,17 +466,40 @@ def render_single(reports_dir, vid):
 
     # pose timeline
     hdr = data["header"]
-    if hdr is not None and not hdr.empty and "yaw" in hdr.columns:
+    if hdr is not None and not hdr.empty and {"yaw", "pitch"}.issubset(hdr.columns):
         st.subheader("Head pose over time")
-        st.caption("yaw swings left↔right, pitch swings down↔up as the head "
-                   "turns through the protocol.")
+        st.caption(
+            "Yaw and pitch are shown separately. Dashed lines are turn thresholds "
+            "from config.yml, not front-zone thresholds."
+        )
+
+        cfg = load_config("config.yml")
+        yaw_turn_th, pitch_turn_th = get_turn_thresholds(cfg)
+
         plot = hdr.copy()
-        for c in ["time", "yaw", "pitch", "roll"]:
+        for c in ["time", "frame_index", "yaw", "pitch"]:
             if c in plot.columns:
                 plot[c] = pd.to_numeric(plot[c], errors="coerce")
+
         idx = "time" if "time" in plot.columns else "frame_index"
-        pose_cols = [c for c in ["yaw", "pitch", "roll"] if c in plot.columns]
-        st.line_chart(plot.set_index(idx)[pose_cols], height=300)
+
+        render_pose_threshold_chart(
+            plot,
+            x_col=idx,
+            y_col="yaw",
+            title="Yaw over time",
+            threshold=yaw_turn_th,
+            height=260,
+        )
+
+        render_pose_threshold_chart(
+            plot,
+            x_col=idx,
+            y_col="pitch",
+            title="Pitch over time",
+            threshold=pitch_turn_th,
+            height=260,
+        )
 
     # raw detail (collapsed)
     det = data["detail"]
@@ -143,12 +508,21 @@ def render_single(reports_dir, vid):
             st.dataframe(det, use_container_width=True, hide_index=True)
 
 
-def _style_status(df, col):
-    """Color the status cell green/red/amber."""
+def _style_status(df, cols):
+    """Color one or more status columns."""
+    if isinstance(cols, str):
+        cols = [cols]
+
+    existing_cols = [c for c in cols if c in df.columns]
+
     def color(v):
         c = STATUS_COLORS.get(str(v).upper())
         return f"background-color:{c};color:#fff" if c else ""
-    return df.style.map(color, subset=[col])
+
+    if not existing_cols:
+        return df
+
+    return df.style.map(color, subset=existing_cols)
 
 
 def render_compare(reports_dir, a, b):
@@ -157,10 +531,18 @@ def render_compare(reports_dir, a, b):
     sb, rb, ob = overall_verdict(db)
 
     h1, h2 = st.columns(2)
-    h1.markdown(f"### {a} &nbsp; {status_pill(sa)}", unsafe_allow_html=True)
-    h1.caption(ra or "")
-    h2.markdown(f"### {b} &nbsp; {status_pill(sb)}", unsafe_allow_html=True)
-    h2.caption(rb or "")
+    h1.markdown(f"### {a}", unsafe_allow_html=True)
+    with h1:
+        render_filename_summary(reports_dir, a, compact=True)
+        st.markdown("")
+        render_face_qc_summary(sa, ra)
+
+    h2.markdown(f"### {b}", unsafe_allow_html=True)
+    with h2:
+        render_filename_summary(reports_dir, b, compact=True)
+        st.markdown("")
+        render_face_qc_summary(sb, rb)
+
 
     # side-by-side quick facts
     st.subheader("Summary")
@@ -180,15 +562,23 @@ def render_compare(reports_dir, a, b):
                "rows. ✓ = same verdict, ✗ = differs.")
     ca = _result_status_map(da["result"])
     cb = _result_status_map(db["result"])
-    all_checks = sorted(set(ca) | set(cb))
+
     rows = []
-    for chk in all_checks:
+    for chk in ordered_checks(ca, cb):
         va, vb = ca.get(chk, "—"), cb.get(chk, "—")
-        rows.append({"check": chk, a: va, b: vb,
-                     "same?": "✓" if va == vb else "✗"})
+        rows.append({
+            "check": chk,
+            a: va,
+            b: vb,
+            "same?": "✓" if va == vb else "✗",
+        })
+
     cmp_df = pd.DataFrame(rows)
-    st.dataframe(_style_status(_style_status(cmp_df, a), b),
-                 use_container_width=True, hide_index=True)
+    st.dataframe(
+        _style_status(cmp_df, [a, b]),
+        use_container_width=True,
+        hide_index=True,
+    )
 
     differing = cmp_df[cmp_df["same?"] == "✗"]
     if not differing.empty:
@@ -200,7 +590,11 @@ def render_compare(reports_dir, a, b):
     # overlaid pose ranges
     st.subheader("Pose range")
     ha, hb = da["header"], db["header"]
-    if ha is not None and hb is not None and "yaw" in ha.columns:
+    if (
+        ha is not None and hb is not None
+        and {"yaw", "pitch"}.issubset(ha.columns)
+        and {"yaw", "pitch"}.issubset(hb.columns)
+    ):
         def span(h, c):
             v = pd.to_numeric(h[c], errors="coerce")
             return v.max() - v.min()
@@ -223,11 +617,11 @@ def _result_status_map(res):
 
 def main():
     args = parse_cli()
-    st.set_page_config(page_title="QC Inspector", page_icon="🔎", layout="wide")
+    st.set_page_config(page_title="การตรวจสอบข้อมูลชีวมิติ", page_icon="🔎", layout="wide")
     st.markdown("<style>.block-container{max-width:1250px;padding-top:2rem}</style>",
                 unsafe_allow_html=True)
 
-    st.title("QC Inspector")
+    st.title("การตรวจสอบข้อมูลชีวมิติ")
     st.caption(f"Reading per-volunteer results from `{args.reports}/`")
 
     if not os.path.isdir(args.reports):
