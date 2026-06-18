@@ -588,22 +588,22 @@ def render_compare(reports_dir, a, b):
         st.success("Both volunteers have identical check verdicts.")
 
     # overlaid pose ranges
-    st.subheader("Pose range")
-    ha, hb = da["header"], db["header"]
-    if (
-        ha is not None and hb is not None
-        and {"yaw", "pitch"}.issubset(ha.columns)
-        and {"yaw", "pitch"}.issubset(hb.columns)
-    ):
-        def span(h, c):
-            v = pd.to_numeric(h[c], errors="coerce")
-            return v.max() - v.min()
-        span_df = pd.DataFrame({
-            "axis": ["yaw range", "pitch range"],
-            a: [span(ha, "yaw"), span(ha, "pitch")],
-            b: [span(hb, "yaw"), span(hb, "pitch")],
-        }).set_index("axis")
-        st.bar_chart(span_df, height=260)
+    # st.subheader("Pose range")
+    # ha, hb = da["header"], db["header"]
+    # if (
+    #     ha is not None and hb is not None
+    #     and {"yaw", "pitch"}.issubset(ha.columns)
+    #     and {"yaw", "pitch"}.issubset(hb.columns)
+    # ):
+    #     def span(h, c):
+    #         v = pd.to_numeric(h[c], errors="coerce")
+    #         return v.max() - v.min()
+    #     span_df = pd.DataFrame({
+    #         "axis": ["yaw range", "pitch range"],
+    #         a: [span(ha, "yaw"), span(ha, "pitch")],
+    #         b: [span(hb, "yaw"), span(hb, "pitch")],
+    #     }).set_index("axis")
+    #     st.bar_chart(span_df, height=260)
 
 
 def _result_status_map(res):
@@ -617,11 +617,11 @@ def _result_status_map(res):
 
 def main():
     args = parse_cli()
-    st.set_page_config(page_title="การตรวจสอบข้อมูลชีวมิติ", page_icon="🔎", layout="wide")
+    st.set_page_config(page_title="Biometric verification", page_icon="", layout="wide")
     st.markdown("<style>.block-container{max-width:1250px;padding-top:2rem}</style>",
                 unsafe_allow_html=True)
 
-    st.title("การตรวจสอบข้อมูลชีวมิติ")
+    st.title("Biometric verification")
     st.caption(f"Reading per-volunteer results from `{args.reports}/`")
 
     if not os.path.isdir(args.reports):
