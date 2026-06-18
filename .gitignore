@@ -28,6 +28,7 @@ organized/
 # Generated reports
 reports/
 reports_old/
+reports_old2/
 
 # Large media files, in case they appear outside data folders
 *.mp4

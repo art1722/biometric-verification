@@ -244,7 +244,7 @@ class OverlayWriter:
             pose_line = f"label={label or 'no-face'}"
         header_lines.append(pose_line)
 
-        h_thick = max(0.5, int(round(1.25 * s)))
+        h_thick = max(1, int(round(1.25 * s)))
         h_w = max(cv2.getTextSize(t, _FONT, fs_head, h_thick)[0][0]
                   for t in header_lines)
         hpad = int(10 * s)
@@ -277,7 +277,7 @@ class OverlayWriter:
         if not checks:
             return
         fs = 0.85 * s                       # check-line font scale
-        thick = max(0.5, int(round(1.25 * s)))
+        thick = max(1, int(round(1.25 * s)))
         line_h = int(34 * s)                # row height
         pad = int(12 * s)
         names = sorted(checks.keys())
