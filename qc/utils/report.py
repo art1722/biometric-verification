@@ -21,6 +21,45 @@ import os
 STATUS_PRIORITY = {"SKIP": 0, "PASS": 1, "REVIEW": 2, "FAIL": 3}
 LEVEL_ORDER = {"video": 0, "sequence": 1, "frame": 2}
 
+REPORT_CHECK_ORDER = {
+    # 1) Video/file-level checks
+    "check_container": 10,
+    "check_fps": 20,
+    "check_duration": 30,
+    "check_resolution": 40,
+    "frames_sampled": 50,
+    "frame_checks": 60,
+
+    # 2) Face evidence / landmark availability
+    "check_face_detected": 100,
+    "check_head_fully": 110,
+
+    # 3) Frontal-frame quality checks
+    "check_face_size": 200,
+    "check_eyes_open": 210,
+    "check_brightness": 220,
+    "check_face_blur": 230,
+
+    # 4) Turn-protocol checks
+    "check_turn_left": 300,
+    "check_turn_right": 310,
+    "check_turn_down": 320,
+    "check_turn_up": 330,
+    "check_turn_sequence": 340,
+}
+
+
+def report_sort_key(check_name, level):
+    """Stable researcher-facing order for result CSV rows.
+
+    Known checks follow the real QC flow.
+    Unknown checks fall back to level + check name so future checks still show.
+    """
+    if check_name in REPORT_CHECK_ORDER:
+        return (0, REPORT_CHECK_ORDER[check_name])
+
+    return (1, LEVEL_ORDER.get(level, 99), check_name)
+
 
 def worst_status(statuses):
     statuses = [s for s in statuses if s]
@@ -64,7 +103,7 @@ def summarize_rows_by_check(rows, aggregation_cfg=None):
     def sort_key(item):
         check_name, group = item
         level = getattr(group[0], "level", "frame")
-        return (LEVEL_ORDER.get(level, 99), check_name)
+        return report_sort_key(check_name, level)
 
     for check_name, group in sorted(grouped.items(), key=sort_key):
         counts = Counter(r.status for r in group)

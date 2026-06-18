@@ -248,118 +248,283 @@ def _build_segments(labels, timeline, *, config=None, sample_fps=1.0):
 
 
 def check_turn_sequence_seg(timeline, config, *, sample_fps=1.0, emit_row=None):
+    """Return only 5 researcher-facing turn rows:
+
+    - check_turn_left
+    - check_turn_right
+    - check_turn_down
+    - check_turn_up
+    - check_turn_sequence
+
+    Direction rows merge detection + hold duration.
+    Sequence row checks the scripted order/structure.
+    """
+
+    sample_fps = float(sample_fps or 1.0)
+    if sample_fps <= 0:
+        sample_fps = 1.0
+
     th = TurnThresholds.from_config(config)
-    ts_cfg = config.get("face", {}).get("turn_sequence", {})
-    order_policy = ts_cfg.get("order_policy", "REVIEW")
-    short_hold_policy = ts_cfg.get("short_hold_policy", "REVIEW")
-    unconfirmed_gap_policy = ts_cfg.get("unconfirmed_gap_policy", "REVIEW")
+    ts_cfg = config.get("face", {}).get("turn_sequence", {}) or {}
+
+    order_policy = str(ts_cfg.get("order_policy", "FAIL")).upper()
+    short_hold_policy = str(ts_cfg.get("short_hold_policy", "FAIL")).upper()
+    unconfirmed_gap_policy = str(
+        ts_cfg.get("unconfirmed_gap_policy", "REVIEW")
+    ).upper()
+
     accepted_orders = ts_cfg.get("accepted_orders", {}) or {}
+    hold_seconds_cfg = ts_cfg.get("hold_seconds", {}) or {}
 
     if emit_row is None:
         def emit_row(check_name, status, reason, frame_index=None):
-            return CheckRow("", "face_rgb", "", check_name, status, reason, frame_index)
+            return CheckRow(
+                "",
+                "face_rgb",
+                "",
+                check_name,
+                status,
+                reason,
+                frame_index,
+            )
 
-    rows = []
-    labels = [classify_frame(e, th) for e in timeline]
+    def hold_seconds(key, default_sec=2.0):
+        return float(hold_seconds_cfg.get(key, default_sec))
 
-    if FRONT not in labels:
-        rows.append(emit_row(CHECK, "FAIL",
-                             "no front-facing frame anywhere; cannot validate turns"))
-        return rows
+    def sec_from_frames(n_frames):
+        return n_frames / sample_fps
 
-    segs = _build_segments(labels, timeline, config=config, sample_fps=sample_fps)
+    def fmt_sec(seconds):
+        return f"{seconds:.1f}s"
 
-    # Drop too-short HOLD segments (turns/fronts shorter than their minimum).
-    # Keep them recorded as short_holds for the report.
-    kept = []
-    short_holds = []
-    for (label, s, e, nfr) in segs:
-        if label in DIRECTIONS:
-            need = _hold_frames(config, label, sample_fps)
-        elif label == FRONT:
-            # front holds: use front_between_movements as the generic minimum
-            need = _hold_frames(config, "front_between_movements", sample_fps)
-        else:
-            need = 1  # GAP / mid: no hold minimum
-        if nfr >= need:
-            kept.append((label, s, e, nfr))
-        else:
-            short_holds.append((label, nfr, need))
-
-    # The structural sequence = kept segment labels, dropping 'mid' noise.
-    structure = [lab for (lab, _s, _e, _n) in kept if lab != NEUTRALish]
-
-    # Report any unconfirmable GAP segments (Phase 1 cannot positively confirm).
-    gap_segs = [(s, e) for (lab, s, e, _n) in kept if lab == GAP]
-    has_unconfirmed_gap = False
-    for (s, e) in gap_segs:
-        if confirm_gap_turn(timeline, s, e) is None:
-            has_unconfirmed_gap = True
-
-    # Compare structure against accepted orders (exact match on the turn spine).
     def spine(seq):
-        # the meaningful structure: collapse consecutive duplicate 'front's,
-        # keep turns; compare turn order AND that fronts separate them.
+        """Collapse consecutive duplicate labels but preserve front separators."""
         out = []
         for x in seq:
             if not out or out[-1] != x:
                 out.append(x)
         return out
+    
+    def find_contiguous_subsequence(haystack, needle):
+        """Return (start, end_exclusive) if needle appears contiguously in haystack.
 
-    got_spine = spine([x for x in structure if x in (FRONT,) + DIRECTIONS])
-    match_name = None
-    for name, seq in accepted_orders.items():
-        if spine(seq) == got_spine:
-            match_name = name
-            break
+        Example:
+            haystack = [right, front, left, front, right, front, up, front, down, front]
+            needle   = [front, left, front, right, front, up, front, down, front]
 
-    # Emit a structural summary row.
-    rows.append(emit_row(f"{CHECK}_structure", "PASS" if match_name else order_policy,
-                         f"observed: {' -> '.join(got_spine) or 'none'}"
-                         + (f" (matches '{match_name}')" if match_name else
-                            "; matches no accepted order")))
+        returns:
+            (1, 10)
 
-    # Short-hold reporting.
-    # If the final structure already matches an accepted order, these short holds
-    # are treated as jitter/blips, not real failed holds.
-    if not match_name:
-        for (label, nfr, need) in short_holds:
-            if label in DIRECTIONS or label == FRONT:
-                rows.append(emit_row(
-                    f"{CHECK}_{label}_hold",
-                    short_hold_policy,
-                    f"{label} held {nfr} frame(s) < {need} (too short)"
+        Extra labels before or after the accepted sequence are allowed.
+        Extra labels inside the accepted sequence are not allowed.
+        """
+        if not needle:
+            return None
+
+        n = len(needle)
+        if len(haystack) < n:
+            return None
+
+        for start in range(0, len(haystack) - n + 1):
+            if haystack[start:start + n] == needle:
+                return start, start + n
+
+        return None
+
+    rows = []
+
+    labels = [classify_frame(e, th) for e in timeline]
+
+    # Always emit the same 5 rows, even when the video is unusable.
+    if FRONT not in labels:
+        for d in DIRECTIONS:
+            rows.append(emit_row(
+                f"check_turn_{d}",
+                "FAIL",
+                f"{d} turn cannot be validated; no front-facing frame found",
             ))
 
-    # Presence cross-check: which directions appear in the kept structure.
-    present = [d for d in DIRECTIONS if d in structure]
-    missing = [d for d in DIRECTIONS if d not in structure]
-    for d in missing:
-        rows.append(emit_row(f"{CHECK}_{d}", "FAIL", f"{d}: not present in segments"))
-    for d in present:
-        rows.append(emit_row(f"{CHECK}_{d}", "PASS", f"{d}: present as a segment"))
+        rows.append(emit_row(
+            CHECK,
+            "FAIL",
+            "no front-facing frame anywhere; cannot validate turn sequence",
+        ))
+        return rows
 
-    # Overall verdict — explicit precedence, worst failure mode wins.
-    #   1. A missing direction is an unambiguous defect           -> FAIL
-    #      (unless an unconfirmed gap might hide it -> defer to REVIEW below).
-    #   2. Order mismatch                                         -> order_policy
-    #   3. Short hold (turn not held long enough)                 -> short_hold_policy
-    #   4. Unconfirmed gap (Phase 1 can't positively confirm)     -> REVIEW
-    #   5. Everything matched                                     -> PASS
-    if missing and not has_unconfirmed_gap:
-        overall = "FAIL"
-    elif not match_name:
-        overall = order_policy
-    elif short_holds and not match_name:
-        overall = short_hold_policy
+    segs = _build_segments(
+        labels,
+        timeline,
+        config=config,
+        sample_fps=sample_fps,
+    )
+
+    # Split segments into:
+    # - valid hold segments
+    # - detected-but-too-short segments
+    kept = []
+    short_holds = []
+
+    for label, s, e, nfr in segs:
+        if label in DIRECTIONS:
+            need = _hold_frames(config, label, sample_fps)
+        elif label == FRONT:
+            # Keep existing behavior: all front holds use the generic
+            # front-between-movements minimum.
+            need = _hold_frames(config, "front_between_movements", sample_fps)
+        else:
+            # GAP / mid / unknown labels do not have hold requirements.
+            need = 1
+
+        if nfr >= need:
+            kept.append((label, s, e, nfr, need))
+        else:
+            short_holds.append((label, s, e, nfr, need))
+
+    # ------------------------------------------------------------------
+    # 1) Direction rows: detection + hold duration merged into one row.
+    # ------------------------------------------------------------------
+    for d in DIRECTIONS:
+        valid_turns = [
+            (s, e, nfr, need)
+            for label, s, e, nfr, need in kept
+            if label == d
+        ]
+
+        short_turns = [
+            (s, e, nfr, need)
+            for label, s, e, nfr, need in short_holds
+            if label == d
+        ]
+
+        if valid_turns:
+            # Report the longest valid hold for readability.
+            s, e, nfr, need = max(valid_turns, key=lambda x: x[2])
+            got_sec = sec_from_frames(nfr)
+            need_sec = hold_seconds(d, 2.0)
+
+            rows.append(emit_row(
+                f"check_turn_{d}",
+                "PASS",
+                (
+                    f"{d} detected; "
+                    f"hold={fmt_sec(got_sec)} >= {fmt_sec(need_sec)}"
+                ),
+            ))
+
+        elif short_turns:
+            # Direction happened, but the hold was too short.
+            s, e, nfr, need = max(short_turns, key=lambda x: x[2])
+            got_sec = sec_from_frames(nfr)
+            need_sec = hold_seconds(d, 2.0)
+
+            rows.append(emit_row(
+                f"check_turn_{d}",
+                short_hold_policy,
+                (
+                    f"{d} detected but hold too short: "
+                    f"{fmt_sec(got_sec)} < {fmt_sec(need_sec)}"
+                ),
+            ))
+
+        else:
+            rows.append(emit_row(
+                f"check_turn_{d}",
+                "FAIL",
+                f"{d} turn not detected",
+            ))
+
+    # ------------------------------------------------------------------
+    # 2) Sequence row: order/structure only.
+    #
+    # Direction short-hold failures are already reported in direction rows,
+    # so direction labels are allowed to count for sequence order even when
+    # their hold is too short.
+    #
+    # Front short-hold problems still affect sequence, because there is no
+    # separate researcher-facing "check_front_hold" row.
+    # ------------------------------------------------------------------
+    order_labels = []
+    front_short_holds = []
+
+    for label, s, e, nfr in segs:
+        if label in DIRECTIONS:
+            # Count direction evidence for order even if the hold is short.
+            order_labels.append(label)
+
+        elif label == FRONT:
+            need = _hold_frames(config, "front_between_movements", sample_fps)
+            if nfr >= need:
+                order_labels.append(label)
+
+        elif label == GAP:
+            # GAP is handled separately below.
+            continue
+
+        elif label == NEUTRALish:
+            # Transition noise; not part of the protocol spine.
+            continue
+
+    got_spine = spine([
+        x for x in order_labels
+        if x in (FRONT,) + DIRECTIONS
+    ])
+
+    match_name = None
+    match_span = None
+    matched_spine = None
+
+    for name, seq in accepted_orders.items():
+        accepted_spine = spine(seq)
+        span = find_contiguous_subsequence(got_spine, accepted_spine)
+
+        if span is not None:
+            match_name = name
+            match_span = span
+            matched_spine = accepted_spine
+            break
+
+    # Unabsorbed GAP segments are still a protocol uncertainty.
+    gap_segs = [(s, e) for (label, s, e, _nfr) in segs if label == GAP]
+    has_unconfirmed_gap = False
+
+    for s, e in gap_segs:
+        if confirm_gap_turn(timeline, s, e) is None:
+            has_unconfirmed_gap = True
+            break
+
+    observed = " -> ".join(got_spine) if got_spine else "none"
+
+    if not match_name:
+        seq_status = order_policy
+        seq_reason = (
+            f"sequence order mismatch; observed: {observed}; "
+            "accepted sequence not found inside observed sequence"
+        )
+
     elif has_unconfirmed_gap:
-        overall = unconfirmed_gap_policy
+        start, end = match_span
+        matched = " -> ".join(matched_spine)
+
+        seq_status = unconfirmed_gap_policy
+        seq_reason = (
+            f"accepted sequence found: '{match_name}' "
+            f"at observed window {start}:{end}; "
+            f"matched: {matched}; "
+            "but contains an unconfirmed gap"
+        )
+
     else:
-        overall = "PASS"
-    rows.append(emit_row(CHECK, overall,
-                         f"structure {'ok' if match_name else 'mismatch'}; "
-                         f"present={present or 'none'}; "
-                         f"missing={missing or 'none'}; "
-                         f"short_holds={len(short_holds)}; "
-                         f"unconfirmed_gap={has_unconfirmed_gap}"))
+        start, end = match_span
+        matched = " -> ".join(matched_spine)
+
+        seq_status = "PASS"
+        seq_reason = (
+            f"accepted sequence found: '{match_name}' "
+            f"at observed window {start}:{end}; "
+            f"matched: {matched}; "
+            f"observed: {observed}"
+        )
+
+    rows.append(emit_row(CHECK, seq_status, seq_reason))
+
     return rows
