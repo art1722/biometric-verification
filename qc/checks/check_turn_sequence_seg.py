@@ -270,7 +270,7 @@ def check_turn_sequence_seg(timeline, config, *, sample_fps=1.0, emit_row=None):
     order_policy = str(ts_cfg.get("order_policy", "FAIL")).upper()
     short_hold_policy = str(ts_cfg.get("short_hold_policy", "FAIL")).upper()
     unconfirmed_gap_policy = str(
-        ts_cfg.get("unconfirmed_gap_policy", "REVIEW")
+        ts_cfg.get("unconfirmed_gap_policy", "FAIL")
     ).upper()
 
     accepted_orders = ts_cfg.get("accepted_orders", {}) or {}
