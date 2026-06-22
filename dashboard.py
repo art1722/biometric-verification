@@ -312,11 +312,26 @@ def render_metric_threshold_chart(
     pad = max(1.0, (y_hi - y_lo) * 0.1)
     domain = [y_lo - pad, y_hi + pad]
 
+    # Pin the x-domain to the data range. The dashed threshold rule has no x
+    # encoding, so under .interactive() its unbounded x-extent would otherwise
+    # stretch the axis past the data. A small pad keeps end samples off the edge.
+    x_vals = plot[x_col].dropna()
+    x_min = float(x_vals.min())
+    x_max = float(x_vals.max())
+    x_pad = max(0.5, (x_max - x_min) * 0.02)
+    x_domain = [x_min - x_pad, x_max + x_pad]
+
+    def _x(**kw):
+        return alt.X(
+            f"{x_col}:Q", title=x_col,
+            scale=alt.Scale(domain=x_domain, nice=False), **kw,
+        )
+
     line = (
         alt.Chart(plot)
         .mark_line()
         .encode(
-            x=alt.X(f"{x_col}:Q", title=x_col),
+            x=_x(),
             y=alt.Y(
                 f"{y_col}:Q",
                 title=y_label,
@@ -341,7 +356,7 @@ def render_metric_threshold_chart(
         alt.Chart(isolated)
         .mark_point(size=18, filled=True, opacity=1.0)
         .encode(
-            x=alt.X(f"{x_col}:Q"),
+            x=_x(),
             y=alt.Y(f"{y_col}:Q", scale=alt.Scale(domain=domain)),
             color=alt.value(line_color),
             tooltip=[
@@ -430,11 +445,26 @@ def render_eyes_chart(
     # Blink score is bounded [0,1]; keep the cutoff visible with headroom.
     y_hi = max(1.0, float(long["blink"].max() or 0), float(threshold)) * 1.05
 
+    # Pin the x-domain to the actual data range. Without this, the dashed
+    # threshold rule (which has no x encoding, so its x-extent is unbounded)
+    # unions with the data under .interactive() and stretches the axis far past
+    # the data (e.g. -10..75 for 0..48s of frames). A small pad keeps the first
+    # and last samples off the very edge.
+    x_min = float(long[x_col].min())
+    x_max = float(long[x_col].max())
+    x_pad = max(0.5, (x_max - x_min) * 0.02)
+    x_domain = [x_min - x_pad, x_max + x_pad]
+    x_enc = alt.X(
+        f"{x_col}:Q",
+        title=x_col,
+        scale=alt.Scale(domain=x_domain, nice=False),
+    )
+
     line = (
         alt.Chart(long)
         .mark_line()
         .encode(
-            x=alt.X(f"{x_col}:Q", title=x_col),
+            x=x_enc,
             y=alt.Y(
                 "blink:Q",
                 title="blink score (high = closed)",
@@ -451,7 +481,7 @@ def render_eyes_chart(
 
     threshold_df = pd.DataFrame({
         "_cut": [float(threshold)],
-        "label": [f"closed cutoff ({threshold:g})"],
+        "label": [f"closed cutoff > {threshold:g}"],
     })
 
     rules = (
