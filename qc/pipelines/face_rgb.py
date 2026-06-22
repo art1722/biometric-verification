@@ -255,8 +255,12 @@ def run_face_rgb(
 
     try:
         # Native sampling (sample_fps=None) must keep every frame so the overlay
-        # is a true 1:1 copy -> disable the 600-frame cap. Down-sampling keeps it.
-        _max_frames = None if sample_fps is None else 600
+        # is a true 1:1 copy -> disable the cap. Down-sampling keeps it. The cap
+        # is read from config.video.max_frames (default 6000); it only triggers
+        # for unusually long videos, and when it does the downsample is now an
+        # even stride (no gaps). Set config.video.max_frames to null to disable.
+        _cap = config.get("video", {}).get("max_frames", 6000)
+        _max_frames = None if sample_fps is None else _cap
         for sf in iter_sampled_frames(path, sample_fps=sample_fps,
                                       max_frames=_max_frames):
             frames_seen += 1

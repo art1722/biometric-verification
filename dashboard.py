@@ -141,11 +141,21 @@ def render_pose_threshold_chart(df, *, x_col, y_col, title, threshold, height=26
     plot = df[[x_col, y_col]].copy()
     plot[x_col] = pd.to_numeric(plot[x_col], errors="coerce")
     plot[y_col] = pd.to_numeric(plot[y_col], errors="coerce")
-    plot = plot.dropna(subset=[x_col, y_col])
 
-    if plot.empty:
+    # Drop rows that cannot be placed on the time axis (bad x), but KEEP rows
+    # whose y is NaN — those are no-face frames. Removing them would make the
+    # line bridge straight across the gap, which falsely reads as "face was
+    # detected and the pose stayed constant". By keeping the NaN y, Altair
+    # breaks the line at the gap instead. The gap itself is then made explicit
+    # with the gray no-face markers below.
+    plot = plot.dropna(subset=[x_col])
+
+    if plot.empty or plot[y_col].notna().sum() == 0:
         st.info(f"No valid {y_col} values to plot.")
         return
+
+    # No-face frames: x is valid but y (yaw/pitch) is missing.
+    noface = plot[plot[y_col].isna()].copy()
 
     # Keep threshold domain visible even if the measured values are small.
     y_abs = max(
@@ -164,6 +174,32 @@ def render_pose_threshold_chart(df, *, x_col, y_col, title, threshold, height=26
                 title=f"{y_col} (deg)",
                 scale=alt.Scale(domain=[-y_limit, y_limit]),
             ),
+            tooltip=[
+                alt.Tooltip(f"{x_col}:Q", title=x_col),
+                alt.Tooltip(f"{y_col}:Q", title=f"{y_col}°", format=".1f"),
+            ],
+        )
+    )
+
+    # Point layer ONLY for isolated detected frames. A line connects adjacent
+    # valid points; a single detected frame whose immediate neighbours (in time
+    # order) are both no-face/NaN has nothing to connect to, so the line alone
+    # renders it invisible (e.g. one frame at the peak of a turn). We draw a dot
+    # for exactly those frames — same colour as the line — so they stay visible
+    # without cluttering normal runs, which the line already shows.
+    plot = plot.sort_values(x_col)
+    y_isna = plot[y_col].isna()
+    prev_isna = y_isna.shift(1, fill_value=True)   # treat off-the-edge as a gap
+    next_isna = y_isna.shift(-1, fill_value=True)
+    isolated = plot[(~y_isna) & prev_isna & next_isna]
+
+    points = (
+        alt.Chart(isolated)
+        .mark_point(size=18, filled=True, opacity=1.0)
+        .encode(
+            x=alt.X(f"{x_col}:Q", title=x_col),
+            y=alt.Y(f"{y_col}:Q", scale=alt.Scale(domain=[-y_limit, y_limit])),
+            color=alt.value("#4c78a8"),   # Altair/Vega default blue — matches the line
             tooltip=[
                 alt.Tooltip(f"{x_col}:Q", title=x_col),
                 alt.Tooltip(f"{y_col}:Q", title=f"{y_col}°", format=".1f"),
@@ -205,13 +241,35 @@ def render_pose_threshold_chart(df, *, x_col, y_col, title, threshold, height=26
         )
     )
 
+    layers = [line, points, rules, labels]
+
+    # No-face overlay: draw a gray tick near the bottom of the chart for every
+    # frame where the face was not detected. This makes the gaps in the pose
+    # line explicit ("no face here") instead of leaving an ambiguous blank that
+    # could be misread as missing data or a constant pose.
+    if not noface.empty:
+        noface = noface.assign(_marker=-y_limit, _status="no face detected")
+        noface_marks = (
+            alt.Chart(noface)
+            .mark_tick(color="gray", opacity=0.6, thickness=2, size=12)
+            .encode(
+                x=alt.X(f"{x_col}:Q", title=x_col),
+                y=alt.Y("_marker:Q", scale=alt.Scale(domain=[-y_limit, y_limit])),
+                tooltip=[
+                    alt.Tooltip(f"{x_col}:Q", title=x_col),
+                    alt.Tooltip("_status:N", title="status"),
+                ],
+            )
+        )
+        layers.append(noface_marks)
+
     chart = (
-        (line + rules + labels)
+        alt.layer(*layers)
         .properties(title=title, height=height)
         .interactive()
     )
 
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width='stretch')
 
 def get_turn_thresholds(config):
     """Return turn-floor thresholds, not front-zone thresholds."""
@@ -460,7 +518,7 @@ def render_single(reports_dir, vid):
                             "pass", "fail", "skip", "reason"] if c in res.columns]
         styled = res[cols].rename(columns={"final_status": "status"})
         st.dataframe(_style_status(styled, "status"),
-                     use_container_width=True, hide_index=True)
+                     width='stretch', hide_index=True)
     else:
         st.info("No per-check result CSV for this volunteer.")
 
@@ -505,7 +563,7 @@ def render_single(reports_dir, vid):
     det = data["detail"]
     if det is not None and not det.empty:
         with st.expander("Raw per-frame detail"):
-            st.dataframe(det, use_container_width=True, hide_index=True)
+            st.dataframe(det, width='stretch', hide_index=True)
 
 
 def _style_status(df, cols):
@@ -554,7 +612,7 @@ def render_compare(reports_dir, a, b):
         b: [ob.get(k, "") for k in ["frames_sampled", "detection_gaps",
                                     "yaw_min", "yaw_max", "pitch_min", "pitch_max"]],
     })
-    st.dataframe(facts, use_container_width=True, hide_index=True)
+    st.dataframe(facts, width='stretch', hide_index=True)
 
     # aligned per-check verdicts: one row per check, a status vs b status
     st.subheader("Per-check comparison")
@@ -576,7 +634,7 @@ def render_compare(reports_dir, a, b):
     cmp_df = pd.DataFrame(rows)
     st.dataframe(
         _style_status(cmp_df, [a, b]),
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
     )
 

@@ -327,16 +327,19 @@ def _build_sample_indices(
     indices = sorted(set(i for i in indices if start_index <= i <= end_index))
 
     if max_frames is not None and max_frames > 0 and len(indices) > max_frames:
-        # Evenly downsample the candidate index list. This preserves coverage
-        # across the whole video better than simply taking the first max_frames.
+        # Even-stride downsample. The previous approach used per-position
+        # rounding (round(i*(n-1)/(max_frames-1))), which produced an UNEVEN
+        # grid: mostly the base step, but with periodic double-steps where the
+        # rounding skipped an index. That showed up in the detail CSV as
+        # occasional frames missing from an otherwise regular cadence (e.g. a
+        # +0.133s jump among +0.067s steps). Instead, pick a single integer
+        # stride over the candidate list so every kept frame is equally spaced.
+        # This keeps <= max_frames frames with a uniform gap and no holes.
         if max_frames == 1:
             indices = [indices[0]]
         else:
-            positions = [
-                round(i * (len(indices) - 1) / (max_frames - 1))
-                for i in range(max_frames)
-            ]
-            indices = [indices[pos] for pos in sorted(set(positions))]
+            stride = math.ceil(len(indices) / max_frames)
+            indices = indices[::stride]
 
     return indices
 

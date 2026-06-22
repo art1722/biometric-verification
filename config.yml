@@ -54,7 +54,7 @@ video:
   sample_fps: 1            # [DESIGN] sample 1 frame/sec for model-based checks
   sample_first_frame: true # [DESIGN]
   sample_last_frame: true  # [DESIGN]
-  max_frames: 600          # [DESIGN] safety cap on a very long video
+  max_frames: 6000         # [DESIGN] safety cap on a very long video
 
 models:
   mediapipe:
@@ -245,7 +245,7 @@ face:
 
     tolerance:
       side_yaw_tolerance_deg: 30      # [DESIGN] guess - spec says ~90deg turn
-      tilt_pitch_tolerance_deg: 15    # [DESIGN] guess
+      tilt_pitch_tolerance_deg: 20    # [DESIGN] guess
       min_detected_step_ratio: 0.6    # [DESIGN] guess - fraction of states seen
       front_zone_yaw_deg: 15          # [DESIGN] guess - calibrate vs opening front hold
       front_zone_pitch_deg: 15        # [DESIGN] guess - calibrate vs opening front hold
