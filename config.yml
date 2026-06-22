@@ -275,6 +275,26 @@ face:
       crop_margin: 0.15              # [DESIGN] inner face crop; reduces hair/background edge bias
       min_luma: 35.0                 # [DESIGN] below this, blur is SKIP; brightness owns the FAIL
       min_contrast: 4.0              # [DESIGN] below this, blur is SKIP; insufficient edge evidence
+
+      # Preprocessing before Tenengrad/Sobel sharpness.
+      # Options:
+      #   none   = raw luminance
+      #   clahe  = current behavior
+      #   lideg  = LIDE simple Gaussian
+      #   lidel  = LIDE simple Laplacian
+      preprocess: "clahe"
+
+      # CLAHE params
+      clahe_clip_limit: 2.0
+      clahe_tile_grid_size: 8
+
+      # LIDE params
+      # Note: README example uses d=100, but your face ROI is resized to 224x224.
+      # d=100 means a 201x201 local window, almost the whole face crop.
+      # For QC experiments, start smaller.
+      lide_d: 30
+      lide_sigma_min: 30.0
+
     brightness:
       dark_threshold: 35             # [REPO]
       bright_threshold: 200          # [REPO]

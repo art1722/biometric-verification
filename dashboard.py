@@ -271,6 +271,216 @@ def render_pose_threshold_chart(df, *, x_col, y_col, title, threshold, height=26
 
     st.altair_chart(chart, width='stretch')
 
+def render_metric_threshold_chart(
+    df, *, x_col, y_col, title, y_label,
+    thresholds, line_color, height=260,
+):
+    """Render one measured metric over time with config-driven cutoff line(s).
+
+    Generic single-series timeline used for brightness and sharpness. Unlike
+    the pose chart this does NOT mirror the threshold about zero — these metrics
+    are one-sided (e.g. sharpness has a single floor). Pass one or more cutoffs
+    as a list of (value, label) so brightness can show both a dark floor and a
+    bright ceiling.
+
+    line_color is passed explicitly so each metric is visually distinct from
+    the yaw/pitch charts (which use Vega's default blue).
+    """
+    if x_col not in df.columns or y_col not in df.columns:
+        st.info(f"No {y_col} data available.")
+        return
+
+    plot = df[[x_col, y_col]].copy()
+    plot[x_col] = pd.to_numeric(plot[x_col], errors="coerce")
+    plot[y_col] = pd.to_numeric(plot[y_col], errors="coerce")
+
+    # Keep no-value frames (NaN y) so the line breaks at gaps instead of bridging
+    # across them — same rationale as the pose chart. Only drop bad-x rows.
+    plot = plot.dropna(subset=[x_col])
+
+    if plot.empty or plot[y_col].notna().sum() == 0:
+        st.info(f"No valid {y_col} values to plot.")
+        return
+
+    plot = plot.sort_values(x_col)
+
+    # Y domain: span the data and every cutoff, with headroom.
+    cut_vals = [float(v) for v, _ in thresholds]
+    y_vals = plot[y_col].dropna().tolist() + cut_vals
+    y_lo = min(y_vals)
+    y_hi = max(y_vals)
+    pad = max(1.0, (y_hi - y_lo) * 0.1)
+    domain = [y_lo - pad, y_hi + pad]
+
+    line = (
+        alt.Chart(plot)
+        .mark_line()
+        .encode(
+            x=alt.X(f"{x_col}:Q", title=x_col),
+            y=alt.Y(
+                f"{y_col}:Q",
+                title=y_label,
+                scale=alt.Scale(domain=domain),
+            ),
+            color=alt.value(line_color),
+            tooltip=[
+                alt.Tooltip(f"{x_col}:Q", title=x_col),
+                alt.Tooltip(f"{y_col}:Q", title=y_label, format=".1f"),
+            ],
+        )
+    )
+
+    # Isolated detected frames (both time-neighbours are gaps) get a dot so a
+    # lone sample is not invisible — same treatment as the pose chart.
+    y_isna = plot[y_col].isna()
+    prev_isna = y_isna.shift(1, fill_value=True)
+    next_isna = y_isna.shift(-1, fill_value=True)
+    isolated = plot[(~y_isna) & prev_isna & next_isna]
+
+    points = (
+        alt.Chart(isolated)
+        .mark_point(size=18, filled=True, opacity=1.0)
+        .encode(
+            x=alt.X(f"{x_col}:Q"),
+            y=alt.Y(f"{y_col}:Q", scale=alt.Scale(domain=domain)),
+            color=alt.value(line_color),
+            tooltip=[
+                alt.Tooltip(f"{x_col}:Q", title=x_col),
+                alt.Tooltip(f"{y_col}:Q", title=y_label, format=".1f"),
+            ],
+        )
+    )
+
+    threshold_df = pd.DataFrame({
+        "_cut": cut_vals,
+        "label": [lab for _, lab in thresholds],
+    })
+
+    rules = (
+        alt.Chart(threshold_df)
+        .mark_rule(strokeDash=[6, 4], color="#888888")
+        .encode(
+            y="_cut:Q",
+            tooltip=[
+                alt.Tooltip("label:N", title="cutoff"),
+                alt.Tooltip("_cut:Q", title="value", format=".1f"),
+            ],
+        )
+    )
+
+    labels = (
+        alt.Chart(threshold_df)
+        .mark_text(align="left", dx=6, dy=-6, color="#888888")
+        .encode(
+            x=alt.value(5),
+            y="_cut:Q",
+            text="label:N",
+        )
+    )
+
+    chart = (
+        alt.layer(line, points, rules, labels)
+        .properties(title=title, height=height)
+        .interactive()
+    )
+
+    st.altair_chart(chart, width='stretch')
+
+def render_eyes_chart(
+    df, *, x_col, left_col, right_col, threshold,
+    title="Eye blink score over time", height=260,
+):
+    """Plot left and right blink scores on ONE chart, each its own colour.
+
+    Blink score is in [0, 1]; HIGH = eye closed. The dashed cutoff is the
+    config blink_threshold: a line crossing AT/ABOVE it means that eye was
+    judged closed on that frame.
+    """
+    have = [c for c in (left_col, right_col) if c in df.columns]
+    if x_col not in df.columns or not have:
+        st.info("No eye blink data available.")
+        return
+
+    keep = [x_col] + have
+    plot = df[keep].copy()
+    for c in keep:
+        plot[c] = pd.to_numeric(plot[c], errors="coerce")
+    plot = plot.dropna(subset=[x_col]).sort_values(x_col)
+
+    if plot.empty or plot[have].notna().sum().sum() == 0:
+        st.info("No valid eye blink values to plot.")
+        return
+
+    # Long form so a single colour encoding draws both eyes with a legend.
+    rename = {left_col: "left eye", right_col: "right eye"}
+    long = plot.melt(
+        id_vars=[x_col],
+        value_vars=have,
+        var_name="eye",
+        value_name="blink",
+    )
+    long["eye"] = long["eye"].map(rename).fillna(long["eye"])
+
+    # Fixed colours, distinct from yaw/pitch blue and from brightness/sharpness.
+    eye_scale = alt.Scale(
+        domain=["left eye", "right eye"],
+        range=["#9467bd", "#2ca02c"],   # purple, green
+    )
+
+    # Blink score is bounded [0,1]; keep the cutoff visible with headroom.
+    y_hi = max(1.0, float(long["blink"].max() or 0), float(threshold)) * 1.05
+
+    line = (
+        alt.Chart(long)
+        .mark_line()
+        .encode(
+            x=alt.X(f"{x_col}:Q", title=x_col),
+            y=alt.Y(
+                "blink:Q",
+                title="blink score (high = closed)",
+                scale=alt.Scale(domain=[0, y_hi]),
+            ),
+            color=alt.Color("eye:N", scale=eye_scale, title="eye"),
+            tooltip=[
+                alt.Tooltip(f"{x_col}:Q", title=x_col),
+                alt.Tooltip("eye:N", title="eye"),
+                alt.Tooltip("blink:Q", title="blink", format=".2f"),
+            ],
+        )
+    )
+
+    threshold_df = pd.DataFrame({
+        "_cut": [float(threshold)],
+        "label": [f"closed cutoff ({threshold:g})"],
+    })
+
+    rules = (
+        alt.Chart(threshold_df)
+        .mark_rule(strokeDash=[6, 4], color="#888888")
+        .encode(
+            y="_cut:Q",
+            tooltip=[
+                alt.Tooltip("label:N", title="cutoff"),
+                alt.Tooltip("_cut:Q", title="value", format=".2f"),
+            ],
+        )
+    )
+
+    labels = (
+        alt.Chart(threshold_df)
+        .mark_text(align="left", dx=6, dy=-6, color="#888888")
+        .encode(x=alt.value(5), y="_cut:Q", text="label:N")
+    )
+
+    chart = (
+        alt.layer(line, rules, labels)
+        .properties(title=title, height=height)
+        .interactive()
+    )
+
+    st.altair_chart(chart, width='stretch')
+
+
 def get_turn_thresholds(config):
     """Return turn-floor thresholds, not front-zone thresholds."""
     tol = (
@@ -284,6 +494,45 @@ def get_turn_thresholds(config):
     pitch_turn = float(tol.get("tilt_pitch_tolerance_deg", 15))
 
     return yaw_turn, pitch_turn
+
+
+def _face_checks_cfg(config):
+    return (
+        config.get("face", {})
+        .get("checks", {})
+        or {}
+    )
+
+
+def get_brightness_thresholds(config):
+    """Return (dark_threshold, bright_threshold) from config.
+
+    These are the cutoffs check_lightpol uses: a frame is too dark below the
+    dark threshold and too bright above the bright threshold.
+    """
+    b = _face_checks_cfg(config).get("brightness", {}) or {}
+    dark = float(b.get("dark_threshold", 35))
+    bright = float(b.get("bright_threshold", 200))
+    return dark, bright
+
+
+def get_blink_threshold(config):
+    """Return the eyes-open blink cutoff from config.
+
+    Blink score >= this -> eye counts as CLOSED (so the line crossing ABOVE the
+    dashed cutoff means that eye failed the open check on that frame).
+    """
+    e = _face_checks_cfg(config).get("eyes_open", {}) or {}
+    return float(e.get("blink_threshold", 0.5))
+
+
+def get_blur_threshold(config):
+    """Return the sharpness (Tenengrad) cutoff from config.
+
+    Sharpness < this -> frame judged blurry (line BELOW the dashed cutoff).
+    """
+    b = _face_checks_cfg(config).get("blur", {}) or {}
+    return float(b.get("threshold", 50.0))
 
 def load_volunteer(reports_dir, vid):
     return {
@@ -558,6 +807,73 @@ def render_single(reports_dir, vid):
             threshold=pitch_turn_th,
             height=260,
         )
+
+    # quality timelines (brightness, eyes-open, sharpness)
+    if hdr is not None and not hdr.empty:
+        cfg = load_config("config.yml")
+        idx = "time" if "time" in hdr.columns else "frame_index"
+
+        qplot = hdr.copy()
+        for c in [idx, "brightness", "blink_left", "blink_right", "sharpness"]:
+            if c in qplot.columns:
+                qplot[c] = pd.to_numeric(qplot[c], errors="coerce")
+
+        has_bright = "brightness" in qplot.columns and qplot["brightness"].notna().any()
+        has_eyes = (
+            {"blink_left", "blink_right"} & set(qplot.columns)
+            and qplot[[c for c in ("blink_left", "blink_right") if c in qplot.columns]]
+            .notna().any().any()
+        )
+        has_sharp = "sharpness" in qplot.columns and qplot["sharpness"].notna().any()
+
+        if has_bright or has_eyes or has_sharp:
+            st.subheader("Frame quality over time")
+            st.caption(
+                "Brightness, eye blink, and sharpness on sampled frontal frames. "
+                "Dashed lines are the pass/fail cutoffs read from config.yml. "
+                "Gaps are non-frontal / no-face / skipped frames."
+            )
+
+        if has_bright:
+            dark_th, bright_th = get_brightness_thresholds(cfg)
+            render_metric_threshold_chart(
+                qplot,
+                x_col=idx,
+                y_col="brightness",
+                title="Brightness over time",
+                y_label="face brightness (mean V)",
+                thresholds=[
+                    (dark_th, f"too dark < {dark_th:g}"),
+                    (bright_th, f"too bright > {bright_th:g}"),
+                ],
+                line_color="#e6a817",   # amber — distinct from yaw/pitch blue
+                height=260,
+            )
+
+        if has_eyes:
+            blink_th = get_blink_threshold(cfg)
+            render_eyes_chart(
+                qplot,
+                x_col=idx,
+                left_col="blink_left",
+                right_col="blink_right",
+                threshold=blink_th,
+                title="Eye blink score over time (left vs right)",
+                height=260,
+            )
+
+        if has_sharp:
+            blur_th = get_blur_threshold(cfg)
+            render_metric_threshold_chart(
+                qplot,
+                x_col=idx,
+                y_col="sharpness",
+                title="Sharpness over time",
+                y_label="Tenengrad sharpness",
+                thresholds=[(blur_th, f"blurry < {blur_th:g}")],
+                line_color="#17a2a2",   # teal — distinct from the others
+                height=260,
+            )
 
     # raw detail (collapsed)
     det = data["detail"]

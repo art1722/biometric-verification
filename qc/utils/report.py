@@ -269,7 +269,8 @@ def write_detail_header_csv(path, rows, timeline, quiet=False):
     vid, dtype, fname = _row_identity(rows)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     fields = ["volunteer_id", "data_type", "file_name", "frame_index",
-              "time", "label_width", "label_height", "yaw", "pitch", "roll"]
+              "time", "label_width", "label_height", "yaw", "pitch", "roll",
+              "brightness", "blink_left", "blink_right", "sharpness"]
 
     def fmt(v, nd=1):
         return "" if v is None else f"{v:.{nd}f}"
@@ -283,6 +284,9 @@ def write_detail_header_csv(path, rows, timeline, quiet=False):
                 fmt(t.get("timestamp_sec"), 3),
                 fmt(t.get("label_width"), 0), fmt(t.get("label_height"), 0),
                 fmt(t.get("yaw")), fmt(t.get("pitch")), fmt(t.get("roll")),
+                fmt(t.get("brightness")),
+                fmt(t.get("blink_left"), 3), fmt(t.get("blink_right"), 3),
+                fmt(t.get("sharpness")),
             ])
     if not quiet:
         print(f"wrote detail header CSV to {path}")

@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, asdict
 from typing import Any, Optional
 
@@ -70,6 +71,22 @@ DATA_TYPE = "face_rgb"
 
 def _bool_to_status(ok: bool, *, fail="FAIL") -> str:
     return "PASS" if ok else fail
+
+
+# Pull the single numeric value out of the brightness/blur message strings so it
+# can be stored per-frame for the dashboard timelines. The checks already format
+# these consistently: brightness messages always contain "brightness=NN" and a
+# judged blur message always contains "sharpness=NN". Returns None when absent
+# (e.g. a SKIPped blur frame has no sharpness number).
+_BRIGHTNESS_RE = re.compile(r"brightness=(-?\d+(?:\.\d+)?)")
+_SHARPNESS_RE = re.compile(r"sharpness=(-?\d+(?:\.\d+)?)")
+
+
+def _extract_float(pattern, text):
+    if not text:
+        return None
+    m = pattern.search(text)
+    return float(m.group(1)) if m else None
 
 
 def run_face_rgb(
@@ -146,6 +163,17 @@ def run_face_rgb(
     blur_min_luma = blur_cfg.get("min_luma", 35.0)
     blur_min_contrast = blur_cfg.get("min_contrast", 4.0)
     
+    blur_preprocess = os.getenv(
+        "QC_BLUR_PREPROCESS",
+        blur_cfg.get("preprocess", "clahe"),
+    )
+
+    blur_clahe_clip_limit = blur_cfg.get("clahe_clip_limit", 2.0)
+    blur_clahe_tile_grid_size = blur_cfg.get("clahe_tile_grid_size", 8)
+
+    blur_lide_d = blur_cfg.get("lide_d", 30)
+    blur_lide_sigma_min = blur_cfg.get("lide_sigma_min", 30.0)
+    
     dark_th = bright_cfg.get("dark_threshold", 35)
     bright_th = bright_cfg.get("bright_threshold", 200)
     diff_th = bright_cfg.get("diff_threshold", 20)
@@ -207,6 +235,13 @@ def run_face_rgb(
             "yaw": info["yaw"] if info else None,
             "pitch": info["pitch"] if info else None,
             "roll": info["roll"] if info else None,
+            # Per-frame measured quality values for the dashboard timelines.
+            # Filled in below as each check runs; stay None on no-face / SKIP /
+            # non-frontal frames so the dashboard breaks the line at the gap.
+            "brightness": None,
+            "blink_left": None,
+            "blink_right": None,
+            "sharpness": None,
         })
 
 
@@ -357,7 +392,10 @@ def run_face_rgb(
 
             # eyes open (consumes landmarks, no re-detection)
             # eyes open (consumes blendshapes from the same detection; no model)
-            ok, msg = check_eye_status(blendshapes, blink_th)
+            ok, msg, blink_left, blink_right = check_eye_status(
+                blendshapes, blink_th, return_scores=True)
+            timeline[-1]["blink_left"] = blink_left
+            timeline[-1]["blink_right"] = blink_right
             add("check_eyes_open", _bool_to_status(ok),
                 f"frame={sf.frame_index} {msg}", sf.frame_index)
 
@@ -366,6 +404,7 @@ def run_face_rgb(
             bright_ok, bright_msg = check_lightpol(
                 img, dark_th, bright_th, margin,
                 detector=face_det, input_color_space=cspace)
+            timeline[-1]["brightness"] = _extract_float(_BRIGHTNESS_RE, bright_msg)
             add("check_brightness", _bool_to_status(bright_ok),
                 f"frame={sf.frame_index} {bright_msg}", sf.frame_index)
 
@@ -385,8 +424,14 @@ def run_face_rgb(
                     crop_margin=blur_crop_margin,
                     min_luma=blur_min_luma,
                     min_contrast=blur_min_contrast,
+                    preprocess=blur_preprocess,
+                    clahe_clip_limit=blur_clahe_clip_limit,
+                    clahe_tile_grid_size=blur_clahe_tile_grid_size,
+                    lide_d=blur_lide_d,
+                    lide_sigma_min=blur_lide_sigma_min,
                 )
                 blur_status = "SKIP" if blur_ok is None else _bool_to_status(blur_ok)
+                timeline[-1]["sharpness"] = _extract_float(_SHARPNESS_RE, blur_msg)
                 add("check_face_blur", blur_status,
                     f"frame={sf.frame_index} {blur_msg}", sf.frame_index)
 

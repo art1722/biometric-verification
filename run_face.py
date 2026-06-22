@@ -36,7 +36,9 @@ from collections import Counter, defaultdict
 
 
 def parse_args():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        description="Parse arguments for running python file run_face.py"
+    )
     ap.add_argument("video", help="path to a NNN_face_rgb.mp4")
     ap.add_argument("--id", default=None, help="volunteer id (else parsed from filename)")
     ap.add_argument("--config", default="config.yml")

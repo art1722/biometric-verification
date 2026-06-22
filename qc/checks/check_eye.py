@@ -47,7 +47,9 @@ BLINK_RIGHT = "eyeBlinkRight"
 
 
 def check_eye_status(blendshapes: Optional[dict],
-                     blink_threshold: float = 0.5) -> Tuple[bool, str]:
+                     blink_threshold: float = 0.5,
+                     *,
+                     return_scores: bool = False):
     """Check whether both eyes are open, using blendshape blink scores.
 
     Args:
@@ -62,21 +64,31 @@ def check_eye_status(blendshapes: Optional[dict],
         (success, message). success is False when either eye is closed or the
         blink scores are unavailable. Message includes the measured scores.
     """
+    def _result(ok, msg, left=None, right=None):
+        # When return_scores is set, append the raw per-eye blink scores so the
+        # caller (pipeline timeline -> dashboard) can plot them. Default 2-tuple
+        # contract is unchanged for existing callers.
+        if return_scores:
+            return (ok, msg, left, right)
+        return (ok, msg)
+
     if not blendshapes:
-        return (False, "No blendshapes provided")
+        return _result(False, "No blendshapes provided")
 
     left = blendshapes.get(BLINK_LEFT)
     right = blendshapes.get(BLINK_RIGHT)
 
     if left is None or right is None:
-        return (False, "Blink blendshapes missing (eyeBlinkLeft/Right)")
+        return _result(False, "Blink blendshapes missing (eyeBlinkLeft/Right)")
 
     # Low blink score = open. Both eyes must be open to pass.
     if left < blink_threshold and right < blink_threshold:
-        return (True,
-                f"eyes open (blinkL={left:.2f}, blinkR={right:.2f} < {blink_threshold})")
-    return (False,
-            f"eye(s) closed (blinkL={left:.2f}, blinkR={right:.2f} >= {blink_threshold})")
+        return _result(True,
+                       f"eyes open (blinkL={left:.2f}, blinkR={right:.2f} < {blink_threshold})",
+                       left, right)
+    return _result(False,
+                   f"eye(s) closed (blinkL={left:.2f}, blinkR={right:.2f} >= {blink_threshold})",
+                   left, right)
 
 
 # --------------------------------------------------------------------------

@@ -103,6 +103,62 @@ def _inner_crop_from_bbox(
     return crop
 
 
+def _preprocess_luminance(
+    y: np.ndarray,
+    *,
+    preprocess: str,
+    clahe_clip_limit: float = 2.0,
+    clahe_tile_grid_size: int = 8,
+    lide_d: int = 30,
+    lide_sigma_min: float = 30.0,
+) -> tuple[Optional[np.ndarray], str]:
+    """Apply optional contrast enhancement before sharpness scoring.
+
+    Returns:
+        (processed_image, method_name)
+
+    If LIDE is requested but not installed, returns (None, message).
+    """
+    mode = (preprocess or "clahe").lower().strip()
+
+    if mode in {"none", "raw", "off"}:
+        return y, "raw"
+
+    if mode == "clahe":
+        grid = max(2, int(clahe_tile_grid_size))
+        clahe = cv2.createCLAHE(
+            clipLimit=float(clahe_clip_limit),
+            tileGridSize=(grid, grid),
+        )
+        return clahe.apply(y), "clahe"
+
+    if mode in {"lideg", "lidel"}:
+        try:
+            from lide import (
+                enhance,
+                EnhanceParam,
+                ENHANCE_LIDEG,
+                ENHANCE_LIDEL,
+            )
+        except Exception as e:
+            return None, f"lide unavailable: {type(e).__name__}: {e}"
+
+        method = ENHANCE_LIDEG if mode == "lideg" else ENHANCE_LIDEL
+        param = EnhanceParam(
+            method=method,
+            d=max(1, int(lide_d)),
+            lide_sigma_min=float(lide_sigma_min),
+        )
+
+        # LIDE expects uint8 grayscale.
+        y_u8 = np.ascontiguousarray(y.astype(np.uint8))
+        y_out = enhance(y_u8, param)
+
+        return y_out.astype(np.uint8), mode
+
+    return None, f"unknown blur preprocess='{preprocess}'"
+
+
 def check_face_blur(
     image: Any,
     threshold: float = 35.0,
@@ -114,7 +170,13 @@ def check_face_blur(
     crop_margin: float = 0.15,
     min_luma: float = 35.0,
     min_contrast: float = 4.0,
+    preprocess: str = "clahe",
+    clahe_clip_limit: float = 2.0,
+    clahe_tile_grid_size: int = 8,
+    lide_d: int = 30,
+    lide_sigma_min: float = 30.0,
 ):
+
     """Check whether the face region is sharp enough.
 
     Args:
@@ -176,9 +238,21 @@ def check_face_blur(
     size = max(32, int(resize_px))
     y = cv2.resize(y, (size, size), interpolation=cv2.INTER_AREA)
 
-    # Normalize local contrast so different cameras/exposures are less dominant.
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    y_eq = clahe.apply(y)
+    y_eq, preprocess_name = _preprocess_luminance(
+        y,
+        preprocess=preprocess,
+        clahe_clip_limit=clahe_clip_limit,
+        clahe_tile_grid_size=clahe_tile_grid_size,
+        lide_d=lide_d,
+        lide_sigma_min=lide_sigma_min,
+    )
+
+    if y_eq is None:
+        return (
+            None,
+            f"blur not judged: {preprocess_name}",
+        )
+
 
     # Tenengrad / Sobel sharpness. sqrt(mean(gx^2 + gy^2)) keeps the score scale
     # easier to read than raw energy.
@@ -189,8 +263,9 @@ def check_face_blur(
     reason = (
         f"sharpness={sharpness:.1f} threshold={threshold:.1f}; "
         f"luma={mean_luma:.1f}; contrast={contrast:.1f}; "
-        f"method=tenengrad_clahe; bbox={bbox}"
+        f"method=tenengrad_{preprocess_name}; bbox={bbox}"
     )
+
 
     if sharpness < threshold:
         return (False, reason)

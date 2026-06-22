@@ -24,3 +24,7 @@ PyYAML==6.0.2
 # dependencies; we do NOT pin those here — let mediapipe choose compatible
 # versions. We only pin the packages we import directly plus protobuf/numpy,
 # which are the ones that actually cause the solutions-API breakage.
+
+lide==1.0.0
+scipy==1.13.1
+
