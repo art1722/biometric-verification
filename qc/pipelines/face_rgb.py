@@ -256,11 +256,14 @@ def run_face_rgb(
     # MediaPipe could not measure.
     timeline: list[dict] = []
     frames_seen = 0
+    
     # Set True if a fail-fast structural gate breaks the frame loop early
     # (currently: a multiple-faces frame). When aborted, the post-loop
     # sequence checks (gap split + turn sequence) are skipped because the
     # timeline is intentionally incomplete and the file already has a FAIL.
     aborted = False
+    sequence_blocked_by_structural_fail = False
+    
     # Positions of the check_face_detected rows for NO-FACE frames, keyed by
     # timeline index, so they can be re-statused (expected/unexpected gap)
     # once the whole timeline exists. Multiple-face frames are NOT tracked:
@@ -371,14 +374,17 @@ def run_face_rgb(
                 #   "Multiple faces ..." -> a real defect (a second person in
                 #     frame). The spec wants ONE clearly-visible subject, so this
                 #     FAILs outright and is NOT tracked for the gap split.
-                multiple_faces = not msg.startswith("No faces")
-                if not multiple_faces:
+                no_faces = msg.startswith("No faces")
+                multiple_faces = msg.startswith("Multiple faces detected")
+
+                if no_faces:
                     add("check_face_detected", "SKIP",
                         f"frame={sf.frame_index} {msg}", sf.frame_index)
                     gap_row_positions[len(timeline)] = len(rows) - 1
                 else:
                     add("check_face_detected", "FAIL",
                         f"frame={sf.frame_index} {msg}", sf.frame_index)
+                    
                 # Gap frame: still record it on the timeline so the turn-sequence
                 # check can SEE the gap (face_detected=False, yaw=None) rather than
                 # finding the frame simply absent.
@@ -398,9 +404,12 @@ def run_face_rgb(
                 # check is skipped on an aborted file (guarded below).
                 # (No-face gaps do NOT break — they are routine during deep
                 # turns and are resolved by the gap split after the loop.)
-                if fail_fast and multiple_faces:
-                    aborted = True
-                    break
+                if multiple_faces:
+                    sequence_blocked_by_structural_fail = True
+
+                    if fail_fast:
+                        aborted = True
+                        break
                 continue
             add("check_face_detected", "PASS",
                 f"frame={sf.frame_index} face detected", sf.frame_index)
@@ -523,7 +532,7 @@ def run_face_rgb(
     # sequence both reason over the WHOLE timeline, so running them on a
     # truncated one would be meaningless (and could emit a misleading verdict).
     # Skip them; the structural FAIL already decides the file.
-    if aborted:
+    if aborted or sequence_blocked_by_structural_fail:
         return rows, timeline
 
     # ---- expected/unexpected gap split for check_face_detected ----

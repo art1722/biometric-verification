@@ -200,6 +200,13 @@ face:
   turn_sequence:
     enabled: true                    # [SPEC]
     total_min_duration_sec: 40       # [SPEC]
+      
+    # "exact": observed sequence must equal an accepted order exactly.
+    # "contiguous_subsequence": accepted order may appear as one contiguous
+    # window inside the observed sequence; prefix/suffix noise is ignored.
+    # Use exact for final/spec QC; use contiguous_subsequence for legacy data
+    # where volunteers may have turned before pressing/after stopping record.
+    sequence_match_mode: "exact"
     order_policy: "FAIL"        # [DESIGN] no human-review capacity at 1,500 scale;
                                 # a turn-order mismatch is a non-conforming file -> FAIL.
                                 # (was REVIEW)
