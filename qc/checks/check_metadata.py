@@ -33,10 +33,10 @@ def check_container(meta, *, require_rgb: bool = True, expected_ext: str = ".mp4
     if meta.extension != expected_ext:
         return (FAIL, f"extension={meta.extension} != {expected_ext}")
     if require_rgb:
-        if meta.channel_count is None:
+        if meta.channel_count is None or meta.channel_count < 3:
             return (FAIL, "channel count unknown (cannot verify RGB)")
-        if meta.channel_count < 3:
-            return (FAIL, f"channels={meta.channel_count} (not RGB color)")
+        if not meta.is_color:                       # NEW: content check
+            return (FAIL, "grayscale content (channels identical; not true RGB)")
     return (PASS, f"container ok ({meta.extension}, "
                   f"{meta.channel_count} channels, codec={meta.codec_fourcc})")
 

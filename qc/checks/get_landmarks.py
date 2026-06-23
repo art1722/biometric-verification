@@ -45,6 +45,7 @@ from typing import Any, Literal, Optional
 
 import cv2
 import mediapipe as mp
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -89,15 +90,16 @@ def get_lm(
     Returns:
         (success, message, landmarks, bbox, norm_box) — always 5 values.
     """
+    print('a' * 1000)
     # --- Resolve the input into a BGR array (array-first pattern) ---
     if isinstance(image, str):
-        frame = cv2.imread(image)
+        frame = cv2.imread(image)     
         if frame is None:
             logger.debug("LANDMARKS | failed to load image: %s", image)
             return (False, "Failed to load image", None, None, None)
     else:
         frame = image
-
+        
     if frame is None or getattr(frame, "size", 0) == 0:
         logger.debug("LANDMARKS | empty or invalid image array")
         return (False, "Empty or invalid image", None, None, None)

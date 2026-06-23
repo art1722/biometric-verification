@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 import math
 import os
+import numpy as np
 
 
 PathLike = str | os.PathLike[str]
@@ -63,6 +64,7 @@ class VideoMetadata:
     duration_sec: Optional[float]
     codec_fourcc: Optional[str]
     channel_count: Optional[int]
+    is_color: Optional[bool] = None  # True=real chroma, False=grayscale-as-3ch, None=unknown
     reason: str = ""
 
     @property
@@ -170,6 +172,18 @@ def _frame_channel_count(frame: Any) -> Optional[int]:
     return None
 
 
+def _is_truly_RGB(frame, *, sample_stride=4, tol=8, min_color_frac=0.02):
+    """True if the frame has real chroma (R/G/B differ), not grayscale-as-3ch."""
+    if frame is None or getattr(frame, "ndim", 0) < 3 or frame.shape[2] < 3:
+        return False
+    f = frame[::sample_stride, ::sample_stride, :3].astype(np.int16)
+    b, g, r = f[..., 0], f[..., 1], f[..., 2]
+    # max channel spread per pixel
+    spread = np.maximum(np.maximum(abs(r - g), abs(g - b)), abs(r - b))
+    color_frac = float((spread > tol).mean())
+    return color_frac >= min_color_frac
+
+
 def probe_video(path: PathLike, *, decode_first_frame: bool = True) -> VideoMetadata:
     """Read metadata from a video file.
 
@@ -244,6 +258,7 @@ def probe_video(path: PathLike, *, decode_first_frame: bool = True) -> VideoMeta
     height = _clean_int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     codec_fourcc = _fourcc_to_string(cap.get(cv2.CAP_PROP_FOURCC))
     channel_count: Optional[int] = None
+    is_color: Optional[bool] = None
     readable = True
     reason = ""
 
@@ -257,6 +272,7 @@ def probe_video(path: PathLike, *, decode_first_frame: bool = True) -> VideoMeta
             width = width or int(frame_w)
             height = height or int(frame_h)
             channel_count = _frame_channel_count(frame)
+            is_color = _is_truly_RGB(frame)
 
     cap.release()
 
@@ -278,6 +294,7 @@ def probe_video(path: PathLike, *, decode_first_frame: bool = True) -> VideoMeta
         duration_sec=duration_sec,
         codec_fourcc=codec_fourcc,
         channel_count=channel_count,
+        is_color=is_color,
         reason=reason,
     )
 
@@ -560,6 +577,7 @@ def metadata_to_dict(meta: VideoMetadata) -> dict[str, Any]:
         "duration_sec": meta.duration_sec,
         "codec_fourcc": meta.codec_fourcc,
         "channel_count": meta.channel_count,
+        "is_color": meta.is_color,
         "reason": meta.reason,
     }
 
