@@ -93,6 +93,7 @@ def summarize_rows_by_check(rows, aggregation_cfg=None):
     aggregation_cfg = aggregation_cfg or {}
     fail_ratio_max = float(aggregation_cfg.get("frame_fail_ratio", 0.0))
     review_ratio_max = float(aggregation_cfg.get("frame_review_ratio", 0.0))
+    per_check = aggregation_cfg.get("per_check_fail_ratio", {}) or {}
 
     grouped = defaultdict(list)
     for r in rows:
@@ -110,10 +111,11 @@ def summarize_rows_by_check(rows, aggregation_cfg=None):
         level = getattr(group[0], "level", "frame")
 
         if level == "frame":
+            this_fail_max = float(per_check.get(check_name, fail_ratio_max))
             final_status, ratio = _ratio_final_status(
-                counts, fail_ratio_max, review_ratio_max)
+                counts, this_fail_max, review_ratio_max)
             ratio_note = (f" [judged fail-ratio={ratio:.0%}"
-                          f" (max {fail_ratio_max:.0%})]"
+                          f" (max {this_fail_max:.0%})]"
                           if ratio is not None else "")
         else:
             final_status = worst_status(r.status for r in group)

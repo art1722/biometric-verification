@@ -406,8 +406,10 @@ report:
   # Applies ONLY to level=frame checks; video/sequence checks keep
   # worst-status aggregation. [DESIGN] ratio values to confirm. [CONFIRM]
   aggregation:
-    frame_fail_ratio: 0.25
-    frame_review_ratio: 0.25
+    frame_fail_ratio: 0.2
+    frame_review_ratio: 0.2
+    per_check_fail_ratio:
+      check_face_detected: 0.0
   columns:
     - "volunteer_id"
     - "data_type"

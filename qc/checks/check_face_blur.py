@@ -26,6 +26,8 @@ import cv2
 import numpy as np
 import mediapipe as mp
 
+import os
+
 logger = logging.getLogger(__name__)
 
 
@@ -252,6 +254,41 @@ def check_face_blur(
             None,
             f"blur not judged: {preprocess_name}",
         )
+    
+    # Optional debug output: save image after LIDE/CLAHE preprocessing.
+    # For LIDE, this is the image that goes into Sobel/Tenengrad.
+    debug_dir = os.getenv("QC_BLUR_DEBUG_DIR")
+    if debug_dir:
+        os.makedirs(debug_dir, exist_ok=True)
+
+        n = getattr(check_face_blur, "_debug_preprocess_n", 0)
+        max_n = int(os.getenv("QC_BLUR_DEBUG_MAX", "30"))
+
+        if n < max_n:
+            out_path = os.path.join(
+                debug_dir,
+                f"blur_compare_{n:04d}_raw_clahe_{preprocess_name}.png",
+            )
+
+            # Mild CLAHE for visual comparison.
+            # This is debug-only; it does not affect the blur score unless your config uses CLAHE.
+            clahe = cv2.createCLAHE(
+                clipLimit=float(os.getenv("QC_BLUR_DEBUG_CLAHE_CLIP", "1.5")),
+                tileGridSize=(8, 8),
+            )
+            y_clahe_mild = clahe.apply(y)
+
+            # columns:
+            # 1) raw resized luminance
+            # 2) mild CLAHE
+            # 3) actual preprocessing used by the current config, e.g. none/clahe/lidel
+            debug_img = np.hstack([y, y_clahe_mild, y_eq])
+            cv2.imwrite(out_path, debug_img)
+
+        check_face_blur._debug_preprocess_n = n + 1
+
+    # Tenengrad / Sobel sharpness. sqrt(mean(gx^2 + gy^2)) keeps the score scale
+
 
 
     # Tenengrad / Sobel sharpness. sqrt(mean(gx^2 + gy^2)) keeps the score scale
