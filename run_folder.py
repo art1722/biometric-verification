@@ -155,6 +155,10 @@ def process_one(path, vid, config, args):
         path, vid, config,
         sample_fps=args.sample_fps if args.sample_fps else None,
         overlay=overlay, progress=None,
+        # Fail-fast ON for the batch (skip doomed files fast at 1,500 scale).
+        # But when --overlay is on, the overlay video must be a complete 1:1
+        # copy, so disable fail-fast to keep every frame in the timeline.
+        fail_fast=(overlay is None),
     )
 
     if overlay is not None:

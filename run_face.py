@@ -304,6 +304,9 @@ def main():
         sample_fps=sample_fps,
         overlay=overlay,
         progress=progress,
+        # Fail-fast ON for normal runs; OFF when writing an overlay so the
+        # overlay video keeps every frame (a true 1:1 copy of the source).
+        fail_fast=(overlay is None),
     )
 
     if overlay is not None:

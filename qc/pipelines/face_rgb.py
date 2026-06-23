@@ -97,6 +97,7 @@ def run_face_rgb(
     sample_fps: float | None = None,
     overlay: "Any | None" = None,
     progress=None,
+    fail_fast: bool = True,
 ):
     """Run the full face_rgb pipeline on one video.
 
@@ -105,6 +106,20 @@ def run_face_rgb(
         volunteer_id: e.g. "001"
         config: the loaded config.yml dict (thresholds live here).
         sample_fps: how densely to sample frames for the per-frame checks.
+        fail_fast: when True (batch default), a STRUCTURAL defect halts the
+            pipeline early instead of processing the rest of the file — the
+            fail-fast / circuit-breaker pattern. Three structural gates:
+              1. any video-level metadata check FAILs (container/fps/duration/
+                 resolution) -> stop before opening frames.
+              2. the file opens but yields 0 frames -> emit a FAIL and stop.
+              3. a frame contains MULTIPLE faces (a second person) -> emit a
+                 FAIL and break the frame loop.
+            Ratio-judged quality checks (size/eyes/brightness/blur) and the
+            ratio-judged head_fully check NEVER fail-fast: a few bad frames are
+            normal and an early break would lose the denominator.
+            Set False for dashboard/overlay runs that need the FULL per-frame
+            timeline for visualization — then every check still runs and the
+            report aggregation makes the verdict instead.
 
     Returns:
         (rows, timeline) where:
@@ -211,6 +226,29 @@ def run_face_rgb(
             level="video")
         return rows, []
 
+    # ---- fail-fast GATE 1: video-level metadata ----
+    # The four checks above describe the FILE, not any one frame. If the
+    # container is wrong, the fps is too low, the clip is too short, or the
+    # resolution is below spec, the file is structurally non-conforming and
+    # no amount of frame analysis can change the verdict. Stop here rather
+    # than spend model time on ~1,500-scale frame work for a doomed file.
+    # (Skipped when fail_fast=False so dashboard/overlay runs still produce a
+    # full per-frame timeline even on an off-spec file.)
+    if fail_fast:
+        VIDEO_GATE = ("check_container", "check_fps",
+                      "check_duration", "check_resolution")
+        gate_fail = next(
+            (r for r in rows
+             if r.check_name in VIDEO_GATE and r.status == "FAIL"),
+            None,
+        )
+        if gate_fail is not None:
+            add("frame_checks", "SKIP",
+                f"fail-fast: {gate_fail.check_name} FAILed "
+                f"({gate_fail.reason}); frame checks skipped",
+                level="video")
+            return rows, []
+
     # ---- per-frame checks ----
     # ONE timeline entry per sampled frame, gaps included. The turn-sequence
     # check reads this: a gap (face_detected=False, yaw=None) bracketed by
@@ -218,6 +256,11 @@ def run_face_rgb(
     # MediaPipe could not measure.
     timeline: list[dict] = []
     frames_seen = 0
+    # Set True if a fail-fast structural gate breaks the frame loop early
+    # (currently: a multiple-faces frame). When aborted, the post-loop
+    # sequence checks (gap split + turn sequence) are skipped because the
+    # timeline is intentionally incomplete and the file already has a FAIL.
+    aborted = False
     # Positions of the check_face_detected rows for NO-FACE frames, keyed by
     # timeline index, so they can be re-statused (expected/unexpected gap)
     # once the whole timeline exists. Multiple-face frames are NOT tracked:
@@ -328,7 +371,8 @@ def run_face_rgb(
                 #   "Multiple faces ..." -> a real defect (a second person in
                 #     frame). The spec wants ONE clearly-visible subject, so this
                 #     FAILs outright and is NOT tracked for the gap split.
-                if msg.startswith("No faces"):
+                multiple_faces = not msg.startswith("No faces")
+                if not multiple_faces:
                     add("check_face_detected", "SKIP",
                         f"frame={sf.frame_index} {msg}", sf.frame_index)
                     gap_row_positions[len(timeline)] = len(rows) - 1
@@ -344,6 +388,19 @@ def run_face_rgb(
                         img, cspace, sf.frame_index, sf.timestamp_sec,
                         face_detected=False, landmarks=None, bbox=None,
                         pose=None, label="no-face", checks=dict(_frame_checks))
+
+                # ---- fail-fast GATE 3: multiple faces ----
+                # A second face is a STRUCTURAL defect (someone else in frame),
+                # not a detector limitation and not a ratio-judged transient.
+                # The spec wants ONE clearly-visible subject, so there is no
+                # point measuring 1,000+ more frames. Break the loop. The FAIL
+                # row above already records the verdict; the turn-sequence
+                # check is skipped on an aborted file (guarded below).
+                # (No-face gaps do NOT break — they are routine during deep
+                # turns and are resolved by the gap split after the loop.)
+                if fail_fast and multiple_faces:
+                    aborted = True
+                    break
                 continue
             add("check_face_detected", "PASS",
                 f"frame={sf.frame_index} face detected", sf.frame_index)
@@ -446,7 +503,28 @@ def run_face_rgb(
         face_landmarker.close()
         face_det.close()
 
+    # ---- fail-fast GATE 2: zero frames ----
+    # The file opened (meta.readable was True) but the decoder yielded NO
+    # frames — a corrupt / empty / fully-dropped stream. Previously this line
+    # was an unconditional PASS, so such a file slipped through with no FAIL
+    # anywhere: every frame-level check aggregated over an empty group to SKIP
+    # and the verdict was a silent pass. A delivered video with no readable
+    # frames is non-conforming, so emit a FAIL and stop. This holds regardless
+    # of fail_fast: zero frames is never a valid sample.
+    if frames_seen == 0:
+        add("frames_sampled", "FAIL",
+            "video opened but yielded 0 frames (corrupt/empty stream)",
+            level="video")
+        return rows, timeline
     add("frames_sampled", "PASS", f"sampled {frames_seen} frames", level="video")
+
+    # If a fail-fast gate broke the loop early, the timeline is intentionally
+    # incomplete and the file already carries a FAIL. The gap split and turn
+    # sequence both reason over the WHOLE timeline, so running them on a
+    # truncated one would be meaningless (and could emit a misleading verdict).
+    # Skip them; the structural FAIL already decides the file.
+    if aborted:
+        return rows, timeline
 
     # ---- expected/unexpected gap split for check_face_detected ----
     # Re-status the no-face rows now that the whole timeline exists:
