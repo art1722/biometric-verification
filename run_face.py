@@ -76,6 +76,17 @@ def parse_args():
         action="store_true",
         help="do not write the default overlay video",
     )
+
+    ap.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="stop processing early on a structural defect (bad metadata / "
+             "zero frames / multiple faces). Off by default: every frame is "
+             "processed so the report has a full timeline. Ignored whenever an "
+             "overlay is written (the overlay needs a complete 1:1 timeline) — "
+             "note the overlay is ON by default, so pass --no-overlay to let "
+             "--fail-fast take effect.",
+    )
     return ap.parse_args()
 
 def parse_volunteer_id(path):
@@ -304,9 +315,12 @@ def main():
         sample_fps=sample_fps,
         overlay=overlay,
         progress=progress,
-        # Fail-fast ON for normal runs; OFF when writing an overlay so the
-        # overlay video keeps every frame (a true 1:1 copy of the source).
-        fail_fast=(overlay is None),
+        # Fail-fast is OFF by default (full timeline); opt in with --fail-fast.
+        # When an overlay is written the video must be a complete 1:1 copy, so
+        # fail-fast is force-disabled regardless of the flag. NOTE: the overlay
+        # is ON by default here, so --fail-fast only takes effect together with
+        # --no-overlay.
+        fail_fast=(args.fail_fast and overlay is None),
     )
 
     if overlay is not None:

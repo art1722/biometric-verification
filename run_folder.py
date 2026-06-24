@@ -82,6 +82,12 @@ def parse_args():
                          "Native/every-frame is intentionally not offered here.")
     ap.add_argument("--overlay", action="store_true",
                     help="also write overlay videos (SLOW; off by default)")
+    ap.add_argument("--fail-fast", action="store_true",
+                    help="stop processing a file early on a structural defect "
+                         "(bad metadata / zero frames / multiple faces). Off by "
+                         "default: every frame is processed so the report has a "
+                         "full timeline. Ignored when --overlay is set (the "
+                         "overlay always needs a complete 1:1 timeline).")
     ap.add_argument("--limit", type=int, default=None,
                     help="process only the first N videos (smoke test)")
     ap.add_argument("--no-detail", action="store_true",
@@ -155,10 +161,11 @@ def process_one(path, vid, config, args):
         path, vid, config,
         sample_fps=args.sample_fps if args.sample_fps else None,
         overlay=overlay, progress=None,
-        # Fail-fast ON for the batch (skip doomed files fast at 1,500 scale).
-        # But when --overlay is on, the overlay video must be a complete 1:1
-        # copy, so disable fail-fast to keep every frame in the timeline.
-        fail_fast=(overlay is None),
+        # Fail-fast is OFF by default (full timeline for every file); opt in
+        # with --fail-fast to skip doomed files early at 1,500 scale. When
+        # --overlay is on, the overlay video must be a complete 1:1 copy, so
+        # fail-fast is force-disabled regardless of the flag.
+        fail_fast=(args.fail_fast and overlay is None),
     )
 
     if overlay is not None:
