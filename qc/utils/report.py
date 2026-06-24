@@ -45,7 +45,8 @@ REPORT_CHECK_ORDER = {
     "check_turn_right": 310,
     "check_turn_down": 320,
     "check_turn_up": 330,
-    "check_turn_sequence": 340,
+    "check_turn_front": 340,
+    "check_turn_sequence": 350,
 }
 
 

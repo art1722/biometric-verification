@@ -796,8 +796,15 @@ def render_single(reports_dir, vid):
         cols = [c for c in ["check_level", "check_name", "final_status",
                             "pass", "fail", "skip", "reason"] if c in res.columns]
         styled = res[cols].rename(columns={"final_status": "status"})
+        # Show every check row without an inner scrollbar. Streamlit caps a
+        # dataframe at ~400px and makes it scroll; instead size the height to
+        # the row count (≈35px/row + 38px header + a small pad) so the whole
+        # table is visible at once however many checks there are.
+        n_rows = len(styled)
+        table_height = 38 + n_rows * 35 + 3
         st.dataframe(_style_status(styled, "status"),
-                     width='stretch', hide_index=True)
+                     width='stretch', hide_index=True,
+                     height=table_height)
     else:
         st.info("No per-check result CSV for this volunteer.")
 
