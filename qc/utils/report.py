@@ -39,6 +39,7 @@ REPORT_CHECK_ORDER = {
     "check_eyes_open": 210,
     "check_brightness": 220,
     "check_face_blur": 230,
+    "check_occlusion": 240,
 
     # 4) Turn-protocol checks
     "check_turn_left": 300,

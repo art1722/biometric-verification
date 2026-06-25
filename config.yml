@@ -197,6 +197,29 @@ face:
     no_hat: true                         # [SPEC]
     policy: "FAIL"                     # [DESIGN]
 
+    # [DESIGN] Skin-colour occlusion method (check_occlusion.py). The landmark
+    # model cannot report occlusion (it hallucinates covered landmarks with no
+    # confidence signal), so occlusion is detected by appearance: build a small
+    # ROI per face region from the landmarks, and test what fraction of each
+    # region's pixels are skin-coloured in YCrCb. A required region whose skin
+    # fraction falls below min_skin_ratio is flagged occluded.
+    skin:
+      # Which regions FAIL the frame if occluded. Eyes+nose+mouth are the
+      # spec-critical cases (mask = nose+mouth; sunglasses = eyes). Add
+      # "forehead" if a hat brim / low hair must also fail.
+      required_regions: ["left_eye", "right_eye", "nose", "mouth"]  # [DESIGN]
+      # YCrCb skin-chroma bounds (inclusive). Classic face-skin range; widen
+      # cr/cb if darker or lighter skin tones false-fail in the real data.
+      cr_min: 133                        # [DESIGN] tune on real volunteers
+      cr_max: 173                        # [DESIGN]
+      cb_min: 77                         # [DESIGN]
+      cb_max: 127                        # [DESIGN]
+      # A region passes if its skin-pixel fraction >= this. Lower = more
+      # permissive (fewer false occlusions); higher = stricter.
+      min_skin_ratio: 0.40               # [DESIGN] calibrate with อ.เหมียว
+      # Padding added to each region ROI, as a fraction of the ROI's own size.
+      roi_margin: 0.15                   # [DESIGN]
+
   turn_sequence:
     enabled: true                    # [SPEC]
     total_min_duration_sec: 40       # [SPEC]

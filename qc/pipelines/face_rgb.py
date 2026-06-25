@@ -58,6 +58,7 @@ from qc.checks.check_face_blur import check_face_blur
 from qc.checks.check_light_pollution import check_lightpol
 from qc.checks.check_head_pose import estimate_head_pose
 from qc.checks.check_eye import check_eye_status
+from qc.checks.check_occlusion import check_occlusion
 from qc.checks.check_turn_sequence_seg import (
     check_turn_sequence_seg, apply_gap_split_to_detection_rows,
 )
@@ -197,6 +198,17 @@ def run_face_rgb(
 
     eye_cfg = face_cfg.get("checks", {}).get("eyes_open", {})
     blink_th = eye_cfg.get("blink_threshold", 0.5)
+
+    # Occlusion (skin-colour method). Thresholds live under face.occlusion.skin;
+    # the check builds a per-region ROI from the same landmarks and tests skin
+    # presence in YCrCb. Read once here, reused for every frame.
+    occ_cfg = face_cfg.get("occlusion", {}).get("skin", {})
+    occ_required = occ_cfg.get("required_regions",
+                               ["left_eye", "right_eye", "nose", "mouth"])
+    occ_cr = (occ_cfg.get("cr_min", 133), occ_cfg.get("cr_max", 173))
+    occ_cb = (occ_cfg.get("cb_min", 77), occ_cfg.get("cb_max", 127))
+    occ_min_skin = occ_cfg.get("min_skin_ratio", 0.40)
+    occ_roi_margin = occ_cfg.get("roi_margin", 0.15)
     
     # ---- video-level checks (once) ----
     meta = probe_video(path)
@@ -332,7 +344,8 @@ def run_face_rgb(
     # frame edge" must hold during turns too, and its landmarks (top-of-head,
     # chin) remain meaningful whenever the face is detected at all.
     FRONT_ONLY_CHECKS = ("check_face_size", "check_eyes_open",
-                         "check_face_blur", "check_brightness")
+                         "check_face_blur", "check_brightness",
+                         "check_occlusion")
 
     try:
         # Native sampling (sample_fps=None) must keep every frame so the overlay
@@ -454,6 +467,17 @@ def run_face_rgb(
             # face size (consumes bbox, no re-detection)
             ok, msg = check_face_min_size(bbox, min_width=min_w, min_height=min_h)
             add("check_face_size", _bool_to_status(ok),
+                f"frame={sf.frame_index} {msg}", sf.frame_index)
+
+            # occlusion (consumes the same landmarks; no re-detection, no model).
+            # Builds a per-region ROI and tests skin presence in YCrCb — a
+            # required region (eyes/nose/mouth) without skin is flagged occluded.
+            ok, msg = check_occlusion(
+                img, landmarks, input_color_space=cspace,
+                required_regions=occ_required,
+                cr_bounds=occ_cr, cb_bounds=occ_cb,
+                min_skin_ratio=occ_min_skin, roi_margin=occ_roi_margin)
+            add("check_occlusion", _bool_to_status(ok),
                 f"frame={sf.frame_index} {msg}", sf.frame_index)
 
             # eyes open (consumes landmarks, no re-detection)
