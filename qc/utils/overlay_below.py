@@ -312,6 +312,7 @@ class OverlayWriter:
         """
         target_fs = 0.85 * s
         usable = strip_h - 2 * pad
+        
         # line height proportional to font scale
         def line_h_for(fs):
             return int(38 * (fs / (0.85 * s)) * s) if s else 38

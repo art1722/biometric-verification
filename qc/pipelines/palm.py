@@ -1,16 +1,29 @@
-"""Palm pipeline — MINIMAL skeleton (container + resolution only).
+"""Palm pipeline — metadata + Phase-2 hand checks.
 
-This is the palm-side mirror of face_rgb.py, deliberately reduced to the two
-image-metadata checks that have a direct face analogue:
+This is the palm-side mirror of face_rgb.py. It runs:
 
     Image-level (once, from metadata):
       - check_container   (.jpg, decodable, 3-channel color)
-      - check_resolution  (>= 200x200, the palm spec minimum)
+      - check_resolution  (>= 200x200 FILE size, the palm spec minimum)
 
-Everything else the palm spec requires (hand detected, palm size from bbox,
-angle, finger spread, veins, jewelry) is intentionally OUT of this skeleton --
-those land in later phases. Keeping this first slice tiny proves tWhe
-file/CSV/report plumbing end-to-end before any model runs.
+    Hand-level (once, from a single detect_hand call) -- Phase 2:
+      - check_palm_present  (was a hand found? 0 hands / >1 hand handled here)
+      - check_palm_size     (hand BBOX >= 200x200, the real spec requirement)
+      - check_palm_angle    (wrist roll/pitch within +/-45 deg) -- GATED OFF by
+                             default via palm.angle.check_angle_enabled; emits
+                             SKIP until per-pose angles are calibrated.
+
+Note on "present": there is NO check_palm_present.py file, exactly as the face
+pipeline has no check_face_present.py. "Hand present?" is the ok/message of the
+shared detector (detect_hand in hand_landmarker.py), the hand-side mirror of how
+get_lm's success answers "face present?". The pipeline emits a check_palm_present
+ROW from that detector result; it is not a separate pure-check module.
+
+Still OUT (later phases): finger spread / all-five-fingers-visible, palm-open,
+veins-visible, jewelry. Those need their own detectors/heuristics.
+
+Detection runs ONCE per image (the single-detect discipline face established):
+the one HandResult feeds present, size, and angle, plus the overlay.
 
 Why these two checks mirror face cleanly
 ----------------------------------------
@@ -124,21 +137,32 @@ def run_palm(
         meta, min_width=min_w, min_height=min_h)
     add("check_resolution", status, reason, level="image")
 
-    # ---- optional hand detection (only when an overlay is requested) ----
-    # The minimal slice is metadata-only, so detection is OFF by default. When
-    # `detect=True` (the runner sets this for --overlay), run the shared
-    # HandLandmarker once so the overlay has landmarks + bbox to draw. This does
-    # NOT yet emit palm check rows (present/size/angle are later phases); it
-    # only produces a HandResult for visualization.
+    # ---- hand-level checks (Phase 2): run the detector ONCE, emit rows ----
+    # Detection is gated by `detect` (the runner sets it). When on, one
+    # detect_hand call produces the HandResult that present/size/angle all read,
+    # plus the bbox/landmarks the overlay draws -- the single-detect discipline
+    # the face pipeline established (detect once, every check consumes it).
     hand_result = None
     if detect:
+        angle_cfg = palm_cfg.get("angle", {})
+        angle_enabled = angle_cfg.get("check_angle_enabled", False)
+        max_roll = angle_cfg.get("max_abs_roll_deg", 45)
+        max_pitch = angle_cfg.get("max_abs_pitch_deg", 45)
+
+        models_cfg = config.get("models", {})
+        hl_cfg = models_cfg.get("hand_landmarker", {})
+        hands_cfg = models_cfg.get("hands", {})
+        # >1 hand is a capture error for palm (one hand per shot) -> FAIL, vs
+        # face's REVIEW for an extra face. Confirm policy with อ.เหมียว.
+        multi_policy = hands_cfg.get("multiple_hands_policy", "FAIL")
+
         try:
             from qc.checks.hand_landmarker import (
                 create_hand_landmarker, detect_hand,
             )
-            models_cfg = config.get("models", {})
-            hl_cfg = models_cfg.get("hand_landmarker", {})
-            hands_cfg = models_cfg.get("hands", {})
+            from qc.checks.check_palm_size import check_palm_min_size
+            from qc.checks.check_palm_angle import check_palm_angle
+
             detector = create_hand_landmarker(
                 model_path=hl_cfg.get("model_path", "models/hand_landmarker.task"),
                 num_hands=hands_cfg.get("max_num_hands", 1),
@@ -149,13 +173,59 @@ def run_palm(
                 hand_result = detect_hand(path, detector=detector)
             finally:
                 detector.close()
+
+            # --- check_palm_present: derived from the detector, NOT a separate
+            # check module (mirrors how face uses get_lm's success; there is no
+            # check_face_present.py). 0 hands or >1 hand both land here. ---
+            if hand_result.ok:
+                add("check_palm_present", "PASS", hand_result.message, level="image")
+            else:
+                # detect_hand already distinguishes "No hands detected" from
+                # "Multiple hands detected: N". A multi-hand frame uses the
+                # configured policy (FAIL); any other not-ok (no hand, bad image)
+                # is a FAIL too -- a palm shot with no detectable hand cannot
+                # satisfy the spec.
+                msg = hand_result.message or "No hand detected"
+                status = multi_policy if msg.startswith("Multiple hands") else "FAIL"
+                add("check_palm_present", status, msg, level="image")
+
+            # --- check_palm_size: hand BBOX >= 200x200 (the real spec size).
+            # Only meaningful when a single hand was found; otherwise the bbox is
+            # None and present already FAILed, so SKIP to avoid a duplicate
+            # failure reason for the same root cause. ---
+            if hand_result.ok and hand_result.bbox is not None:
+                ok, reason = check_palm_min_size(
+                    hand_result.bbox, min_width=min_w, min_height=min_h)
+                add("check_palm_size", "PASS" if ok else "FAIL", reason, level="image")
+            else:
+                add("check_palm_size", "SKIP",
+                    "no single hand bbox (see check_palm_present)", level="image")
+
+            # --- check_palm_angle: GATED. Off by default -> SKIP with the reason,
+            # so the row is present and auditable but never PASS/FAILs until
+            # per-pose expected angles are calibrated (config flag flips it on). ---
+            if not angle_enabled:
+                add("check_palm_angle", "SKIP",
+                    "check_angle_enabled=false (stretch/later check)", level="image")
+            elif hand_result.ok and hand_result.world_landmarks is not None:
+                ok, reason = check_palm_angle(
+                    hand_result.world_landmarks,
+                    max_abs_roll_deg=max_roll, max_abs_pitch_deg=max_pitch)
+                add("check_palm_angle", "PASS" if ok else "FAIL", reason, level="image")
+            else:
+                add("check_palm_angle", "SKIP",
+                    "no world landmarks (see check_palm_present)", level="image")
+
         except FileNotFoundError as e:
-            # Model bundle missing — don't crash the metadata run; just skip the
-            # overlay's landmark layer. The .jpg will still be written with the
-            # bbox/landmarks simply absent.
-            logger.warning("PALM | hand model unavailable, overlay skipped: %s", e)
+            # Model bundle missing -- don't crash the run. The metadata rows
+            # already passed; mark the hand checks SKIP so the gap is explicit.
+            logger.warning("PALM | hand model unavailable, hand checks skipped: %s", e)
+            for cname in ("check_palm_present", "check_palm_size", "check_palm_angle"):
+                add(cname, "SKIP", "hand model bundle unavailable", level="image")
         except Exception as e:
-            logger.warning("PALM | hand detection error, overlay degraded: %s", e)
+            logger.warning("PALM | hand detection error, hand checks skipped: %s", e)
+            for cname in ("check_palm_present", "check_palm_size", "check_palm_angle"):
+                add(cname, "SKIP", f"hand detection error: {e}", level="image")
 
     # timeline is [] -- a still has no per-frame timeline.
     return rows, [], hand_result

@@ -60,6 +60,11 @@ def parse_args():
     ap.add_argument("--overlay", nargs="?", const="__default__", default=None,
                     help="write an annotated image (landmarks+bbox+stats). "
                          "Optionally give a path; default: <out-dir>/palm_<id>_<hand>_<pose>_overlay.jpg")
+    ap.add_argument("--no-detect", action="store_true",
+                    help="metadata-only: skip hand detection and the "
+                         "check_palm_present/size/angle rows (container + "
+                         "resolution only). Detection runs by DEFAULT now that "
+                         "it produces real check rows.")
     ap.add_argument("--quiet", action="store_true", help="suppress writer prints")
     return ap.parse_args()
 
@@ -105,8 +110,14 @@ def main():
 
     t0 = time.time()
     want_overlay = args.overlay is not None
+    # Detection now produces the check_palm_present/size/angle ROWS, so it must
+    # run whenever palm QC runs -- NOT only when an overlay is requested. It is
+    # ON by default; --no-detect opts out for a metadata-only run. An overlay
+    # still forces detection on (it needs landmarks to draw), even with
+    # --no-detect, so the flags can't contradict into a blank overlay.
+    want_detect = (not args.no_detect) or want_overlay
     rows, timeline, hand_result = run_palm(
-        args.image, vid, config, hand=hand, pose=pose, detect=want_overlay)
+        args.image, vid, config, hand=hand, pose=pose, detect=want_detect)
     elapsed = time.time() - t0
 
     # Print the rows to stdout (same shape as run_face's print_rows).

@@ -76,9 +76,23 @@ models:
     model_selection: 1               # [REPO]
     min_detection_confidence: 0.5    # [REPO/code behavior]
 
+  # Tasks-API Hand Landmarker — palm-side mirror of face_landmarker.
+  # Produces 21 hand landmarks (image + world space) + handedness in one pass.
+  # Required for the palm size/angle checks (bbox from landmarks, roll/pitch
+  # from world landmarks). Download the .task bundle once (see verify_env.py):
+  #   https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+  hand_landmarker:                   # [DESIGN] palm pipeline, Tasks-API
+    model_path: "models/hand_landmarker.task"   # [CONFIRM] where the bundle lives
+    min_hand_presence_confidence: 0.5
+    min_tracking_confidence: 0.5
+
   hands:
     max_num_hands: 1                 # [DESIGN]
     min_detection_confidence: 0.5    # [DESIGN]
+    # Palm screening: a second hand in frame is a capture error (spec wants ONE
+    # hand per shot), so >1 hand -> FAIL, NOT REVIEW. Contrast face, where a
+    # second (background) face -> REVIEW because the spec does not forbid it.
+    multiple_hands_policy: "FAIL"    # [CONFIRM]
 
   pose:
     min_detection_confidence: 0.5    # [DESIGN]
