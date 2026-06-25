@@ -460,28 +460,197 @@ def render_eyes_chart(
         scale=alt.Scale(domain=x_domain, nice=False),
     )
 
-    line = (
-        alt.Chart(long)
-        .mark_line()
-        .encode(
-            x=x_enc,
-            y=alt.Y(
-                "blink:Q",
-                title="blink score (high = closed)",
-                scale=alt.Scale(domain=[0, y_hi]),
-            ),
-            color=alt.Color("eye:N", scale=eye_scale, title="eye"),
-            tooltip=[
-                alt.Tooltip(f"{x_col}:Q", title=x_col),
-                alt.Tooltip("eye:N", title="eye"),
-                alt.Tooltip("blink:Q", title="blink", format=".2f"),
-            ],
-        )
+    # --- legend on/off toggle (same approach as the occlusion chart) ---
+    # Clicking a legend entry isolates that eye; non-selected fades. Altair 5
+    # uses selection_point + add_params, Altair 4 selection_single +
+    # add_selection; if neither exists, render without the toggle (no crash).
+    eye_sel = None
+    _use_opacity = False
+    try:
+        eye_sel = alt.selection_point(fields=["eye"], bind="legend")
+        _use_opacity = True
+    except AttributeError:
+        try:
+            eye_sel = alt.selection_single(fields=["eye"], bind="legend")
+            _use_opacity = True
+        except Exception:
+            eye_sel = None
+            _use_opacity = False
+
+    _eye_enc = dict(
+        x=x_enc,
+        y=alt.Y(
+            "blink:Q",
+            title="blink score (high = closed)",
+            scale=alt.Scale(domain=[0, y_hi]),
+        ),
+        color=alt.Color("eye:N", scale=eye_scale, title="eye"),
+        tooltip=[
+            alt.Tooltip(f"{x_col}:Q", title=x_col),
+            alt.Tooltip("eye:N", title="eye"),
+            alt.Tooltip("blink:Q", title="blink", format=".2f"),
+        ],
     )
+    if _use_opacity:
+        _eye_enc["opacity"] = alt.condition(
+            eye_sel, alt.value(1.0), alt.value(0.12))
+
+    line = alt.Chart(long).mark_line().encode(**_eye_enc)
+    if eye_sel is not None:
+        if hasattr(line, "add_params"):
+            line = line.add_params(eye_sel)
+        elif hasattr(line, "add_selection"):
+            line = line.add_selection(eye_sel)
 
     threshold_df = pd.DataFrame({
         "_cut": [float(threshold)],
         "label": [f"closed cutoff > {threshold:g}"],
+    })
+
+    rules = (
+        alt.Chart(threshold_df)
+        .mark_rule(strokeDash=[6, 4], color="#888888")
+        .encode(
+            y="_cut:Q",
+            tooltip=[
+                alt.Tooltip("label:N", title="cutoff"),
+                alt.Tooltip("_cut:Q", title="value", format=".2f"),
+            ],
+        )
+    )
+
+    labels = (
+        alt.Chart(threshold_df)
+        .mark_text(align="left", dx=6, dy=-6, color="#888888")
+        .encode(x=alt.value(5), y="_cut:Q", text="label:N")
+    )
+
+    chart = (
+        alt.layer(line, rules, labels)
+        .properties(title=title, height=height)
+        .interactive()
+    )
+
+    st.altair_chart(chart, width='stretch')
+
+
+# Per-region occlusion skin-ratio columns written by the pipeline (face_rgb.py).
+# Order here is the legend order. Cheeks/forehead included so all measured
+# regions can be toggled, even ones not in required_regions.
+_OCC_REGION_COLS = [
+    ("occ_forehead", "forehead"),
+    ("occ_left_eye", "left eye"),
+    ("occ_right_eye", "right eye"),
+    ("occ_nose", "nose"),
+    ("occ_mouth", "mouth"),
+    ("occ_left_cheek", "left cheek"),
+    ("occ_right_cheek", "right cheek"),
+]
+
+
+def render_occlusion_chart(df, *, x_col, threshold, title="Occlusion skin ratio over time", height=300):
+    """Plot each face region's skin ratio over time on ONE chart.
+
+    Each region is its own line. A clickable legend toggles individual regions
+    on/off (click a legend entry to isolate it; shift-click to multi-select).
+    The dashed cutoff is the config min_skin_ratio: a region's line crossing
+    BELOW it means that region was judged occluded on that frame.
+
+    Skin ratio is bounded [0, 1]. Gaps (non-frontal / no-face / skipped frames)
+    break each line rather than bridging, same as the other quality charts.
+    """
+    have = [(col, lab) for col, lab in _OCC_REGION_COLS if col in df.columns]
+    if x_col not in df.columns or not have:
+        st.info("No occlusion data available.")
+        return
+
+    have_cols = [col for col, _ in have]
+    keep = [x_col] + have_cols
+    plot = df[keep].copy()
+    for c in keep:
+        plot[c] = pd.to_numeric(plot[c], errors="coerce")
+    plot = plot.dropna(subset=[x_col]).sort_values(x_col)
+
+    if plot.empty or plot[have_cols].notna().sum().sum() == 0:
+        st.info("No valid occlusion values to plot.")
+        return
+
+    # Long form so one colour encoding draws every region with a legend.
+    rename = {col: lab for col, lab in have}
+    long = plot.melt(
+        id_vars=[x_col],
+        value_vars=have_cols,
+        var_name="region",
+        value_name="skin",
+    )
+    long["region"] = long["region"].map(rename).fillna(long["region"])
+
+    # Stable colour per region (distinct ramp from yaw/pitch/brightness/eyes).
+    region_domain = [lab for _, lab in have]
+    region_range = [
+        "#1f77b4", "#9467bd", "#2ca02c", "#d62728",
+        "#ff7f0e", "#17becf", "#8c564b",
+    ][:len(region_domain)]
+    region_scale = alt.Scale(domain=region_domain, range=region_range)
+
+    # Skin ratio is [0,1]; keep the cutoff visible with a little headroom.
+    y_hi = max(1.0, float(long["skin"].max() or 0), float(threshold)) * 1.02
+
+    x_min = float(long[x_col].min())
+    x_max = float(long[x_col].max())
+    x_pad = max(0.5, (x_max - x_min) * 0.02)
+    x_domain = [x_min - x_pad, x_max + x_pad]
+    x_enc = alt.X(f"{x_col}:Q", title=x_col,
+                  scale=alt.Scale(domain=x_domain, nice=False))
+
+    # --- the legend on/off toggle ---
+    # A point selection bound to the legend: clicking a legend entry selects
+    # that region; the opacity encoding fades everything not selected. With
+    # nothing selected (default) all lines show at full opacity.
+    #
+    # Altair 5 uses selection_point + add_params; Altair 4 used selection_single
+    # + add_selection. Detect which is available so the chart works on either,
+    # and if neither is (very old Altair), fall back to a plain multi-line chart
+    # with no toggle rather than crashing.
+    region_sel = None
+    _use_opacity = False
+    try:
+        region_sel = alt.selection_point(fields=["region"], bind="legend")
+        _use_opacity = True
+    except AttributeError:
+        try:
+            region_sel = alt.selection_single(fields=["region"], bind="legend")
+            _use_opacity = True
+        except Exception:
+            region_sel = None
+            _use_opacity = False
+
+    base_enc = dict(
+        x=x_enc,
+        y=alt.Y("skin:Q", title="skin ratio (low = occluded)",
+                scale=alt.Scale(domain=[0, y_hi])),
+        color=alt.Color("region:N", scale=region_scale, title="region"),
+        tooltip=[
+            alt.Tooltip(f"{x_col}:Q", title=x_col),
+            alt.Tooltip("region:N", title="region"),
+            alt.Tooltip("skin:Q", title="skin ratio", format=".2f"),
+        ],
+    )
+    if _use_opacity:
+        base_enc["opacity"] = alt.condition(
+            region_sel, alt.value(1.0), alt.value(0.12))
+
+    line = alt.Chart(long).mark_line().encode(**base_enc)
+    if region_sel is not None:
+        # add_params (Altair 5) or add_selection (Altair 4), whichever exists.
+        if hasattr(line, "add_params"):
+            line = line.add_params(region_sel)
+        elif hasattr(line, "add_selection"):
+            line = line.add_selection(region_sel)
+
+    threshold_df = pd.DataFrame({
+        "_cut": [float(threshold)],
+        "label": [f"occluded < {threshold:g}"],
     })
 
     rules = (
@@ -563,6 +732,18 @@ def get_blur_threshold(config):
     """
     b = _face_checks_cfg(config).get("blur", {}) or {}
     return float(b.get("threshold", 50.0))
+
+
+def get_occlusion_min_skin(config):
+    """Return the occlusion min_skin_ratio cutoff from config.
+
+    A region's skin ratio < this -> that region judged occluded (line crossing
+    BELOW the dashed cutoff means that region failed on that frame). Lives under
+    face.occlusion.skin (NOT face.checks), so it is read directly here.
+    """
+    face = config.get("face", {}) if isinstance(config, dict) else {}
+    occ = (face.get("occlusion", {}) or {}).get("skin", {}) or {}
+    return float(occ.get("min_skin_ratio", 0.40))
 
 def load_volunteer(reports_dir, vid):
     return {
@@ -854,6 +1035,10 @@ def render_single(reports_dir, vid):
         for c in [idx, "brightness", "blink_left", "blink_right", "sharpness"]:
             if c in qplot.columns:
                 qplot[c] = pd.to_numeric(qplot[c], errors="coerce")
+        # Occlusion per-region columns (written by face_rgb.py) coerced too.
+        _occ_cols = [col for col, _ in _OCC_REGION_COLS if col in qplot.columns]
+        for c in _occ_cols:
+            qplot[c] = pd.to_numeric(qplot[c], errors="coerce")
 
         has_bright = "brightness" in qplot.columns and qplot["brightness"].notna().any()
         has_eyes = (
@@ -862,13 +1047,16 @@ def render_single(reports_dir, vid):
             .notna().any().any()
         )
         has_sharp = "sharpness" in qplot.columns and qplot["sharpness"].notna().any()
+        has_occ = bool(_occ_cols) and qplot[_occ_cols].notna().any().any()
 
-        if has_bright or has_eyes or has_sharp:
+        if has_bright or has_eyes or has_sharp or has_occ:
             st.subheader("Frame quality over time")
             st.caption(
-                "Brightness, eye blink, and sharpness on sampled frontal frames. "
-                "Dashed lines are the pass/fail cutoffs read from config.yml. "
-                "Gaps are non-frontal / no-face / skipped frames."
+                "Brightness, eye blink, sharpness, and per-region occlusion skin "
+                "ratio on sampled frontal frames. Dashed lines are the pass/fail "
+                "cutoffs read from config.yml. Click a legend entry on the "
+                "occlusion chart to isolate a region. Gaps are non-frontal / "
+                "no-face / skipped frames."
             )
 
         if has_bright:
@@ -910,6 +1098,16 @@ def render_single(reports_dir, vid):
                 thresholds=[(blur_th, f"blurry < {blur_th:g}")],
                 line_color="#17a2a2",   # teal — distinct from the others
                 height=260,
+            )
+
+        if has_occ:
+            occ_th = get_occlusion_min_skin(cfg)
+            render_occlusion_chart(
+                qplot,
+                x_col=idx,
+                threshold=occ_th,
+                title="Occlusion skin ratio over time (per region)",
+                height=300,
             )
 
     # raw detail (collapsed)

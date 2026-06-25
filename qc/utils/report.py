@@ -272,9 +272,14 @@ def write_result_csv(result_path, overall_path, rows, timeline, config=None,
 def write_detail_header_csv(path, rows, timeline, quiet=False):
     vid, dtype, fname = _row_identity(rows)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    # Per-region occlusion skin-ratio columns (written by face_rgb.py onto each
+    # timeline entry). Listed once here so the header and the row body stay in
+    # sync — the dashboard reads these to draw the per-region occlusion chart.
+    occ_cols = ["occ_forehead", "occ_left_eye", "occ_right_eye", "occ_nose",
+                "occ_mouth", "occ_left_cheek", "occ_right_cheek"]
     fields = ["volunteer_id", "data_type", "file_name", "frame_index",
               "time", "label_width", "label_height", "yaw", "pitch", "roll",
-              "brightness", "blink_left", "blink_right", "sharpness"]
+              "brightness", "blink_left", "blink_right", "sharpness"] + occ_cols
 
     def fmt(v, nd=1):
         return "" if v is None else f"{v:.{nd}f}"
@@ -291,6 +296,8 @@ def write_detail_header_csv(path, rows, timeline, quiet=False):
                 fmt(t.get("brightness")),
                 fmt(t.get("blink_left"), 3), fmt(t.get("blink_right"), 3),
                 fmt(t.get("sharpness")),
+                # Occlusion ratios at 2 decimals (0.00-1.00); "" when absent.
+                *[fmt(t.get(c), 2) for c in occ_cols],
             ])
     if not quiet:
         print(f"wrote detail header CSV to {path}")

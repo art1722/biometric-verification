@@ -178,6 +178,7 @@ def check_occlusion(
     cb_bounds: Tuple[int, int] = _DEFAULT_CB,
     min_skin_ratio: float = _DEFAULT_MIN_SKIN_RATIO,
     roi_margin: float = _DEFAULT_ROI_MARGIN,
+    return_ratios: bool = False,
 ) -> Tuple[bool, str]:
     """Detect whether a required face region is occluded by a non-skin object.
 
@@ -192,26 +193,42 @@ def check_occlusion(
         cr_bounds, cb_bounds: YCrCb skin-chroma bounds (inclusive).
         min_skin_ratio: a region passes if its skin-pixel fraction >= this.
         roi_margin: padding added to each region ROI (fraction of its size).
+        return_ratios: if True, return a 3rd element — the {region: ratio|None}
+            dict for ALL regions (not just required ones). Used by the pipeline
+            to store per-region values on the timeline for the dashboard. When
+            False (default) the return stays a 2-tuple, so existing callers are
+            unaffected.
 
     Returns:
-        (success, message). success is True when NO required region is occluded.
-        The message lists per-region skin ratios so the report shows the reason.
+        (success, message) by default. If return_ratios=True:
+        (success, message, ratios) where ratios maps every region name to its
+        skin fraction (0.0-1.0) or None if its ROI could not be built.
     """
+    # Helper so every return path honours return_ratios with one definition.
+    # On guard failures (bad image / no landmarks) there are no ratios yet, so
+    # an all-None dict over the known regions is returned for shape stability.
+    def _ret(ok_: bool, msg_: str, ratios_=None):
+        if return_ratios:
+            if ratios_ is None:
+                ratios_ = {rg: None for rg in _REGION_ORDER}
+            return (ok_, msg_, ratios_)
+        return (ok_, msg_)
+
     # --- resolve image to a BGR array ---
     if isinstance(image, str):
         img = cv2.imread(image)
         if img is None:
-            return (False, "Failed to load image")
+            return _ret(False, "Failed to load image")
     elif input_color_space == "RGB":
         img = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
     else:
         img = image
 
     if img is None or getattr(img, "size", 0) == 0:
-        return (False, "Empty or invalid image")
+        return _ret(False, "Empty or invalid image")
 
     if not landmarks:
-        return (False, "No landmarks provided")
+        return _ret(False, "No landmarks provided")
 
     img_h, img_w = img.shape[:2]
     ycrcb = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
@@ -251,6 +268,6 @@ def check_occlusion(
             f"{rg}(skin={'NA' if ratios.get(rg) is None else f'{ratios[rg]:.2f}'})"
             for rg in occluded
         )
-        return (False, f"occluded: {bad}; {all_ratios_str}; {thr}")
+        return _ret(False, f"occluded: {bad}; {all_ratios_str}; {thr}", ratios)
 
-    return (True, f"no occlusion; {all_ratios_str}; {thr}")
+    return _ret(True, f"no occlusion; {all_ratios_str}; {thr}", ratios)

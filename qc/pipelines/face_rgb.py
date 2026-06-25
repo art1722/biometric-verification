@@ -300,6 +300,16 @@ def run_face_rgb(
             "blink_left": None,
             "blink_right": None,
             "sharpness": None,
+            # Per-region occlusion skin ratios (0.0-1.0), one column per region.
+            # Filled by the occlusion check on frontal frames; None elsewhere so
+            # the dashboard breaks each region's line at non-frontal / gap frames.
+            "occ_forehead": None,
+            "occ_left_eye": None,
+            "occ_right_eye": None,
+            "occ_nose": None,
+            "occ_mouth": None,
+            "occ_left_cheek": None,
+            "occ_right_cheek": None,
         })
 
 
@@ -472,11 +482,17 @@ def run_face_rgb(
             # occlusion (consumes the same landmarks; no re-detection, no model).
             # Builds a per-region ROI and tests skin presence in YCrCb — a
             # required region (eyes/nose/mouth) without skin is flagged occluded.
-            ok, msg = check_occlusion(
+            ok, msg, occ_ratios = check_occlusion(
                 img, landmarks, input_color_space=cspace,
                 required_regions=occ_required,
                 cr_bounds=occ_cr, cb_bounds=occ_cb,
-                min_skin_ratio=occ_min_skin, roi_margin=occ_roi_margin)
+                min_skin_ratio=occ_min_skin, roi_margin=occ_roi_margin,
+                return_ratios=True)
+            # Store each region's ratio on the timeline for the dashboard. Keys
+            # mirror the add_frame slots ("occ_<region>"); a None ratio stays
+            # None so the dashboard breaks that region's line at this frame.
+            for _rg, _val in occ_ratios.items():
+                timeline[-1][f"occ_{_rg}"] = _val
             add("check_occlusion", _bool_to_status(ok),
                 f"frame={sf.frame_index} {msg}", sf.frame_index)
 
