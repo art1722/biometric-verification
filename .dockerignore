@@ -1,0 +1,59 @@
+# .dockerignore — like .gitignore, but for `docker build`.
+# Anything matched here is NOT copied into the image by `COPY . .`.
+# Keeps the image small and builds fast.
+
+# Python cache / bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments (the image has its own Python; never copy yours in)
+.venv/
+venv/
+env/
+
+# Test / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Local biometric data — must NOT go in the image (huge + sensitive).
+# Mount it at run time instead:  -v /path/on/host/data:/app/data
+data/
+mock_data/
+mock_data_collection/
+organized/
+
+# Generated reports — produced at run time, not part of the build
+reports/
+reports_old/
+reports_old2/
+
+# Model bundles — large .task files. Download once on the host and mount:
+#   -v /path/on/host/models:/app/models
+models/
+
+# Large media in case any sit outside data/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.mp3
+*.wav
+
+# Git / editor / OS noise
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# The broken/empty packaging files we no longer use
+pyproject.toml
+uv.lock
+
+# Docker files themselves don't need to be inside the image
+Dockerfile
+.dockerignore

@@ -1,10 +1,10 @@
 # Biometric QC — pinned dependencies
 #
-# Python: 3.11.x  (see .python-version / README)
+# Python: 3.11.x  (see README)
 #   MediaPipe ships wheels for 3.9–3.12; 3.13 is NOT supported yet.
 #   3.11 is the safest, most-tested choice.
 #
-# WHY THESE EXACT PINS:
+# WHY THESE EXACT PINS (CV/ML core):
 #   mediapipe 0.10.31 (latest) broke the `mp.solutions` API via a protobuf
 #   incompatibility ("'MessageFactory' object has no attribute 'GetPrototype'").
 #   The known-good combination that keeps `mp.solutions.face_mesh` working is
@@ -20,11 +20,23 @@ protobuf==4.25.8          # pinned: mediapipe 0.10.21 needs protobuf >=4.25.3,<5
 # --- config / data ---
 PyYAML==6.0.2
 
-# Note: mediapipe pulls in jax/jaxlib/sentencepiece etc. as its own
-# dependencies; we do NOT pin those here — let mediapipe choose compatible
-# versions. We only pin the packages we import directly plus protobuf/numpy,
-# which are the ones that actually cause the solutions-API breakage.
-
 lide==1.0.0
 scipy==1.13.1
 
+# --- API (FastAPI + server) ---
+# These were imported by main.py but never listed. Without them the container
+# could not start the API. uvicorn[standard] adds the fast event loop + reload.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# --- dashboard (Streamlit) ---
+# Imported by dashboard.py. Only needed if you run the dashboard inside the
+# container; harmless to include either way.
+streamlit==1.41.1
+altair==5.5.0
+pandas==2.2.3
+
+# --- tests ---
+# Imported by qc/tests/. Not needed at runtime, but handy if you run pytest
+# inside the container during CI.
+pytest==8.3.4

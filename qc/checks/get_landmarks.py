@@ -90,7 +90,6 @@ def get_lm(
     Returns:
         (success, message, landmarks, bbox, norm_box) — always 5 values.
     """
-    print('a' * 1000)
     # --- Resolve the input into a BGR array (array-first pattern) ---
     if isinstance(image, str):
         frame = cv2.imread(image)     

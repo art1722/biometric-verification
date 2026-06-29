@@ -1,22 +1,55 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Dockerfile — biometric QC API
+#
+# Build it:   docker build -t biometric-qc .
+# Run it:     docker run -p 8000:8000 biometric-qc
+# Then open:  http://localhost:8000/docs
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 1. BASE IMAGE — start from an official, slim Python 3.11 on Linux.
+#    "slim" = small (no extra tools you don't need). Matches your pinned 3.11.
 FROM python:3.11-slim
 
-WORKDIR /app
-
-RUN apt-get update && apt-get install -y \
-    gcc \
-    libgl1-mesa-glx \
+# 2. SYSTEM LIBRARIES — OpenCV/MediaPipe need a few Linux .so libraries that are
+#    NOT in the slim image. Without these, `import cv2` crashes at runtime with
+#    "libGL.so.1: cannot open shared object file". We install them, then delete
+#    the apt cache to keep the image small.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
-    libxrender-dev \
+    libxrender1 \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml uv.lock ./
-RUN pip install uv && uv sync --python=3.11 && uv pip install -e . && uv clean
+# 3. WORKDIR — every command after this runs inside /app in the container.
+WORKDIR /app
 
+# 4. INSTALL DEPENDENCIES FIRST (before copying the rest of the code).
+#    WHY separately: Docker caches each step. As long as requirements.txt does
+#    not change, Docker reuses the cached "pip install" layer and your rebuilds
+#    after editing a .py file take seconds, not minutes.
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+# 5. COPY YOUR PROJECT into the image (qc/, main.py, config.yml, run_*.py, ...).
+#    .dockerignore controls what is skipped (data/, reports/, __pycache__, ...).
 COPY . .
 
-RUN mkdir -p uploads
+# 6. MODELS FOLDER — your config points at models/face_landmarker.task and
+#    models/hand_landmarker.task. They are large .task bundles you download once.
+#    They are NOT baked into the image (see .dockerignore). At run time you mount
+#    them in (see the README block below). We just ensure the folder exists.
+RUN mkdir -p models reports data
 
-CMD ["uv", "run", "python", "main.py", "--cpu_mode"] 
+# 7. NETWORK PORT — document that the app listens on 8000. This does not open
+#    anything by itself; you still publish it with `-p 8000:8000` at run time.
+EXPOSE 8000
+
+# 8. START COMMAND — launch the FastAPI app with uvicorn.
+#    "main:app" means: in main.py, use the variable named `app`.
+#    host 0.0.0.0 = listen on all interfaces so it is reachable from outside the
+#    container (127.0.0.1 would only be reachable from INSIDE the container).
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
