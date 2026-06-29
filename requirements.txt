@@ -40,3 +40,7 @@ pandas==2.2.3
 # Imported by qc/tests/. Not needed at runtime, but handy if you run pytest
 # inside the container during CI.
 pytest==8.3.4
+
+# The tests surfaced python-multipart as a hard requirement for file uploads
+# (POST /check). fastapi + uvicorn you already added.
+python-multipart==0.0.20   # required by FastAPI for UploadFile / form data
