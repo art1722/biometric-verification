@@ -7,11 +7,17 @@ volunteer has a sub-folder reports/<id>/ containing:
     face_<id>_detail.csv          one row per check, per frame
     face_<id>_detail_header.csv   one row per frame (pose: yaw/pitch/roll)
 
-Two modes:
+Modes:
   - Single   : pick one volunteer, see verdict + per-check table + per-frame
                pose timeline + raw detail.
   - Compare  : pick TWO volunteers; their per-check verdicts are aligned in
                one table so differences stand out, with pose ranges side by side.
+  - Summaries: read one modality's customer-facing summary at the reports root
+               (face_summary.csv / palm_summary.csv / walk_summary.csv), one
+               row per failed check, with a failures-only toggle.
+  - All failures: read all_summary.csv / all_summary.json — the cross-modal
+               FAIL/ERROR roll-up — showing each failed check + its reason,
+               with CSV and JSON download.
 
 Run:
     pip install streamlit pandas
@@ -269,7 +275,7 @@ def render_pose_threshold_chart(df, *, x_col, y_col, title, threshold, height=26
         .interactive()
     )
 
-    st.altair_chart(chart, width='stretch')
+    st.altair_chart(chart, use_container_width=True)
 
 def render_metric_threshold_chart(
     df, *, x_col, y_col, title, y_label,
@@ -399,7 +405,7 @@ def render_metric_threshold_chart(
         .interactive()
     )
 
-    st.altair_chart(chart, width='stretch')
+    st.altair_chart(chart, use_container_width=True)
 
 def render_eyes_chart(
     df, *, x_col, left_col, right_col, threshold,
@@ -531,7 +537,7 @@ def render_eyes_chart(
         .interactive()
     )
 
-    st.altair_chart(chart, width='stretch')
+    st.altair_chart(chart, use_container_width=True)
 
 
 # Per-region occlusion skin-ratio columns written by the pipeline (face_rgb.py).
@@ -677,7 +683,7 @@ def render_occlusion_chart(df, *, x_col, threshold, title="Occlusion skin ratio 
         .interactive()
     )
 
-    st.altair_chart(chart, width='stretch')
+    st.altair_chart(chart, use_container_width=True)
 
 
 def get_turn_thresholds(config):
@@ -984,7 +990,7 @@ def render_single(reports_dir, vid):
         n_rows = len(styled)
         table_height = 38 + n_rows * 35 + 3
         st.dataframe(_style_status(styled, "status"),
-                     width='stretch', hide_index=True,
+                     use_container_width=True, hide_index=True,
                      height=table_height)
     else:
         st.info("No per-check result CSV for this volunteer.")
@@ -1114,7 +1120,7 @@ def render_single(reports_dir, vid):
     det = data["detail"]
     if det is not None and not det.empty:
         with st.expander("Raw per-frame detail"):
-            st.dataframe(det, width='stretch', hide_index=True)
+            st.dataframe(det, use_container_width=True, hide_index=True)
 
 
 def _style_status(df, cols):
@@ -1163,7 +1169,7 @@ def render_compare(reports_dir, a, b):
         b: [ob.get(k, "") for k in ["frames_sampled", "detection_gaps",
                                     "yaw_min", "yaw_max", "pitch_min", "pitch_max"]],
     })
-    st.dataframe(facts, width='stretch', hide_index=True)
+    st.dataframe(facts, use_container_width=True, hide_index=True)
 
     # aligned per-check verdicts: one row per check, a status vs b status
     st.subheader("Per-check comparison")
@@ -1185,7 +1191,7 @@ def render_compare(reports_dir, a, b):
     cmp_df = pd.DataFrame(rows)
     st.dataframe(
         _style_status(cmp_df, [a, b]),
-        width='stretch',
+        use_container_width=True,
         hide_index=True,
     )
 
@@ -1224,6 +1230,168 @@ def _result_status_map(res):
     return dict(zip(res["check_name"], res["final_status"]))
 
 
+# ---------------------------------------------------------------------------
+# Customer-facing summaries (the per-check CSVs run_folder.py writes at the
+# reports ROOT, not inside a volunteer folder):
+#   <reports>/face_summary.csv | palm_summary.csv | walk_summary.csv
+#       one row per FAILED check; a clean video gets one PASS row.
+#   <reports>/all_summary.csv  + all_summary.json
+#       cross-modal FAIL/ERROR roll-up only.
+# These views read those files directly — no per-volunteer folders involved.
+# ---------------------------------------------------------------------------
+
+# The per-modality summaries the dashboard knows how to open. Label -> filename.
+MODALITY_SUMMARIES = {
+    "Face": "face_summary.csv",
+    "Palm": "palm_summary.csv",
+    "Walk": "walk_summary.csv",
+}
+
+
+@st.cache_data(show_spinner=False)
+def load_summary_csv(path):
+    """Load a per-check summary CSV. Missing file -> None (not built yet)."""
+    if not path or not os.path.exists(path):
+        return None
+    return pd.read_csv(path, dtype={"volunteer_id": str})
+
+
+@st.cache_data(show_spinner=False)
+def load_all_summary_json(path):
+    """Load all_summary.json (list of problem-video objects). Missing -> None."""
+    if not path or not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _fail_only(df):
+    """Keep only the FAIL/ERROR rows of a per-check summary (drop PASS rows)."""
+    if df is None or df.empty or "overall_status" not in df.columns:
+        return df
+    keep = df["overall_status"].astype(str).str.upper().isin({"FAIL", "ERROR"})
+    return df[keep]
+
+
+def render_summaries(reports_dir):
+    """One per-modality summary at a time: face / palm / walk.
+
+    Shows the per-check rows (one row per failed check). A FAIL-only toggle
+    hides the PASS placeholder rows so a reviewer sees just the problems.
+    """
+    st.subheader("Modality summary")
+
+    which = st.radio("Modality", list(MODALITY_SUMMARIES), horizontal=True)
+    path = os.path.join(reports_dir, MODALITY_SUMMARIES[which])
+    df = load_summary_csv(path)
+
+    if df is None:
+        st.info(f"No `{MODALITY_SUMMARIES[which]}` under `{reports_dir}/` yet. "
+                f"This modality's pipeline may not have run (palm/walk are not "
+                f"built yet).")
+        return
+    if df.empty:
+        st.warning(f"`{MODALITY_SUMMARIES[which]}` is empty.")
+        return
+
+    fail_only = st.checkbox("Show failures only", value=False)
+    view = _fail_only(df) if fail_only else df
+
+    # Headline counts: distinct videos by verdict (not row count, since a
+    # failing video spans several rows).
+    if "volunteer_id" in df.columns and "overall_status" in df.columns:
+        per_video = df.drop_duplicates(subset=["volunteer_id"])
+        n_total = per_video["volunteer_id"].nunique()
+        vc = per_video["overall_status"].astype(str).str.upper().value_counts()
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Videos", n_total)
+        c2.metric("PASS", int(vc.get("PASS", 0)))
+        c3.metric("FAIL", int(vc.get("FAIL", 0)))
+        c4.metric("ERROR", int(vc.get("ERROR", 0)))
+
+    st.caption(f"{len(view)} row(s)"
+               + (" — failures only" if fail_only else ""))
+    # use_container_width=True (not width="stretch", which the installed
+    # Streamlit version rejects with a TypeError on a string width).
+    st.dataframe(
+        _style_status(view, "overall_status"),
+        use_container_width=True, hide_index=True,
+    )
+
+    # Let the reviewer pull the exact file they're looking at.
+    st.download_button(
+        f"Download {MODALITY_SUMMARIES[which]}",
+        data=df.to_csv(index=False).encode("utf-8-sig"),
+        file_name=MODALITY_SUMMARIES[which],
+        mime="text/csv",
+    )
+
+
+def render_all_failures(reports_dir):
+    """The cross-modal all_summary: FAIL/ERROR cases across every modality.
+
+    Reads all_summary.csv for the flat per-check table (fail check + reason),
+    and offers the nested all_summary.json for download / per-video drill-in.
+    """
+    st.subheader("All failures (every modality)")
+
+    csv_path = os.path.join(reports_dir, "all_summary.csv")
+    json_path = os.path.join(reports_dir, "all_summary.json")
+    df = load_summary_csv(csv_path)
+
+    if df is None:
+        st.info("No `all_summary.csv` yet. Run a batch first "
+                "(`python run_folder.py data`).")
+        return
+    if df.empty:
+        st.success("No failures recorded — all_summary is empty.")
+        return
+
+    # Optional modality filter (the data_type column distinguishes them).
+    if "data_type" in df.columns:
+        mods = ["(all)"] + sorted(df["data_type"].dropna().unique().tolist())
+        pick = st.selectbox("Modality", mods, index=0)
+        if pick != "(all)":
+            df = df[df["data_type"] == pick]
+
+    # Counts: distinct problem videos, and how many checks failed in total.
+    n_videos = (df.drop_duplicates(subset=["data_type", "volunteer_id"])
+                  .shape[0]) if "volunteer_id" in df.columns else len(df)
+    n_failed_checks = int(
+        df["check_name"].astype(str).str.len().gt(0).sum()
+    ) if "check_name" in df.columns else len(df)
+    c1, c2 = st.columns(2)
+    c1.metric("Problem videos", n_videos)
+    c2.metric("Failed checks", n_failed_checks)
+
+    st.caption("One row per failed check (fail check + reason). ERROR videos "
+               "carry the error text as the reason.")
+    # use_container_width=True — see render_summaries.
+    st.dataframe(
+        _style_status(df, "overall_status"),
+        use_container_width=True, hide_index=True,
+    )
+
+    # Downloads: the flat CSV and the nested JSON, as written on disk.
+    d1, d2 = st.columns(2)
+    with d1:
+        st.download_button(
+            "Download all_summary.csv",
+            data=df.to_csv(index=False).encode("utf-8-sig"),
+            file_name="all_summary.csv",
+            mime="text/csv",
+        )
+    with d2:
+        if os.path.exists(json_path):
+            with open(json_path, "r", encoding="utf-8") as f:
+                st.download_button(
+                    "Download all_summary.json",
+                    data=f.read().encode("utf-8"),
+                    file_name="all_summary.json",
+                    mime="application/json",
+                )
+
+
 def main():
     args = parse_cli()
     st.set_page_config(page_title="Biometric verification", page_icon="", layout="wide")
@@ -1239,13 +1407,26 @@ def main():
                 "`-- --reports path/to/reports`.")
         st.stop()
 
+    mode = st.sidebar.radio(
+        "Mode", ["Single", "Compare", "Summaries", "All failures"]
+    )
+
+    # The summary views read root-level CSVs (face_summary.csv, all_summary.*)
+    # and do NOT need per-volunteer folders, so handle them before the
+    # volunteer-folder check that Single/Compare rely on.
+    if mode == "Summaries":
+        render_summaries(args.reports)
+        return
+    if mode == "All failures":
+        render_all_failures(args.reports)
+        return
+
     ids = list_volunteers(args.reports)
     if not ids:
         st.warning(f"No volunteer folders with an *_overall.csv under "
                    f"`{args.reports}/`.")
         st.stop()
 
-    mode = st.sidebar.radio("Mode", ["Single", "Compare"])
     st.sidebar.caption(f"{len(ids)} volunteers found")
 
     if mode == "Single":

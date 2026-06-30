@@ -221,6 +221,16 @@ def build_overall_record(rows, timeline, config=None):
     vid, dtype, fname = _row_identity(rows)
     failed_checks = [s["check_name"] for s in check_summaries
                      if s["final_status"] == "FAIL"]
+    # Same failed checks, but each paired with WHY it failed (the per-check
+    # reason string). This is what the customer-facing summaries report: one
+    # entry per failed check, so the reason gets its own column/field instead
+    # of being crammed together. ERROR checks are folded in too so a structural
+    # failure still shows a reason.
+    failed_checks_detail = [
+        {"check_name": s["check_name"], "reason": s["reason"]}
+        for s in check_summaries
+        if s["final_status"] in ("FAIL", "ERROR")
+    ]
     return {
         "volunteer_id": vid,
         "data_type": dtype,
@@ -231,6 +241,7 @@ def build_overall_record(rows, timeline, config=None):
         "fail": overall["fail"],
         "skip": overall["skip"],
         "failed_checks": failed_checks,
+        "failed_checks_detail": failed_checks_detail,
         **timeline_summary,
     }
 
@@ -321,3 +332,224 @@ def write_detail_csv(path, rows, timeline=None, quiet=False):
                         level, name, status, reason])
     if not quiet:
         print(f"wrote {len(rows)} rows to {path}")
+
+
+# --------------------------------------------------------------------------
+# Customer-facing summaries — what we hand back to the data provider.
+#
+# Two grains, shared by every modality (face / palm / walk):
+#
+#   <modality>_summary.csv  (e.g. face_summary.csv): the per-modality report.
+#       ONE ROW PER FAILED CHECK so each failure's reason gets its own cell
+#       (no "check: reason | check: reason" cramming). A video that passes
+#       everything contributes exactly ONE row with status PASS and blank
+#       check/reason. An ERROR video contributes one row carrying the error
+#       text as the reason. Internal-only stats (yaw/pitch, frames_sampled,
+#       timing) are deliberately NOT here — they live in each participant's
+#       own report and are not the customer's concern.
+#
+#   all_summary.csv / all_summary.json: the cross-modal roll-up of PROBLEM
+#       cases only (FAIL/ERROR) from every modality. The CSV is the same flat
+#       per-check grain as above (minus PASS rows) so a reviewer can pivot it
+#       in Excel; the JSON nests one object per video with a `failures` array,
+#       which is the clean shape for a customer's tooling to consume.
+#
+# Both writers live here (not in run_folder.py) so the future palm/walk
+# runners produce IDENTICALLY-shaped output by calling the SAME classes.
+# --------------------------------------------------------------------------
+
+# Statuses that mean "needs attention" -> included in the all_* roll-up.
+ATTENTION_STATUSES = frozenset({"FAIL", "ERROR"})
+
+# Per-check grain, shared by <modality>_summary.csv and all_summary.csv.
+# One row = one failed check (or one PASS/ERROR placeholder row).
+PERCHECK_FIELDNAMES = [
+    "data_type",        # face_rgb | palm | walk_* — which modality
+    "volunteer_id",
+    "filename",
+    "overall_status",   # the video's verdict: PASS | FAIL | ERROR
+    "check_name",       # the failed check; blank on a PASS/ERROR placeholder row
+    "reason",           # why it failed; blank on PASS; error text on ERROR
+]
+
+
+def expand_to_check_rows(rec):
+    """Turn ONE per-video overall record into per-check summary rows.
+
+    `rec` is a build_overall_record() dict (it carries failed_checks_detail).
+    Returns a list of flat dicts with PERCHECK_FIELDNAMES:
+
+      - FAIL video  -> one row per failed check (check_name + reason filled)
+      - ERROR video -> one row, check_name blank, reason = the error text
+      - PASS video  -> exactly one row, check_name + reason blank
+
+    Keeping this as a pure function (record -> rows) means the same expansion
+    feeds both the per-modality CSV and the all_summary CSV with no second
+    copy of the logic.
+    """
+    base = {
+        "data_type": rec.get("data_type") or "",
+        "volunteer_id": rec.get("volunteer_id") or "",
+        "filename": rec.get("filename") or "",
+        "overall_status": rec.get("final_status") or rec.get("overall_status") or "",
+    }
+    status = base["overall_status"].upper()
+
+    if status == "ERROR":
+        return [{**base, "check_name": "", "reason": rec.get("error", "")}]
+
+    detail = rec.get("failed_checks_detail") or []
+    if status == "FAIL" and detail:
+        return [{**base, "check_name": d["check_name"], "reason": d["reason"]}
+                for d in detail]
+
+    # PASS (or a FAIL with no detail, which shouldn't happen) -> one clean row.
+    return [{**base, "check_name": "", "reason": ""}]
+
+
+class SummaryWriter:
+    """Write ONE modality's per-check summary CSV (face_summary.csv, ...).
+
+    Open once per run, call .add(rec) with each video's build_overall_record()
+    dict; it expands the record to per-check rows and writes them. PASS videos
+    get their single placeholder row, so this file is the COMPLETE per-modality
+    report (not FAIL-only — that's what all_summary is for).
+    """
+
+    def __init__(self, path, mode="w"):
+        self.path = path
+        self.rows_written = 0
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        need_header = (mode == "w" or not os.path.exists(path)
+                       or os.path.getsize(path) == 0)
+        self._f = open(path, mode, newline="", encoding="utf-8-sig")
+        self._w = csv.DictWriter(self._f, fieldnames=PERCHECK_FIELDNAMES,
+                                 extrasaction="ignore")
+        if need_header:
+            self._w.writeheader()
+            self._f.flush()
+
+    def add(self, rec):
+        """Expand one overall record to per-check rows and write them."""
+        for row in expand_to_check_rows(rec):
+            self._w.writerow(row)
+            self.rows_written += 1
+        self._f.flush()  # a crash mid-run still leaves a valid partial CSV
+
+    def close(self):
+        try:
+            self._f.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+class AllSummaryWriter:
+    """Cross-modal FAIL/ERROR roll-up in BOTH csv and json.
+
+    Fed the SAME per-video records as SummaryWriter, but keeps only the
+    problem cases (FAIL/ERROR). Writes two files that stay in lock-step:
+
+      <stem>.csv  — flat per-check rows (Excel-pivotable), PASS rows omitted.
+      <stem>.json — list of {data_type, volunteer_id, filename, overall_status,
+                    failures: [{check_name, reason}, ...]} ; one object per
+                    problem video, the clean nested shape for customer tooling.
+
+    JSON is rewritten in full on each add() (the registry is held in memory)
+    so the file on disk is always valid; for ~1,500 volunteers with only the
+    failing subset kept, that is cheap.
+
+    csv_mode/json default to "w" (fresh). Pass mode="a" so palm/walk append to
+    the same all_summary after face has run — the JSON is re-loaded and merged.
+    """
+
+    def __init__(self, stem, mode="w"):
+        self.csv_path = f"{stem}.csv"
+        self.json_path = f"{stem}.json"
+        self.kept = 0
+        os.makedirs(os.path.dirname(stem) or ".", exist_ok=True)
+
+        # JSON registry: keyed (data_type, volunteer_id, filename) so a re-run
+        # of one modality replaces its own rows instead of duplicating them.
+        self._records = {}
+        if mode == "a" and os.path.exists(self.json_path):
+            try:
+                import json
+                with open(self.json_path, "r", encoding="utf-8") as jf:
+                    for obj in json.load(jf):
+                        key = (obj.get("data_type"), obj.get("volunteer_id"),
+                               obj.get("filename"))
+                        self._records[key] = obj
+            except (OSError, ValueError):
+                self._records = {}  # unreadable/partial -> start clean
+
+        # CSV: append if asked AND a non-empty file exists, else fresh+header.
+        csv_append = (mode == "a" and os.path.exists(self.csv_path)
+                      and os.path.getsize(self.csv_path) > 0)
+        self._cf = open(self.csv_path, "a" if csv_append else "w",
+                        newline="", encoding="utf-8-sig")
+        self._cw = csv.DictWriter(self._cf, fieldnames=PERCHECK_FIELDNAMES,
+                                  extrasaction="ignore")
+        if not csv_append:
+            self._cw.writeheader()
+            self._cf.flush()
+
+    def add(self, rec):
+        """Keep `rec` IFF it's a FAIL/ERROR; write its CSV rows and update JSON.
+        Returns True if kept."""
+        status = (rec.get("final_status") or rec.get("overall_status") or "").upper()
+        if status not in ATTENTION_STATUSES:
+            return False
+
+        check_rows = expand_to_check_rows(rec)
+        for row in check_rows:
+            self._cw.writerow(row)
+        self._cf.flush()
+
+        key = (rec.get("data_type") or "", rec.get("volunteer_id") or "",
+               rec.get("filename") or "")
+        self._records[key] = {
+            "data_type": rec.get("data_type") or "",
+            "volunteer_id": rec.get("volunteer_id") or "",
+            "filename": rec.get("filename") or "",
+            "overall_status": status,
+            "failures": [
+                {"check_name": r["check_name"], "reason": r["reason"]}
+                for r in check_rows if r["check_name"]  # drop blank placeholder
+            ] if status == "FAIL" else [],
+            # ERROR videos have no per-check failures; surface the message.
+            "error": rec.get("error", "") if status == "ERROR" else "",
+        }
+        self._flush_json()
+        self.kept += 1
+        return True
+
+    def _flush_json(self):
+        import json
+        # Stable order: by modality, then volunteer id, then filename.
+        ordered = sorted(self._records.values(),
+                         key=lambda o: (o["data_type"], o["volunteer_id"],
+                                        o["filename"]))
+        tmp = self.json_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as jf:
+            json.dump(ordered, jf, ensure_ascii=False, indent=2)
+        os.replace(tmp, self.json_path)  # atomic: never a half-written json
+
+    def close(self):
+        try:
+            self._cf.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False

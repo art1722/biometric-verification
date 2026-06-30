@@ -2,19 +2,36 @@
 
 For the real project scale (~1,500 volunteers) this walks an input folder,
 runs the face_rgb pipeline on each RGB video, writes the SAME per-volunteer
-report files that run_face.py produces, and appends one row per video to a
-single global summary CSV.
+report files that run_face.py produces, and writes two customer-facing
+summaries.
+
+Customer-facing output (one row per FAILED check, so each reason is its own
+cell — see qc.utils.report):
+  - face_summary.csv : this modality's full report. One row per failed check;
+    a video that passes everything gets one PASS row; an ERROR video gets one
+    row carrying the error text. Columns: volunteer_id, data_type, filename,
+    overall_status, check_name, reason. Internal stats (yaw/pitch, frame
+    counts, timing) are deliberately NOT here — they stay in each volunteer's
+    own report.
+  - all_summary.csv + all_summary.json : the cross-modal roll-up of PROBLEM
+    cases only (FAIL/ERROR) across face + palm + walk. CSV is the same flat
+    per-check grain (Excel-pivotable); JSON nests one object per video with a
+    `failures: [{check_name, reason}]` array for a customer's tooling.
 
 Design choices (confirmed with the team):
-  - Reuses qc.utils.report for ALL aggregation/writing — no second copy.
+  - Reuses qc.utils.report for ALL aggregation/writing — no second copy. The
+    SummaryWriter / AllSummaryWriter classes live there so the future palm and
+    walk runners emit IDENTICALLY-shaped output by calling the same classes.
+  - all_summary is APPENDED to by default, so palm/walk runs add to the same
+    files after face. Pass --fresh-all to start a new cross-modal roll-up.
   - Overlay is OFF by default (writing overlay video for 1,500 files takes
     hours/days). Enable per-run with --overlay.
   - Default sampling is --sample-fps 1 (fast). Pass --sample-fps 0 / a value
     to change; None (native, every frame) is intentionally NOT the batch
     default because it is far too slow at scale.
   - One bad/corrupt video does NOT stop the run: it is caught, logged, and
-    recorded as an ERROR row in the global summary so it stays visible.
-  - REVIEW is not used; the global summary has no review column.
+    recorded as an ERROR row so it stays visible.
+  - REVIEW is not used.
 
 Usage:
     python run_folder.py data
@@ -22,6 +39,7 @@ Usage:
     python run_folder.py data --sample-fps 2
     python run_folder.py data --overlay        # also write overlay videos (slow)
     python run_folder.py data --limit 10       # process only first 10 (smoke test)
+    python run_folder.py data --fresh-all      # start a new all_summary roll-up
 """
 import argparse
 import csv
@@ -42,6 +60,8 @@ from qc.utils.report import (
     write_result_csv,
     write_detail_header_csv,
     write_detail_csv,
+    SummaryWriter,
+    AllSummaryWriter,
 )
 
 # Strict match: lowercase '_face_rgb.mp4' only, to match the strict-case
@@ -50,22 +70,9 @@ from qc.utils.report import (
 # so the contractor must fix the casing first. (No re.IGNORECASE on purpose.)
 FACE_RGB_RE = re.compile(r"^(\d+)_face_rgb\.mp4$")
 
-# Global summary columns. No review_checks (REVIEW eliminated). ERROR column
-# carries the exception text for videos that failed to process.
-SUMMARY_FIELDNAMES = [
-    "volunteer_id",
-    "filename",
-    "overall_status",
-    "failed_checks",
-    "frames_sampled",
-    "detection_gaps",
-    "yaw_min",
-    "yaw_max",
-    "pitch_min",
-    "pitch_max",
-    "processing_time_sec",
-    "error",
-]
+# The customer-facing summaries are per-check (one row per failed check), so
+# this runner no longer owns a flat per-video column list — SummaryWriter /
+# AllSummaryWriter in qc.utils.report define the shared schema (PERCHECK_*).
 
 
 def parse_args():
@@ -76,7 +83,17 @@ def parse_args():
     ap.add_argument("--out-root", default="reports",
                     help="root for per-volunteer report folders (default: reports)")
     ap.add_argument("--summary-csv", default=None,
-                    help="global summary CSV (default: <out-root>/face_summary.csv)")
+                    help="this modality's per-check summary CSV "
+                         "(default: <out-root>/face_summary.csv)")
+    ap.add_argument("--all-summary", default=None,
+                    help="cross-modal FAIL/ERROR roll-up, written as both .csv "
+                         "and .json, shared by all modalities "
+                         "(default stem: <out-root>/all_summary). Appended to, "
+                         "so palm/walk runs add to the same files; pass "
+                         "--fresh-all to truncate first.")
+    ap.add_argument("--fresh-all", action="store_true",
+                    help="truncate the all_summary files before writing (start "
+                         "a new cross-modal roll-up instead of appending).")
     ap.add_argument("--sample-fps", type=float, default=1.0,
                     help="frames sampled per source second (batch default: 1). "
                          "Native/every-frame is intentionally not offered here.")
@@ -181,33 +198,28 @@ def process_one(path, vid, config, args):
     rec = build_overall_record(rows, timeline, config=config)
     elapsed = time.perf_counter() - start
 
-    return {
-        "volunteer_id": rec["volunteer_id"] or vid,
-        "filename": rec["filename"] or os.path.basename(path),
-        "overall_status": rec["final_status"],
-        "failed_checks": "; ".join(rec["failed_checks"]),
-        "frames_sampled": rec["frames_sampled"],
-        "detection_gaps": rec["detection_gaps"],
-        "yaw_min": rec["yaw_min"],
-        "yaw_max": rec["yaw_max"],
-        "pitch_min": rec["pitch_min"],
-        "pitch_max": rec["pitch_max"],
-        "processing_time_sec": f"{elapsed:.1f}",
-        "error": "",
-    }
+    # Normalise the few fields the runner/console rely on, then hand the WHOLE
+    # record to the writers — they expand it to per-check rows themselves.
+    rec["volunteer_id"] = rec.get("volunteer_id") or vid
+    rec["filename"] = rec.get("filename") or os.path.basename(path)
+    rec["data_type"] = rec.get("data_type") or "face_rgb"
+    rec["error"] = ""
+    rec["processing_time_sec"] = f"{elapsed:.1f}"
+    return rec
 
 
 def error_row(path, vid, exc, elapsed):
+    """An ERROR record shaped like build_overall_record's output, so the same
+    writers expand it (one row, status ERROR, reason = the error text)."""
     return {
         "volunteer_id": vid,
+        "data_type": "face_rgb",
         "filename": os.path.basename(path),
-        "overall_status": "ERROR",
-        "failed_checks": "",
-        "frames_sampled": "",
-        "detection_gaps": "",
-        "yaw_min": "", "yaw_max": "", "pitch_min": "", "pitch_max": "",
-        "processing_time_sec": f"{elapsed:.1f}",
+        "final_status": "ERROR",
+        "failed_checks": [],
+        "failed_checks_detail": [],
         "error": " ".join(str(exc).split())[:300],
+        "processing_time_sec": f"{elapsed:.1f}",
     }
 
 
@@ -224,6 +236,10 @@ def main():
 
     summary_csv = args.summary_csv or os.path.join(args.out_root, "face_summary.csv")
     os.makedirs(os.path.dirname(summary_csv) or ".", exist_ok=True)
+
+    # all_summary is a STEM: the writer makes <stem>.csv and <stem>.json.
+    all_stem = args.all_summary or os.path.join(args.out_root, "all_summary")
+    os.makedirs(os.path.dirname(all_stem) or ".", exist_ok=True)
 
     matched, skipped, wrong_case = find_face_rgb_videos(args.input_dir)
     if args.limit is not None:
@@ -245,42 +261,52 @@ def main():
     print(f"videos    : {total} face_rgb files  (sample_fps={args.sample_fps}, "
           f"overlay={'on' if args.overlay else 'off'})")
     print(f"out root  : {args.out_root}")
-    print(f"summary   : {summary_csv}\n")
+    print(f"summary   : {summary_csv}  (per-check, all videos)")
+    print(f"all       : {all_stem}.csv / .json  (FAIL/ERROR only, cross-modal)\n")
 
     counts = {"PASS": 0, "FAIL": 0, "SKIP": 0, "ERROR": 0}
     run_start = time.perf_counter()
 
-    # Stream rows to the summary CSV as we go, so a crash mid-run still leaves
-    # a partial-but-valid summary on disk.
-    with open(summary_csv, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=SUMMARY_FIELDNAMES)
-        w.writeheader()
+    # Two writers, opened together so both flush per video and a crash mid-run
+    # still leaves valid partial files:
+    #   SummaryWriter   -> face_summary.csv  (per-check rows; PASS gets one row)
+    #   AllSummaryWriter-> all_summary.csv + .json (FAIL/ERROR only, cross-modal)
+    # Both expand the SAME overall record, so face/palm/walk stay identical.
+    all_mode = "w" if args.fresh_all else "a"
+    with SummaryWriter(summary_csv, mode="w") as summary, \
+            AllSummaryWriter(all_stem, mode=all_mode) as all_summary:
 
         for i, (vid, path) in enumerate(matched, start=1):
             t0 = time.perf_counter()
             try:
-                row = process_one(path, vid, config, args)
+                rec = process_one(path, vid, config, args)
             except Exception as exc:  # noqa: BLE001 — one bad file must not kill the batch
                 elapsed = time.perf_counter() - t0
-                row = error_row(path, vid, exc, elapsed)
-                print(f"[{i}/{total}] {vid:>5}  ERROR  {row['error']}", flush=True)
+                rec = error_row(path, vid, exc, elapsed)
+                print(f"[{i}/{total}] {vid:>5}  ERROR  {rec['error']}", flush=True)
                 traceback.print_exc()
             else:
-                status = row["overall_status"]
+                status = rec["final_status"]
                 print(f"[{i}/{total}] {vid:>5}  {status:<6} "
-                      f"({row['processing_time_sec']}s, "
-                      f"{row['frames_sampled']} frames, "
-                      f"{row['detection_gaps']} gaps)", flush=True)
+                      f"({rec['processing_time_sec']}s, "
+                      f"{rec.get('frames_sampled', '')} frames, "
+                      f"{rec.get('detection_gaps', '')} gaps)", flush=True)
 
-            counts[row["overall_status"]] = counts.get(row["overall_status"], 0) + 1
-            w.writerow(row)
-            f.flush()
+            counts[rec["final_status"]] = counts.get(rec["final_status"], 0) + 1
+            # Per-modality summary gets EVERY video (PASS included); the
+            # cross-modal all_summary keeps only FAIL/ERROR (it filters itself).
+            summary.add(rec)
+            all_summary.add(rec)
+
+    all_kept = all_summary.kept
 
     elapsed = time.perf_counter() - run_start
     print(f"\n=== done: {total} videos in {elapsed:.1f}s ===")
     print(f"  PASS={counts.get('PASS',0)}  FAIL={counts.get('FAIL',0)}  "
           f"SKIP={counts.get('SKIP',0)}  ERROR={counts.get('ERROR',0)}")
     print(f"  summary: {summary_csv}")
+    print(f"  all    : {all_stem}.csv / .json  ({all_kept} FAIL/ERROR video(s) "
+          f"{'written' if args.fresh_all else 'appended'})")
     if wrong_case:
         print(f"\n  WARNING: {len(wrong_case)} wrong-case face_rgb file(s) were "
               f"NOT processed (strict naming). Fix the casing to '_face_rgb.mp4':")
