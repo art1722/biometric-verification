@@ -1,33 +1,50 @@
-"""Run the MINIMAL palm pipeline on one image and write the four CSVs.
+"""Run palm QC for ONE participant across all their palm images.
 
-Mirror of run_face.py, reduced to the metadata-only palm slice. It writes the
-SAME four report files run_face.py produces, with a `palm_` stem instead of
-`face_`:
+This is the SINGLE palm runner (it replaces the old per-image run_palm.py and
+the previous run_palm_participant.py). It grades the angle check at PARTICIPANT
+level -- each rotated pose relative to that hand's own N baseline, which
+per-image grading cannot do (see qc.pipelines.palm.run_palm_participant /
+check_palm_pose_delta).
 
-    reports/<id>/palm_<id>_detail.csv          (one row per check)
-    reports/<id>/palm_<id>_detail_header.csv   (per-frame measurements; here:
-                                                header only, a still has no
-                                                timeline)
-    reports/<id>/palm_<id>_result.csv          (per-check summary)
-    reports/<id>/palm_<id>_overall.csv         (one PASS/FAIL row for the file)
+Invocation -- folder + participant id
+-------------------------------------
+    python run_palm.py data 002
 
-Reusing the EXACT report writers (write_detail_csv / write_detail_header_csv /
-write_result_csv) is the point: the palm CSVs are structurally identical to the
-face CSVs, so anything downstream (the dashboard, a reviewer's eye) reads both
-the same way.
+`data` is the folder to scan; `002` is the participant id. The runner globs
+    002_palm_{L,R}_{N,RL,RR,PU,PD}.jpg
+inside that folder and runs QC on whatever subset is present. Missing files are
+NORMAL: it warns which of the 10 are absent and continues with the rest.
 
-Filename: NNN_palm_[L|R]_[N|RL|RR|PU|PD].jpg. The volunteer id, hand, and pose
-are parsed from the name; hand/pose are passed through to run_palm (unused by
-this slice, wired for later checks).
+You can still pass explicit image paths instead of "folder id" if you want:
+    python run_palm.py data/002_palm_L_N.jpg data/002_palm_L_RL.jpg --id 002
 
-Usage:
-    python run_palm.py 0001_palm_L_N.jpg
-    python run_palm.py 0001_palm_L_N.jpg --out-dir reports/0001
+Output -- THREE consolidated files per participant (not per image)
+------------------------------------------------------------------
+    reports/<id>/palm_<id>_detail.csv    every check row, all images (per-check
+                                         grain; one row per (image, check))
+    reports/<id>/palm_<id>_overall.csv   ONE row per image: that image's
+                                         PASS/FAIL verdict
+    plus one overlay PER IMAGE:
+    reports/<id>/palm_<id>_<hand>_<pose>_overlay.jpg
+
+result.csv is intentionally NOT written for palm. For a still image every check
+fires exactly once, so result.csv was a near-duplicate of detail.csv (its
+per-frame count columns are always 1/0 and its yaw/pitch columns are always
+blank). detail.csv + overall.csv carry all the information without the
+redundant, video-shaped file. The dashboard tolerates a missing result.csv (it
+shows an info note; the raw rows remain in the detail expander).
+
+Overlays -- ON BY DEFAULT
+-------------------------
+An overlay is written for every image by default. `--overlay` is accepted for
+explicitness/back-compat but is now a no-op (overlays already on). Use
+`--no-overlay` to turn them off.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 import re
 import sys
@@ -38,125 +55,262 @@ try:
 except ImportError:
     sys.exit("PyYAML is required: pip install pyyaml")
 
-from qc.pipelines.palm import run_palm
+from qc.pipelines.palm import run_palm as run_palm_image, run_palm_participant
 from qc.utils.report import (
     write_detail_csv,
-    write_detail_header_csv,
-    write_result_csv,
+    summarize_rows_by_check,
+    summarize_overall,
+    RESULT_FIELDNAMES,
 )
 
-# Strict palm filename: <id>_palm_<L|R>_<N|RL|RR|PU|PD>.jpg, lowercase only,
-# matching the patterns in config.filenames.required. Captures id/hand/pose.
-PALM_RE = re.compile(r"^(?P<vid>\d+)_palm_(?P<hand>[LR])_(?P<pose>N|RL|RR|PU|PD)\.jpg$")
+PALM_RE = re.compile(
+    r"^(?P<vid>\d+)_palm_(?P<hand>[LR])_(?P<pose>N|RL|RR|PU|PD)\.jpg$",
+    re.IGNORECASE)
+
+# The canonical 10 files we expect per participant (2 hands x 5 poses).
+HANDS = ("L", "R")
+POSES = ("N", "RL", "RR", "PU", "PD")
 
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Minimal palm QC (container + resolution).")
-    ap.add_argument("image", help="path to NNN_palm_[L|R]_[N|RL|RR|PU|PD].jpg")
+    ap = argparse.ArgumentParser(
+        description="Participant-level palm QC (angle graded relative to N).")
+    ap.add_argument(
+        "inputs", nargs="+",
+        help="EITHER `<folder> <participant_id>` (e.g. `data 002`), OR an "
+             "explicit list of palm image paths.")
     ap.add_argument("--config", default="config.yml", help="path to config.yml")
-    ap.add_argument("--id", default=None, help="volunteer id (else parsed from filename)")
+    ap.add_argument("--id", default=None,
+                    help="volunteer id (else taken from the 2nd positional arg "
+                         "in `folder id` form, or parsed from filenames)")
     ap.add_argument("--out-dir", default=None,
                     help="output folder; default: reports/<volunteer_id>")
-    ap.add_argument("--overlay", nargs="?", const="__default__", default=None,
-                    help="write an annotated image (landmarks+bbox+stats). "
-                         "Optionally give a path; default: <out-dir>/palm_<id>_<hand>_<pose>_overlay.jpg")
+    ap.add_argument("--overlay", action="store_true",
+                    help="(no-op) overlays are ON by default; kept for "
+                         "back-compat. Use --no-overlay to disable.")
+    ap.add_argument("--no-overlay", action="store_true",
+                    help="do NOT write the per-image overlay images.")
+    ap.add_argument("--overlay-on-image", action="store_true",
+                    help="draw the check panel ON TOP of the image instead of "
+                         "on a separate strip below it (default is below, so "
+                         "the panel never covers the palm).")
     ap.add_argument("--no-detect", action="store_true",
-                    help="metadata-only: skip hand detection and the "
-                         "check_palm_present/size/angle rows (container + "
-                         "resolution only). Detection runs by DEFAULT now that "
-                         "it produces real check rows.")
+                    help="metadata-only: skip hand detection (no present/size/"
+                         "brightness/spread/angle rows). Detection runs by "
+                         "default.")
     ap.add_argument("--quiet", action="store_true", help="suppress writer prints")
     return ap.parse_args()
 
 
-def parse_filename(path):
-    """Return (vid, hand, pose) from the filename, or (None, None, None)."""
+def resolve_inputs(inputs, explicit_id):
+    """Work out (image_paths, vid) from the positional inputs.
+
+    Two accepted shapes:
+      1. `<folder> <id>`  -> glob folder for <id>_palm_*.jpg (the headline UX).
+      2. explicit image path(s) -> use them directly; id from --id or filenames.
+
+    Returns (image_paths, vid, expected_missing) where expected_missing is the
+    list of the 10 canonical filenames NOT found (folder form only; [] otherwise).
+    """
+    # --- form 1: exactly two args, first is a dir, second looks like an id ---
+    if (len(inputs) == 2 and os.path.isdir(inputs[0])
+            and re.fullmatch(r"\d+", inputs[1])):
+        folder, vid = inputs[0], inputs[1]
+        vid = explicit_id or vid
+        found = {}
+        for name in sorted(os.listdir(folder)):
+            m = PALM_RE.match(name)
+            if m and m.group("vid") == vid:
+                found[name.lower()] = os.path.join(folder, name)
+        # Determine which of the canonical 10 are missing (for a friendly warn).
+        expected = [f"{vid}_palm_{h}_{p}.jpg" for h in HANDS for p in POSES]
+        missing = [e for e in expected if e.lower() not in found]
+        paths = [found[e.lower()] for e in expected if e.lower() in found]
+        return paths, vid, missing
+
+    # --- form 2: explicit files (and/or folders) ---
+    paths = []
+    for item in inputs:
+        if os.path.isdir(item):
+            for name in sorted(os.listdir(item)):
+                if PALM_RE.match(name):
+                    paths.append(os.path.join(item, name))
+        elif os.path.isfile(item):
+            if PALM_RE.match(os.path.basename(item)):
+                paths.append(item)
+            else:
+                print(f"  (skip, not a palm filename: {os.path.basename(item)})")
+        else:
+            print(f"  (skip, not found: {item})")
+    # de-dup, preserve order
+    seen, uniq = set(), []
+    for p in paths:
+        key = os.path.basename(p).lower()
+        if key not in seen:
+            seen.add(key)
+            uniq.append(p)
+
+    ids = {PALM_RE.match(os.path.basename(p)).group("vid") for p in uniq}
+    if explicit_id:
+        vid = explicit_id
+        uniq = [p for p in uniq
+                if PALM_RE.match(os.path.basename(p)).group("vid") == vid]
+    elif len(ids) == 1:
+        vid = next(iter(ids))
+    elif not ids:
+        vid = None
+    else:
+        sys.exit(
+            f"multiple participant ids found: {sorted(ids)}\n"
+            "This runner grades ONE participant. Pass `<folder> <id>` or --id.")
+    return uniq, vid, []
+
+
+def parse_hand_pose(path):
     m = PALM_RE.match(os.path.basename(path))
-    if not m:
-        return None, None, None
-    return m.group("vid"), m.group("hand"), m.group("pose")
+    return (m.group("hand").upper(), m.group("pose").upper()) if m else (None, None)
+
+
+def write_consolidated_result_NOT_USED():
+    """Placeholder: result.csv is intentionally dropped for palm (see module
+    docstring). Kept as a named anchor so a future reviewer grepping for
+    'result' finds the explicit decision."""
+    raise NotImplementedError
+
+
+def write_consolidated_detail(out_dir, vid, rows, quiet):
+    """One detail.csv for the whole participant: every check row, all images.
+    Grain unchanged (one row per (image, check)); timeline is [] (stills)."""
+    path = os.path.join(out_dir, f"palm_{vid}_detail.csv")
+    write_detail_csv(path, rows, [], quiet=quiet)
+    return path
+
+
+def write_consolidated_overall(out_dir, vid, rows_by_file, image_order, config, quiet):
+    """One overall.csv: ONE row PER IMAGE (that image's PASS/FAIL verdict).
+
+    Built per image from summarize_rows_by_check + summarize_overall so the
+    verdict logic matches face/walk exactly. yaw/pitch/frames columns are left
+    blank -- a still has no timeline.
+    """
+    aggregation_cfg = (config or {}).get("report", {}).get("aggregation", {})
+    path = os.path.join(out_dir, f"palm_{vid}_overall.csv")
+    os.makedirs(out_dir, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=RESULT_FIELDNAMES)
+        w.writeheader()
+        for fname in image_order:
+            file_rows = rows_by_file.get(fname, [])
+            if not file_rows:
+                continue
+            summaries = summarize_rows_by_check(file_rows, aggregation_cfg)
+            overall = summarize_overall(summaries)
+            vid0 = file_rows[0].volunteer_id
+            dtype0 = file_rows[0].data_type
+            w.writerow({
+                "volunteer_id": vid0, "data_type": dtype0, "filename": fname,
+                **overall,
+                "frames_sampled": "", "detection_gaps": "",
+                "yaw_min": "", "yaw_max": "", "pitch_min": "", "pitch_max": "",
+            })
+    if not quiet:
+        print(f"wrote per-image overall CSV to {path}")
+    return path
 
 
 def main():
     args = parse_args()
 
-    if not os.path.exists(args.image):
-        sys.exit(f"image not found: {args.image}")
     if not os.path.exists(args.config):
         sys.exit(f"config not found: {args.config}")
-
     with open(args.config, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
-    vid_parsed, hand, pose = parse_filename(args.image)
-    vid = args.id or vid_parsed
+    images, vid, missing = resolve_inputs(args.inputs, args.id)
+
+    if not images:
+        sys.exit("no palm images found (expected NNN_palm_[L|R]_[N|RL|RR|PU|PD].jpg)")
     if vid is None:
-        sys.exit(
-            "filename does not match NNN_palm_[L|R]_[N|RL|RR|PU|PD].jpg\n"
-            f"Got: {os.path.basename(args.image)}\n"
-            "Pass --id to override, or fix the filename."
-        )
+        sys.exit("could not determine participant id; pass `<folder> <id>` or --id.")
 
     out_dir = args.out_dir or os.path.join("reports", vid)
     os.makedirs(out_dir, exist_ok=True)
-    stem = f"palm_{vid}"
-    detail_path = os.path.join(out_dir, f"{stem}_detail.csv")
-    detail_header_path = os.path.join(out_dir, f"{stem}_detail_header.csv")
-    result_path = os.path.join(out_dir, f"{stem}_result.csv")
-    overall_path = os.path.join(out_dir, f"{stem}_overall.csv")
 
-    print(f"Running minimal palm pipeline on: {args.image}")
+    print(f"Participant: {vid}")
+    print(f"images ({len(images)}): " +
+          ", ".join(os.path.basename(p) for p in images))
+    if missing:
+        print(f"WARNING: {len(missing)} of 10 expected files missing "
+              f"(continuing with what's present):")
+        for m in missing:
+            print(f"    - {m}")
     print(f"output folder: {out_dir}\n")
 
+    want_detect = not args.no_detect
     t0 = time.time()
-    want_overlay = args.overlay is not None
-    # Detection now produces the check_palm_present/size/angle ROWS, so it must
-    # run whenever palm QC runs -- NOT only when an overlay is requested. It is
-    # ON by default; --no-detect opts out for a metadata-only run. An overlay
-    # still forces detection on (it needs landmarks to draw), even with
-    # --no-detect, so the flags can't contradict into a blank overlay.
-    want_detect = (not args.no_detect) or want_overlay
-    rows, timeline, hand_result = run_palm(
-        args.image, vid, config, hand=hand, pose=pose, detect=want_detect)
+
+    # --- participant-level run: per-image checks + N-relative angle grading ---
+    rows, _timelines = run_palm_participant(
+        vid, images, config, detect=want_detect)
+
+    # Group finalised rows back by filename (preserve input image order).
+    rows_by_file = {}
+    for r in rows:
+        rows_by_file.setdefault(r.filename, []).append(r)
+    image_order = [os.path.basename(p) for p in images]
+
+    # --- print rows to stdout (same shape as the old runners) ---
+    if not args.quiet:
+        print("volunteer_id, data_type, filename, check_level, check_name, "
+              "status, reason, frame_index")
+        for r in rows:
+            print(", ".join(str(x) for x in r.as_tuple()))
+        print()
+
+    # --- THE TWO consolidated CSVs (result.csv intentionally dropped) ---
+    detail_path = write_consolidated_detail(out_dir, vid, rows, args.quiet)
+    overall_path = write_consolidated_overall(
+        out_dir, vid, rows_by_file, image_order, config, args.quiet)
+
+    # --- overlays: ON BY DEFAULT, one per image (unless --no-overlay) ---
+    if not args.no_overlay:
+        from qc.utils.palm_overlay import draw_palm_overlay
+        from types import SimpleNamespace
+        for path in images:
+            fname = os.path.basename(path)
+            hand, pose = parse_hand_pose(path)
+            # Re-detect this image just for drawing (cheap; keeps the batch
+            # grading path clean). The status panel uses the FINALISED rows.
+            _, _, hand_result, _ = run_palm_image(
+                path, vid, config, hand=hand, pose=pose, detect=True)
+            # {check_name: (status, reason)} so the overlay's bottom panel can
+            # show each check's full reason (face-overlay style), not just the
+            # PASS/FAIL word.
+            check_status = {r.check_name: (r.status, r.reason)
+                            for r in rows_by_file.get(fname, [])}
+            if hand_result is None:
+                hand_result = SimpleNamespace(
+                    ok=False, message="hand model unavailable",
+                    landmarks_px=None, bbox=None,
+                    handedness=None, handedness_score=None)
+            tag = "_".join(x for x in (hand, pose) if x)
+            ov_path = os.path.join(out_dir, f"palm_{vid}_{tag}_overlay.jpg")
+            draw_palm_overlay(path, hand_result,
+                              checks=check_status, out_path=ov_path,
+                              panel_below=not args.overlay_on_image)
+            if not args.quiet:
+                print(f"wrote overlay image to {ov_path}")
+
     elapsed = time.time() - t0
 
-    # Print the rows to stdout (same shape as run_face's print_rows).
-    print("volunteer_id, data_type, filename, check_level, check_name, status, reason, frame_index")
+    # --- console summary of the angle verdicts (the participant-level point) ---
+    print("\n=== angle results (relative to each hand's N) ===")
     for r in rows:
-        print(", ".join(str(x) for x in r.as_tuple()))
-    print()
+        if r.check_name == "check_palm_angle":
+            print(f"  {r.filename:24s} {r.status:5s} {r.reason}")
 
-    # ---- the four CSVs, identical writers to face ----
-    write_detail_csv(detail_path, rows, timeline, quiet=args.quiet)
-    write_detail_header_csv(detail_header_path, rows, timeline, quiet=args.quiet)
-    write_result_csv(result_path, overall_path, rows, timeline,
-                     config=config, quiet=args.quiet)
-
-    # ---- optional annotated image ----
-    if want_overlay:
-        from qc.utils.palm_overlay import draw_palm_overlay
-        if args.overlay == "__default__":
-            tag = "_".join(x for x in (hand, pose) if x)
-            ov_name = f"palm_{vid}_{tag}_overlay.jpg" if tag else f"palm_{vid}_overlay.jpg"
-            overlay_path = os.path.join(out_dir, ov_name)
-        else:
-            overlay_path = args.overlay
-
-        # Build a {check_name: status} dict from the rows for the header panel.
-        check_status = {r.check_name: r.status for r in rows}
-        if hand_result is None:
-            # Detection unavailable (e.g. model bundle missing). Still write an
-            # annotated image showing just the metadata checks, no landmarks.
-            from types import SimpleNamespace
-            hand_result = SimpleNamespace(
-                ok=False, message="hand model unavailable",
-                landmarks_px=None, bbox=None,
-                handedness=None, handedness_score=None)
-        draw_palm_overlay(args.image, hand_result,
-                          checks=check_status, out_path=overlay_path)
-        if not args.quiet:
-            print(f"wrote overlay image to {overlay_path}")
-
+    print(f"\nwrote: {detail_path}")
+    print(f"wrote: {overall_path}")
     print(f"\n=== done in {elapsed:.2f}s ===")
 
 

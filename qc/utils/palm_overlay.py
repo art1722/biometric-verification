@@ -80,6 +80,8 @@ def draw_palm_overlay(
     color_space: str = "BGR",
     checks: Optional[dict] = None,
     out_path: Optional[str] = None,
+    panel_below: bool = True,
+    draw_angle_vectors: bool = True,
 ):
     """Annotate one image with a HandResult and optionally save it.
 
@@ -89,10 +91,18 @@ def draw_palm_overlay(
             handedness / handedness_score). Any field may be None; whatever is
             present is drawn, the rest is skipped.
         color_space: "BGR" (OpenCV default) or "RGB" for the input array.
-        checks: optional {check_name: status} to list in the header panel,
-            e.g. {"check_palm_present": "PASS", "check_palm_size": "FAIL"}.
+        checks: optional {check_name: (status, reason)} (or bare status) to
+            list in the bottom check panel.
         out_path: if given, the annotated image is written here (.jpg/.png by
             extension) and the path is returned.
+        panel_below: when True (DEFAULT), the per-check panel is drawn on a
+            separate grey strip APPENDED BELOW the image, so it never covers the
+            palm. When False, the panel is drawn ON TOP of the image (the old
+            behaviour; the runner's --overlay-on-image flag sets this).
+        draw_angle_vectors: when True (DEFAULT), draw the vectors that
+            check_palm_angle measures -- the palm "up" axis (wrist -> knuckle
+            midpoint) and "across" axis (index_mcp -> pinky_mcp) -- on every
+            pose including N, so the angle geometry is visible.
 
     Returns:
         The annotated BGR image array (and writes out_path if provided).
@@ -133,6 +143,52 @@ def draw_palm_overlay(
                 else:
                     cv2.circle(img, (px, py), lm_radius, (210, 210, 210), -1, cv2.LINE_AA)
 
+    # --- angle vectors: draw what check_palm_angle measures (every pose,
+    # including N). The angle is built from WRIST(0), INDEX_MCP(5), PINKY_MCP(17):
+    #   up     = wrist -> midpoint(index_mcp, pinky_mcp)   (along the palm)
+    #   across = index_mcp -> pinky_mcp                     (the knuckle line)
+    # We draw both in PIXEL space (world coords aren't drawable) so the geometry
+    # behind roll/pitch is visible. The math uses world coords; these pixel
+    # vectors are the faithful 2D shadow of the same three points. ---
+    if draw_angle_vectors and landmarks and len(landmarks) > 17:
+        try:
+            import math as _math
+            wx, wy, _ = landmarks[0]      # wrist
+            ix, iy, _ = landmarks[5]      # index_mcp
+            kx, ky, _ = landmarks[17]     # pinky_mcp
+            mx, my = (ix + kx) // 2, (iy + ky) // 2   # knuckle midpoint
+            vec_thick = max(2, bone_thick + 1)
+
+            # tipLength in cv2.arrowedLine is a FRACTION OF THE LINE LENGTH, so
+            # a short vector (the "across" knuckle line) would get a tiny,
+            # near-invisible head while a long one (the "up" axis) looks fine.
+            # Fix: target a FIXED arrowhead size in pixels (scaled to the image)
+            # and convert to the per-line fraction = head_px / line_length. This
+            # gives both arrows an equally visible head regardless of length.
+            head_px = max(18.0, min(w, h) * 0.025)
+
+            def _tip_frac(x0, y0, x1, y1):
+                length = _math.hypot(x1 - x0, y1 - y0)
+                if length < 1.0:
+                    return 0.3  # degenerate; let OpenCV draw something
+                return max(0.05, min(0.6, head_px / length))
+
+            # "across" axis (knuckle line, index_mcp -> pinky_mcp) in magenta.
+            cv2.arrowedLine(img, (ix, iy), (kx, ky), (255, 90, 220),
+                            vec_thick, cv2.LINE_AA,
+                            tipLength=_tip_frac(ix, iy, kx, ky))
+            # "up" axis (wrist -> knuckle midpoint) in yellow.
+            cv2.arrowedLine(img, (wx, wy), (mx, my), (60, 255, 255),
+                            vec_thick, cv2.LINE_AA,
+                            tipLength=_tip_frac(wx, wy, mx, my))
+            # Small labels at the arrow heads.
+            _put(img, "across", (kx + 6, ky), (255, 90, 220),
+                 scale=fs * 0.7, thick=max(1, int(fs)))
+            _put(img, "up", (mx + 6, my), (60, 255, 255),
+                 scale=fs * 0.7, thick=max(1, int(fs)))
+        except Exception:
+            pass  # never let a drawing glitch break the overlay
+
     # --- bounding box + WxH label (detect_hand DOES return a bbox) ---
     if bbox is not None:
         bx, by, bw, bh = bbox
@@ -141,7 +197,9 @@ def draw_palm_overlay(
         ly = max(int(fs * 30), by - 8)
         _put(img, label, (bx + 4, ly), _GREEN, scale=fs, thick=max(1, box_thick))
 
-    # --- header stat panel (top-left) ---
+    # --- header stat panel (top-left): hand / bbox / landmarks ONLY ---
+    # The per-check results moved to the BOTTOM panel (face-overlay style), so
+    # the header now carries just the detection facts.
     lines = []
     if handedness is not None:
         s = f" ({hand_score:.2f})" if hand_score is not None else ""
@@ -151,10 +209,6 @@ def draw_palm_overlay(
     lines.append((f"landmarks: {len(landmarks) if landmarks else 0}/21", _WHITE))
     if not getattr(result, "ok", True):
         lines.append((f"detect: {getattr(result, 'message', 'no hand')}", _AMBER))
-    if checks:
-        for name, status in checks.items():
-            lines.append((f"{name}: {status}",
-                          _STATUS_COLOR.get(status, _GREY)))
 
     if lines:
         pad = int(fs * 12)
@@ -169,8 +223,178 @@ def draw_palm_overlay(
             _put(img, text, (pad, y), color, scale=fs, thick=max(1, int(fs * 2)))
             y += line_h
 
+    # --- per-check panel ---
+    # Default (panel_below=True): append a separate grey strip BELOW the image
+    # and draw the checks there, so the panel never covers the palm. The image
+    # canvas grows taller; the original photo is untouched above the strip.
+    # panel_below=False: draw the panel ON TOP of the image (old behaviour;
+    # the runner's --overlay-on-image flag).
+    if checks:
+        if panel_below:
+            img = _append_check_strip(img, checks, w, fs)
+        else:
+            _draw_check_panel(img, checks, w, h, fs)
+
     if out_path:
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
         cv2.imwrite(out_path, img)
 
     return img
+
+
+def _append_check_strip(img, checks: dict, img_w: int, base_fs: float):
+    """Return a NEW image: the original with a grey check-strip appended below.
+
+    The strip is its own band of pixels (not drawn over the photo), full image
+    width, tall enough to hold one row per check. Columns: STATUS | name |
+    reason. Reasons are truncated with ".." only if they exceed the (full-width)
+    strip, which is rare.
+    """
+    if not checks:
+        return img
+
+    s = max(0.5, min(2.5, base_fs / 0.85))
+    fs = 0.85 * s
+    thick = max(1, int(round(1.25 * s)))
+    line_h = int(40 * s)
+    pad = int(16 * s)
+
+    names = sorted(checks.keys())
+    items = [(nm, *_normalize_check(checks[nm])) for nm in names]
+
+    # Column geometry, measured from the actual text.
+    label_texts = [f"{st:5s} {nm}" for nm, st, _r in items]
+    max_label_w = max(
+        cv2.getTextSize(t, _FONT, fs, thick)[0][0] for t in label_texts)
+    gap = int(30 * s)
+    status_col_w = int(95 * s)
+    name_col_w = max_label_w + gap
+
+    strip_h = line_h * len(items) + pad * 2
+    # The strip matches the image width so it lines up flush underneath.
+    strip = np.full((strip_h, img_w, 3), 35, dtype=np.uint8)  # dark grey
+
+    status_x = pad
+    name_x = status_x + status_col_w
+    reason_x = pad + name_col_w
+    reason_col_w = max(0, img_w - reason_x - pad)
+    y = pad + int(28 * s)
+
+    for name, status, reason in items:
+        color = _STATUS_COLOR.get(status, _WHITE)
+        _put(strip, status, (status_x, y), color, fs, thick)
+        _put(strip, name, (name_x, y), color, fs, thick)
+        if reason and reason_col_w > 0:
+            short = _truncate_to_width(reason, reason_col_w, fs, thick)
+            if short:
+                _put(strip, short, (reason_x, y), color, fs, thick)
+        y += line_h
+
+    # A thin divider line between photo and strip.
+    cv2.line(strip, (0, 0), (img_w, 0), (80, 80, 80), max(1, int(2 * s)))
+    return np.vstack([img, strip])
+
+
+def _normalize_check(value):
+    """Accept either a bare status string OR a (status, reason) tuple.
+
+    The runner now passes (status, reason); older callers may pass just the
+    status. Returns (status, reason) with reason="" when only a status is given.
+    """
+    if isinstance(value, (tuple, list)):
+        status = value[0] if len(value) > 0 else ""
+        reason = value[1] if len(value) > 1 else ""
+        return str(status), str(reason or "")
+    return str(value), ""
+
+
+def _truncate_to_width(text, max_w, fs, thick, ellipsis=".."):
+    """Trim `text` so it fits within `max_w` px, appending ".." if cut.
+
+    Measures with cv2.getTextSize (the real rendered width), shrinking from the
+    end until text+".." fits. Returns "" for empty input; returns the ellipsis
+    alone only if even that does not fit (rare).
+    """
+    if not text:
+        return ""
+    full_w = cv2.getTextSize(text, _FONT, fs, thick)[0][0]
+    if full_w <= max_w:
+        return text
+    # Binary-ish shrink: drop characters until text+ellipsis fits.
+    lo, hi = 0, len(text)
+    best = ""
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        cand = text[:mid].rstrip() + ellipsis
+        cw = cv2.getTextSize(cand, _FONT, fs, thick)[0][0]
+        if cw <= max_w:
+            best = cand
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def _draw_check_panel(img, checks: dict, w: int, h: int, base_fs: float):
+    """Bottom-left panel: one row per check, columns STATUS | name | reason.
+
+    Mirrors the face overlay's _draw_check_panel. `checks` maps
+    check_name -> (status, reason) (or bare status; see _normalize_check). The
+    reason column is truncated with ".." to the panel's right edge.
+    """
+    if not checks:
+        return
+
+    # Scale relative to the image, like the face panel (which scales by a
+    # per-frame `s`). Here base_fs already encodes image size; derive a panel
+    # scale from it so rows are readable on a 4032px photo and a small crop.
+    s = max(0.5, min(2.5, base_fs / 0.85))
+    fs = 0.85 * s
+    thick = max(1, int(round(1.25 * s)))
+    line_h = int(34 * s)
+    pad = int(12 * s)
+
+    names = sorted(checks.keys())
+    items = [(nm, *_normalize_check(checks[nm])) for nm in names]
+
+    # Column geometry: STATUS | name | reason. Size the name column to the
+    # widest "STATUS  name" so the reason column never overlaps it.
+    label_texts = [f"{st:5s} {nm}" for nm, st, _r in items]
+    max_label_w = max(
+        cv2.getTextSize(t, _FONT, fs, thick)[0][0] for t in label_texts)
+    gap = int(30 * s)
+
+    status_col_w = int(95 * s)            # width reserved for the STATUS word
+    name_col_w = max_label_w + gap        # reason starts after the widest label
+
+    # Panel width: leave a right margin; cap the reason column to the room left.
+    side_margin = int(20 * s)
+    x0 = int(12 * s)
+    panel_w_max = w - x0 - side_margin
+    # Target a generous reason column but never exceed the image.
+    reason_col_w = max(int(300 * s), panel_w_max - (pad + name_col_w + pad))
+    panel_w = min(pad + name_col_w + reason_col_w + pad, panel_w_max)
+    # Recompute the real reason width inside the (possibly clamped) panel.
+    reason_col_w = max(0, panel_w - (pad + name_col_w + pad))
+
+    panel_h = line_h * len(items) + pad * 2
+    y0 = h - panel_h - int(16 * s)
+
+    overlay = img.copy()
+    cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y0 + panel_h), _PANEL, -1)
+    cv2.addWeighted(overlay, 0.6, img, 0.4, 0, img)
+
+    status_x = x0 + pad
+    name_x = status_x + status_col_w
+    reason_x = x0 + pad + name_col_w
+    y = y0 + pad + int(26 * s)
+
+    for name, status, reason in items:
+        color = _STATUS_COLOR.get(status, _WHITE)
+        _put(img, status, (status_x, y), color, fs, thick)
+        _put(img, name, (name_x, y), color, fs, thick)
+        if reason and reason_col_w > 0:
+            short = _truncate_to_width(reason, reason_col_w, fs, thick)
+            if short:
+                _put(img, short, (reason_x, y), color, fs, thick)
+        y += line_h

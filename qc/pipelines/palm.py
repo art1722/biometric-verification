@@ -153,6 +153,7 @@ def run_palm(
     # plus the bbox/landmarks the overlay draws -- the single-detect discipline
     # the face pipeline established (detect once, every check consumes it).
     hand_result = None
+    measured_angle = None  # raw {"roll","pitch"} for batch N-delta grading
     if detect:
         angle_cfg = palm_cfg.get("angle", {})
         angle_enabled = angle_cfg.get("check_angle_enabled", False)
@@ -279,47 +280,20 @@ def run_palm(
                 add("check_palm_spread", "SKIP",
                     "no normalized landmarks (see check_palm_present)", level="image")
 
-            # --- check_palm_angle: per-pose, per-hand DIRECTIONAL validation.
-            # When enabled, validates the measured roll/pitch against the spec's
-            # per-pose band (N~0; RL/RR directional roll; PU/PD directional
-            # pitch) using the file-parsed hand (L/R) and pose (N/RL/RR/PU/PD).
-            # Still gated by check_angle_enabled because the SIGN CONVENTION per
-            # handedness is calibration-pending: until reference images confirm
-            # the signs (and any hand_sign_overrides are set), FAILs are advisory.
-            # [CONFIRM with อ.เหมียว] ---
-            if not angle_enabled:
-                add("check_palm_angle", "SKIP",
-                    "check_angle_enabled=false (sign calibration pending)", level="image")
-            elif pose is None or hand is None:
-                # Cannot validate a pose we could not parse from the filename.
-                add("check_palm_angle", "SKIP",
-                    f"missing hand/pose (hand={hand} pose={pose})", level="image")
-            elif hand_result.ok and hand_result.world_landmarks is not None:
-                ok, reason = check_palm_pose(
-                    hand_result.world_landmarks, hand, pose,
-                    max_abs_deg=max_abs_angle,
-                    min_rotation_deg=min_rotation,
-                    neutral_tol_deg=neutral_tol,
-                    off_axis_tol_deg=off_axis_tol,
-                    hand_sign_overrides=sign_overrides)
-                add("check_palm_angle", "PASS" if ok else "FAIL", reason, level="image")
-            else:
-                # No usable landmarks (hand not detected, or bad image). The
-                # file already FAILs via check_palm_present, so this stays SKIP
-                # (we cannot MEASURE an angle without landmarks -- asserting
-                # "over-rotation" as the cause would be a guess the data can't
-                # support). But on a pose that is SUPPOSED to be rotated, a
-                # no-detection is OFTEN caused by rotating too far for the
-                # detector, so we surface that as a HINT, not a verdict.
-                rotated_poses = {"RL", "RR", "PU", "PD"}
-                if (pose or "").upper() in rotated_poses and not hand_result.ok:
-                    add("check_palm_angle", "SKIP",
-                        f"no hand to measure; possible over-rotation for pose "
-                        f"{pose} (cannot confirm -- see check_palm_present)",
-                        level="image")
-                else:
-                    add("check_palm_angle", "SKIP",
-                        "no world landmarks (see check_palm_present)", level="image")
+            # --- check_palm_angle: now graded at PARTICIPANT/BATCH level, not
+            # per-image. Absolute per-image angles are unreliable (a valid N
+            # reads non-zero), so a rotated pose is graded RELATIVE to this
+            # hand's own N (see run_palm_participant / check_palm_pose_delta).
+            # Here we only (a) emit a deferred SKIP row, and (b) capture the raw
+            # measured angle so the batch layer can compute the N-delta. The raw
+            # angle is returned via `measured_angle` (None if unmeasurable). ---
+            if hand_result.ok and hand_result.world_landmarks is not None:
+                from qc.checks.check_palm_angle import calculate_palm_angles
+                aok, ainfo = calculate_palm_angles(hand_result.world_landmarks)
+                if aok:
+                    measured_angle = {"roll": ainfo["roll"], "pitch": ainfo["pitch"]}
+            add("check_palm_angle", "SKIP",
+                "deferred to participant-level N-relative grading", level="image")
 
         except FileNotFoundError as e:
             # Model bundle missing -- don't crash the run. The metadata rows
@@ -333,4 +307,189 @@ def run_palm(
                 add(cname, "SKIP", f"hand detection error: {e}", level="image")
 
     # timeline is [] -- a still has no per-frame timeline.
-    return rows, [], hand_result
+    # 4-tuple: (rows, timeline, hand_result, measured_angle). measured_angle is
+    # the raw {"roll","pitch"} (or None) the participant-level pass needs for
+    # N-relative grading. Existing callers that unpack 3 values should switch to
+    # 4; run_palm_participant relies on the 4th.
+    return rows, [], hand_result, measured_angle
+
+def run_palm_participant(
+    participant_id: str,
+    image_paths: list,
+    config: dict,
+    *,
+    progress=None,
+    detect: bool = True,
+):
+    """Run palm QC for ONE participant across all their palm images, grading the
+    angle check at PARTICIPANT level (each rotated pose relative to that hand's
+    own N), which per-image grading cannot do.
+
+    Flow:
+      1. Per image: run the per-image pipeline (container/resolution/present/
+         size/brightness/spread). The per-image angle row is a deferred SKIP;
+         the raw measured angle is captured here for the batch pass.
+      2. Group captured angles by hand (L/R).
+      3. For each hand, take N as the baseline and grade RL/RR/PU/PD as deltas
+         (check_palm_pose_delta). Replace each rotated pose's deferred angle row
+         with the real PASS/FAIL verdict.
+
+    Decisions (confirmed with the project):
+      - N's own angle row: SKIP (N is the reference, not graded).
+      - No N FILE for a hand            -> rotated poses FAIL ("no N reference").
+      - N file present but undetectable -> rotated poses FAIL ("N unusable").
+      - Rotated pose undetectable        -> that pose FAIL ("no hand; likely
+                                            over-rotation").
+      - Pose file entirely absent        -> SILENT (no row for that pose).
+      - Axes that FAIL: roll, pitch only (no yaw pose in the spec).
+
+    Args:
+        participant_id: e.g. "004".
+        image_paths: list of this participant's palm image paths (any subset of
+            the 10 hand x pose files).
+        config: loaded config.yml dict.
+        progress: optional callback(row).
+        detect: run the hand detector (required for angle/size/etc.).
+
+    Returns:
+        (rows, timelines) where rows is the combined list[CheckRow] across all
+        images (with angle rows finalised) and timelines is a list of [] (one
+        empty per image, kept for writer-shape parity).
+    """
+    import re as _re
+
+    _PALM_RE = _re.compile(
+        r"^(?P<vid>\d+)_palm_(?P<hand>[LR])_(?P<pose>N|RL|RR|PU|PD)\.jpg$",
+        _re.IGNORECASE)
+
+    palm_cfg = config.get("palm", {})
+    angle_cfg = palm_cfg.get("angle", {})
+    max_abs_angle = angle_cfg.get("max_abs_deg", 45)
+    min_rotation = angle_cfg.get("min_rotation_deg", 10)
+    off_axis_tol = angle_cfg.get("off_axis_tol_deg", 20)
+    sign_overrides = angle_cfg.get("hand_sign_overrides", {}) or None
+
+    from qc.checks.check_palm_angle import check_palm_pose_delta
+
+    all_rows: list[CheckRow] = []
+    all_timelines: list = []
+
+    # angle_state[hand][pose] = {"row": CheckRow, "angle": {...}|None, "detected": bool}
+    angle_state: dict = {"L": {}, "R": {}}
+
+    # --- pass 1: per-image checks; stash each image's deferred angle row + raw angle
+    for path in image_paths:
+        fname = os.path.basename(path)
+        m = _PALM_RE.match(fname)
+        hand = m.group("hand").upper() if m else None
+        pose = m.group("pose").upper() if m else None
+
+        rows, timeline, hand_result, measured_angle = run_palm(
+            path, participant_id, config,
+            hand=hand, pose=pose, progress=None, detect=detect)
+
+        # Find this image's deferred angle row so the batch pass can finalise it.
+        angle_row = None
+        for r in rows:
+            if r.check_name == "check_palm_angle":
+                angle_row = r
+                break
+
+        if hand in ("L", "R") and pose in ("N", "RL", "RR", "PU", "PD"):
+            angle_state[hand][pose] = {
+                "row": angle_row,
+                "angle": measured_angle,                 # None if unmeasurable
+                "detected": bool(hand_result and hand_result.ok),
+            }
+
+        # Emit the non-angle rows now (angle rows are finalised in pass 2).
+        for r in rows:
+            if r.check_name != "check_palm_angle":
+                all_rows.append(r)
+                if progress is not None:
+                    progress(r)
+        all_timelines.append(timeline)
+
+    # --- pass 2: per hand, grade rotated poses against that hand's N
+    rotated = ("RL", "RR", "PU", "PD")
+    for hand in ("L", "R"):
+        poses = angle_state[hand]
+        n_entry = poses.get("N")
+
+        # N row (if the N file exists): SKIP -- reference, not graded. We STILL
+        # report N's raw measured roll/pitch so the reference value is visible
+        # (it is the baseline every rotated pose is judged against).
+        if n_entry and n_entry["row"] is not None:
+            n_reason = "N is the reference (not graded)"
+            raw = _fmt_raw_angle(n_entry.get("angle"))
+            if raw:
+                n_reason = f"{n_reason}; {raw}"
+            n_row = _set_row(n_entry["row"], "SKIP", n_reason)
+            _emit(all_rows, progress, n_row)
+
+        # Determine the usable N baseline (file present AND detectable AND measured).
+        n_ok = bool(n_entry and n_entry["detected"] and n_entry["angle"] is not None)
+        n_angle = n_entry["angle"] if n_ok else None
+
+        for pose in rotated:
+            entry = poses.get(pose)
+            if entry is None:
+                continue  # pose file entirely absent -> SILENT (no row)
+
+            row = entry["row"]
+            if row is None:
+                continue  # shouldn't happen (detect on), but stay safe
+
+            if not n_ok:
+                # No usable N reference -> the rotated pose cannot be graded.
+                why = ("no N file for this hand" if n_entry is None
+                       else "N present but unusable (undetected/unmeasurable)")
+                row = _set_row(row, "FAIL", f"cannot grade {hand}/{pose}: {why}")
+            elif not entry["detected"] or entry["angle"] is None:
+                # Pose itself undetectable -> likely over-rotation -> FAIL.
+                row = _set_row(row, "FAIL",
+                               f"{hand}/{pose}: no hand to measure (likely over-rotation)")
+            else:
+                ok, reason = check_palm_pose_delta(
+                    pose, hand, entry["angle"], n_angle,
+                    max_abs_deg=max_abs_angle,
+                    min_rotation_deg=min_rotation,
+                    off_axis_tol_deg=off_axis_tol,
+                    hand_sign_overrides=sign_overrides)
+                # Report this pose's RAW roll/pitch IN ADDITION to the delta
+                # verdict (the delta vs N is the grading; the raw value is the
+                # extra context you asked for).
+                raw = _fmt_raw_angle(entry.get("angle"))
+                if raw:
+                    reason = f"{reason} | {raw}"
+                row = _set_row(row, "PASS" if ok else "FAIL", reason)
+
+            _emit(all_rows, progress, row)
+
+    return all_rows, all_timelines
+
+
+def _fmt_raw_angle(angle):
+    """Format a measured {"roll","pitch"} dict as 'raw roll=+12.3 pitch=-4.5',
+    or '' when no angle was measured (unmeasurable / detection off)."""
+    if not angle:
+        return ""
+    try:
+        return (f"raw roll={float(angle['roll']):+.1f} "
+                f"pitch={float(angle['pitch']):+.1f}")
+    except (KeyError, TypeError, ValueError):
+        return ""
+
+
+def _set_row(row, status, reason):
+    """Return a finalised copy of a deferred CheckRow with new status/reason.
+    CheckRow is frozen (immutable), so we rebuild via dataclasses.replace rather
+    than mutate in place."""
+    import dataclasses
+    return dataclasses.replace(row, status=status, reason=reason)
+
+
+def _emit(all_rows, progress, row):
+    all_rows.append(row)
+    if progress is not None:
+        progress(row)

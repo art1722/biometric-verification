@@ -413,3 +413,100 @@ def check_palm_pose(
     if not off_axis_ok:
         reasons.append(f"{other_name}={other:.1f} off-axis > +/-{off_axis_tol_deg:g}")
     return (False, f"{hand}/{pose} bad: {'; '.join(reasons)}")
+
+
+# ---------------------------------------------------------------------------
+# Batch-relative (N-baseline) pose validation: check_palm_pose_delta
+# ---------------------------------------------------------------------------
+# Absolute per-image angles fail in practice: a real hand's `up`/`across` axes
+# are never perfectly vertical/horizontal, so even a valid NEUTRAL reads a
+# non-zero roll/pitch (observed ~11 deg on PASS images). That offset is a per-
+# person, per-capture BASELINE, not a defect. The fix is to grade each rotated
+# pose RELATIVE TO THAT HAND'S OWN N: the baseline is present in both the N frame
+# and the pose frame, so subtracting it cancels the offset.
+#
+#     delta_roll  = pose_roll  - N_roll
+#     delta_pitch = pose_pitch - N_pitch
+#
+# The same directional bands then apply to the DELTA (not the absolute angle):
+#     RL: delta_roll  in [-45, -min_rotation]   RR: delta_roll  in [+min_rotation, +45]
+#     PU: delta_pitch in [-45, -min_rotation]   PD: delta_pitch in [+min_rotation, +45]
+# Only roll and pitch FAIL (spec has no yaw pose). N itself is not graded here --
+# it is the reference (the caller emits SKIP for N).
+#
+# Sign note: deltas cancel the per-person baseline, which makes signs MORE
+# consistent across people, but the direction of a "correct" delta still depends
+# on handedness; hand_sign_overrides applies exactly as in check_palm_pose.
+
+
+def check_palm_pose_delta(
+    pose: str,
+    hand: str,
+    pose_angles: dict,
+    n_angles: dict,
+    *,
+    max_abs_deg: float = 45.0,
+    min_rotation_deg: float = 10.0,
+    off_axis_tol_deg: float = 20.0,
+    hand_sign_overrides: Optional[dict] = None,
+):
+    """Validate a rotated pose against this hand's OWN N baseline (delta space).
+
+    Args:
+        pose: "RL" | "RR" | "PU" | "PD" (N should not be passed -- it is the
+            reference and is not graded; caller emits SKIP for N).
+        hand: "L" | "R" -- selects the sign convention.
+        pose_angles: {"roll":..,"pitch":..} measured for THIS pose image.
+        n_angles:    {"roll":..,"pitch":..} measured for this hand's N image.
+        max_abs_deg, min_rotation_deg, off_axis_tol_deg, hand_sign_overrides:
+            same meaning as check_palm_pose, applied to the DELTA.
+
+    Returns:
+        (success, message). Mirrors the (success, message) contract.
+    """
+    pose = (pose or "").upper()
+    hand = (hand or "").upper()
+
+    if pose == "N":
+        return (True, "N is the reference (not graded)")
+
+    axis = _POSE_AXIS.get(pose)
+    if axis is None:
+        return (False, f"unknown pose '{pose}' (expected RL/RR/PU/PD)")
+
+    try:
+        d_roll = float(pose_angles["roll"]) - float(n_angles["roll"])
+        d_pitch = float(pose_angles["pitch"]) - float(n_angles["pitch"])
+    except (KeyError, TypeError, ValueError) as e:
+        return (False, f"missing angle data for delta: {e}")
+
+    _, lo, hi = _band_for_pose(
+        hand, pose,
+        max_abs_deg=max_abs_deg, min_rotation_deg=min_rotation_deg,
+        neutral_tol_deg=0.0, hand_sign_overrides=hand_sign_overrides)
+
+    active = d_roll if axis == "roll" else d_pitch
+    other = d_pitch if axis == "roll" else d_roll
+    other_name = "d_pitch" if axis == "roll" else "d_roll"
+    active_name = "d_roll" if axis == "roll" else "d_pitch"
+
+    in_band = lo <= active <= hi
+    off_axis_ok = abs(other) <= off_axis_tol_deg
+
+    if in_band and off_axis_ok:
+        return (True,
+                f"{hand}/{pose} ok: {active_name}={active:+.1f} in [{lo:g},{hi:g}]; "
+                f"{other_name}={other:+.1f} within +/-{off_axis_tol_deg:g} "
+                f"(vs N)")
+
+    reasons = []
+    if not in_band:
+        if (lo < 0 and active > 0) or (lo > 0 and active < 0):
+            reasons.append(f"{active_name}={active:+.1f} WRONG DIRECTION (expected [{lo:g},{hi:g}])")
+        elif abs(active) < min_rotation_deg:
+            reasons.append(f"{active_name}={active:+.1f} not rotated enough vs N (need |delta|>={min_rotation_deg:g})")
+        else:
+            reasons.append(f"{active_name}={active:+.1f} out of [{lo:g},{hi:g}]")
+    if not off_axis_ok:
+        reasons.append(f"{other_name}={other:+.1f} off-axis > +/-{off_axis_tol_deg:g}")
+    return (False, f"{hand}/{pose} bad (vs N): {'; '.join(reasons)}")
