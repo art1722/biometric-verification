@@ -395,6 +395,17 @@ palm:
     require_visible_veins: true      # [SPEC]
     visible_veins_policy: "FAIL"     # [DESIGN]
 
+  # Runtime thresholds for check_palm_brightness (mean V inside the hand bbox).
+  # Reuses the shared brightness core (qc/checks/check_brightness.py). Defaults
+  # mirror face; palm skin under the capture rig may differ and "veins visible"
+  # is a CONTRAST cue mean-V alone does not capture -- validate on real samples
+  # before trusting these. [CONFIRM with อ.เหมียว]
+  brightness:
+    enabled: true                    # [DESIGN] config toggle, like the angle gate
+    dark_threshold: 35.0             # [ASSUMPTION] inherited from face default
+    bright_threshold: 200.0          # [ASSUMPTION] inherited from face default
+    margin: 0.1                      # [DESIGN] trim each side of the hand bbox
+
   obstruction:
     require_no_jewelry: true         # [SPEC]
     jewelry_policy: "FAIL"           # [DESIGN]

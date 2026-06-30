@@ -19,7 +19,7 @@ For one `NNN_face_rgb.mp4` it runs, in order:
     - face size >= 180x180?     (check_face_min_size, consumes bbox)
     - eyes open?                (check_eye_status)
     - blur ok?                  (check_face_blur)
-    - brightness ok?            (check_lightpol)
+    - brightness ok?            (check_brightness_face)
 
   Sequence-level (whole timeline at once):
     - turn sequence             (check_turn_sequence_seg)
@@ -55,7 +55,7 @@ from qc.checks.face_landmarker import create_face_landmarker, detect_face
 from qc.checks.check_face_size import check_face_min_size
 from qc.checks.check_head_fully import check_head_fully
 from qc.checks.check_face_blur import check_face_blur
-from qc.checks.check_light_pollution import check_lightpol
+from qc.checks.check_brightness import check_brightness_face
 from qc.checks.check_head_pose import estimate_head_pose
 from qc.checks.check_eye import check_eye_status
 from qc.checks.check_occlusion import check_occlusion
@@ -507,7 +507,7 @@ def run_face_rgb(
 
             # brightness first. If exposure is bad, blur is not a reliable
             # independent judgment; do not double-fail the same root cause.
-            bright_ok, bright_msg = check_lightpol(
+            bright_ok, bright_msg = check_brightness_face(
                 img, dark_th, bright_th, margin,
                 detector=face_det, input_color_space=cspace)
             timeline[-1]["brightness"] = _extract_float(_BRIGHTNESS_RE, bright_msg)

@@ -117,6 +117,16 @@ def run_palm(
     min_w = size_cfg.get("min_width_px", 200)
     min_h = size_cfg.get("min_height_px", 200)
 
+    # Brightness thresholds for the hand region. Defaults mirror face, but palm
+    # skin may sit in a different V range and the spec's "veins visible" is a
+    # contrast cue mean-V does not capture -- tune palm.brightness.* on real
+    # samples. [CONFIRM]
+    bright_cfg = palm_cfg.get("brightness", {})
+    dark_th = bright_cfg.get("dark_threshold", 35.0)
+    bright_th = bright_cfg.get("bright_threshold", 200.0)
+    bright_margin = bright_cfg.get("margin", 0.1)
+    brightness_enabled = bright_cfg.get("enabled", True)
+
     # ---- image-level checks (once, from metadata) ----
     meta = probe_image(path)
 
@@ -201,6 +211,26 @@ def run_palm(
                 add("check_palm_size", "SKIP",
                     "no single hand bbox (see check_palm_present)", level="image")
 
+            # --- check_palm_brightness: mean V inside the hand bbox. Reuses the
+            # shared brightness CORE (check_brightness) via the palm wrapper, so
+            # face and palm judge exposure with identical logic over different
+            # regions. SKIP when there is no single-hand bbox (same root cause as
+            # size: present already FAILed), or when disabled in config. ---
+            if not brightness_enabled:
+                add("check_palm_brightness", "SKIP",
+                    "palm.brightness.enabled=false", level="image")
+            elif hand_result.ok and hand_result.bbox is not None:
+                from qc.checks.check_brightness import check_brightness_palm
+                ok, reason = check_brightness_palm(
+                    path, hand_result.bbox,
+                    dark_threshold=dark_th, bright_threshold=bright_th,
+                    margin=bright_margin)
+                add("check_palm_brightness", "PASS" if ok else "FAIL",
+                    reason, level="image")
+            else:
+                add("check_palm_brightness", "SKIP",
+                    "no single hand bbox (see check_palm_present)", level="image")
+
             # --- check_palm_angle: GATED. Off by default -> SKIP with the reason,
             # so the row is present and auditable but never PASS/FAILs until
             # per-pose expected angles are calibrated (config flag flips it on). ---
@@ -220,11 +250,11 @@ def run_palm(
             # Model bundle missing -- don't crash the run. The metadata rows
             # already passed; mark the hand checks SKIP so the gap is explicit.
             logger.warning("PALM | hand model unavailable, hand checks skipped: %s", e)
-            for cname in ("check_palm_present", "check_palm_size", "check_palm_angle"):
+            for cname in ("check_palm_present", "check_palm_size", "check_palm_brightness", "check_palm_angle"):
                 add(cname, "SKIP", "hand model bundle unavailable", level="image")
         except Exception as e:
             logger.warning("PALM | hand detection error, hand checks skipped: %s", e)
-            for cname in ("check_palm_present", "check_palm_size", "check_palm_angle"):
+            for cname in ("check_palm_present", "check_palm_size", "check_palm_brightness", "check_palm_angle"):
                 add(cname, "SKIP", f"hand detection error: {e}", level="image")
 
     # timeline is [] -- a still has no per-frame timeline.
