@@ -158,6 +158,14 @@ def run_palm(
         angle_enabled = angle_cfg.get("check_angle_enabled", False)
         max_roll = angle_cfg.get("max_abs_roll_deg", 45)
         max_pitch = angle_cfg.get("max_abs_pitch_deg", 45)
+        # Per-pose directional validation knobs (used when angle is enabled).
+        max_abs_angle = angle_cfg.get("max_abs_deg", 45)
+        min_rotation = angle_cfg.get("min_rotation_deg", 10)
+        neutral_tol = angle_cfg.get("neutral_tol_deg", 10)
+        off_axis_tol = angle_cfg.get("off_axis_tol_deg", 20)
+        # Sign-calibration overrides per (hand, pose), e.g. {"R": {"RL": 1}}.
+        # Empty until calibrated against known-correct reference images. [CONFIRM]
+        sign_overrides = angle_cfg.get("hand_sign_overrides", {}) or None
 
         models_cfg = config.get("models", {})
         hl_cfg = models_cfg.get("hand_landmarker", {})
@@ -171,7 +179,7 @@ def run_palm(
                 create_hand_landmarker, detect_hand,
             )
             from qc.checks.check_palm_size import check_palm_min_size
-            from qc.checks.check_palm_angle import check_palm_angle
+            from qc.checks.check_palm_angle import check_palm_angle, check_palm_pose
 
             detector = create_hand_landmarker(
                 model_path=hl_cfg.get("model_path", "models/hand_landmarker.task"),
@@ -231,30 +239,97 @@ def run_palm(
                 add("check_palm_brightness", "SKIP",
                     "no single hand bbox (see check_palm_present)", level="image")
 
-            # --- check_palm_angle: GATED. Off by default -> SKIP with the reason,
-            # so the row is present and auditable but never PASS/FAILs until
-            # per-pose expected angles are calibrated (config flag flips it on). ---
+            # --- check_palm_spread: angular gap between adjacent fingers.
+            # QUALITY check, enforced on the NEUTRAL (N) pose ONLY: RL/RR/PU/PD
+            # tilt the hand out of the image plane and distort an in-plane
+            # spread angle. SKIP on non-N poses and when disabled in config.
+            # SKIP when there is no single-hand result (same root cause as size:
+            # present already FAILed). Per the current assumption, a fully-
+            # detected hand is expected; a non-measurable spread returns FAIL via
+            # the check's own message. [DESIGN -> CONFIRM with อ.เหมียว] ---
+            spread_cfg = palm_cfg.get("hand_pose", {}).get("spread", {})
+            spread_enabled = spread_cfg.get("enabled", True)
+            spread_poses = spread_cfg.get("eval_poses", ["N"])
+            if not spread_enabled:
+                add("check_palm_spread", "SKIP",
+                    "palm.hand_pose.spread.enabled=false", level="image")
+            elif pose is not None and pose not in spread_poses:
+                add("check_palm_spread", "SKIP",
+                    f"pose={pose} not in eval_poses={spread_poses} "
+                    f"(spread enforced on neutral only)", level="image")
+            elif hand_result.ok and hand_result.landmarks_norm is not None:
+                from qc.checks.check_palm_spread import check_palm_spread
+                ok, reason = check_palm_spread(
+                    hand_result.landmarks_norm,
+                    min_gap_inter_tip_deg=spread_cfg.get("min_gap_inter_tip_deg", 5.0),
+                    min_gap_thumb_tip_deg=spread_cfg.get("min_gap_thumb_tip_deg", 20.0),
+                    min_gap_inter_pip_deg=spread_cfg.get("min_gap_inter_pip_deg", 3.0),
+                    min_gap_thumb_pip_deg=spread_cfg.get("min_gap_thumb_pip_deg", 12.0),
+                    required_pairs=spread_cfg.get("required_pairs"),
+                    frame_margin=spread_cfg.get("frame_margin", 0.02))
+                # A non-measurable hand (MCP cropped, or both tip+pip cropped for
+                # some finger) is NOT a defect -> SKIP, not FAIL. The check's
+                # message starts with "unmeasurable:" in that case.
+                if not ok and reason.startswith("unmeasurable:"):
+                    add("check_palm_spread", "SKIP", reason, level="image")
+                else:
+                    add("check_palm_spread", "PASS" if ok else "FAIL",
+                        reason, level="image")
+            else:
+                add("check_palm_spread", "SKIP",
+                    "no normalized landmarks (see check_palm_present)", level="image")
+
+            # --- check_palm_angle: per-pose, per-hand DIRECTIONAL validation.
+            # When enabled, validates the measured roll/pitch against the spec's
+            # per-pose band (N~0; RL/RR directional roll; PU/PD directional
+            # pitch) using the file-parsed hand (L/R) and pose (N/RL/RR/PU/PD).
+            # Still gated by check_angle_enabled because the SIGN CONVENTION per
+            # handedness is calibration-pending: until reference images confirm
+            # the signs (and any hand_sign_overrides are set), FAILs are advisory.
+            # [CONFIRM with อ.เหมียว] ---
             if not angle_enabled:
                 add("check_palm_angle", "SKIP",
-                    "check_angle_enabled=false (stretch/later check)", level="image")
+                    "check_angle_enabled=false (sign calibration pending)", level="image")
+            elif pose is None or hand is None:
+                # Cannot validate a pose we could not parse from the filename.
+                add("check_palm_angle", "SKIP",
+                    f"missing hand/pose (hand={hand} pose={pose})", level="image")
             elif hand_result.ok and hand_result.world_landmarks is not None:
-                ok, reason = check_palm_angle(
-                    hand_result.world_landmarks,
-                    max_abs_roll_deg=max_roll, max_abs_pitch_deg=max_pitch)
+                ok, reason = check_palm_pose(
+                    hand_result.world_landmarks, hand, pose,
+                    max_abs_deg=max_abs_angle,
+                    min_rotation_deg=min_rotation,
+                    neutral_tol_deg=neutral_tol,
+                    off_axis_tol_deg=off_axis_tol,
+                    hand_sign_overrides=sign_overrides)
                 add("check_palm_angle", "PASS" if ok else "FAIL", reason, level="image")
             else:
-                add("check_palm_angle", "SKIP",
-                    "no world landmarks (see check_palm_present)", level="image")
+                # No usable landmarks (hand not detected, or bad image). The
+                # file already FAILs via check_palm_present, so this stays SKIP
+                # (we cannot MEASURE an angle without landmarks -- asserting
+                # "over-rotation" as the cause would be a guess the data can't
+                # support). But on a pose that is SUPPOSED to be rotated, a
+                # no-detection is OFTEN caused by rotating too far for the
+                # detector, so we surface that as a HINT, not a verdict.
+                rotated_poses = {"RL", "RR", "PU", "PD"}
+                if (pose or "").upper() in rotated_poses and not hand_result.ok:
+                    add("check_palm_angle", "SKIP",
+                        f"no hand to measure; possible over-rotation for pose "
+                        f"{pose} (cannot confirm -- see check_palm_present)",
+                        level="image")
+                else:
+                    add("check_palm_angle", "SKIP",
+                        "no world landmarks (see check_palm_present)", level="image")
 
         except FileNotFoundError as e:
             # Model bundle missing -- don't crash the run. The metadata rows
             # already passed; mark the hand checks SKIP so the gap is explicit.
             logger.warning("PALM | hand model unavailable, hand checks skipped: %s", e)
-            for cname in ("check_palm_present", "check_palm_size", "check_palm_brightness", "check_palm_angle"):
+            for cname in ("check_palm_present", "check_palm_size", "check_palm_brightness", "check_palm_spread", "check_palm_angle"):
                 add(cname, "SKIP", "hand model bundle unavailable", level="image")
         except Exception as e:
             logger.warning("PALM | hand detection error, hand checks skipped: %s", e)
-            for cname in ("check_palm_present", "check_palm_size", "check_palm_brightness", "check_palm_angle"):
+            for cname in ("check_palm_present", "check_palm_size", "check_palm_brightness", "check_palm_spread", "check_palm_angle"):
                 add(cname, "SKIP", f"hand detection error: {e}", level="image")
 
     # timeline is [] -- a still has no per-frame timeline.

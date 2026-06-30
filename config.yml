@@ -416,10 +416,52 @@ palm:
     require_natural_finger_spread: true      # [SPEC]
     require_not_overly_tensed: true          # [SPEC]
 
+    # check_palm_spread: angular gap between adjacent fingers (MCP->TIP vectors).
+    # Quality check -- enforced on the NEUTRAL (N) pose only, because RL/RR/PU/PD
+    # tilt the hand out of the image plane and distort an in-plane spread angle.
+    # [DESIGN -> CONFIRM with อ.เหมียว]: N-only scoping deviates from the spec's
+    # "spread in every shot" wording; turn-pose spread is unreliable to measure.
+    spread:
+      enabled: true                  # [DESIGN] config toggle, like the angle gate
+      eval_poses: ["N"]              # [DESIGN] only enforce spread on neutral
+      # Source-aware floors (degrees). MediaPipe extrapolates cropped fingertips
+      # (coords can fall outside [0,1]), so the check picks ONE hand-wide source:
+      # tips if every required finger's tip is in-frame, else PIPs. tip-tip gaps
+      # fan wider than pip-pip gaps, so each source has its own floors. All
+      # [ASSUMPTION] -- calibrate on real spread/closed samples.
+      min_gap_inter_tip_deg: 5.0     # index-middle/middle-ring/ring-pinky (tip source)
+      min_gap_thumb_tip_deg: 20.0    # thumb-index (tip source)
+      min_gap_inter_pip_deg: 3.0     # inter-finger (pip source; PIPs fan less)
+      min_gap_thumb_pip_deg: 12.0    # thumb-index (pip source)
+      # A landmark must sit inside [margin, 1-margin] to count as in-frame; a
+      # point at/over the edge is treated as cropped/extrapolated.
+      frame_margin: 0.02             # [DESIGN]
+      required_pairs:                # [DESIGN] gaps that FAIL the frame if closed
+        - "thumb-index"
+        - "index-middle"
+        - "middle-ring"
+        - "ring-pinky"
+
   angle:
     max_abs_roll_deg: 45             # [SPEC]
     max_abs_pitch_deg: 45            # [SPEC]
-    check_angle_enabled: false       # [DESIGN] stretch / later check
+    check_angle_enabled: true       # [DESIGN] flip TRUE after sign calibration
+    # --- Per-pose directional validation (check_palm_pose) ---
+    # The spec gives each pose a DIRECTIONAL band, not a symmetric |angle|<=45:
+    #   N : roll & pitch within +/- neutral_tol_deg
+    #   RL: roll in [-45, -min_rotation_deg]   RR: roll in [+min_rotation_deg, +45]
+    #   PU: pitch in [-45, -min_rotation_deg]  PD: pitch in [+min_rotation_deg, +45]
+    max_abs_deg: 45                  # [SPEC] outer magnitude bound
+    min_rotation_deg: 10             # [ASSUMPTION] a deliberate pose must rotate >= this; calibrate
+    neutral_tol_deg: 10              # [ASSUMPTION] N must be within +/- this on both axes
+    off_axis_tol_deg: 20             # [ASSUMPTION] a rotated pose's OTHER axis must stay within +/- this
+    # !!! SIGN CALIBRATION PENDING !!! RL/RR motion is MIRRORED between L and R
+    # hands, so the roll SIGN for a "correct" pose may flip with handedness. The
+    # nominal spec signs are the starting hypothesis in code; if a reference
+    # image measures the opposite sign, override it here, e.g.:
+    #   hand_sign_overrides: { R: { RL: 1, RR: -1 } }
+    # Leave empty until calibrated against one known-correct image per (hand,pose).
+    hand_sign_overrides: {}          # [CONFIRM with อ.เหมียว]
 
 
 walk:

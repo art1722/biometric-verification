@@ -92,6 +92,14 @@ def _cross(u, v):
     )
 
 
+def _normalize(v):
+    """Unit vector of a 3-tuple, or None if it has zero length."""
+    mag = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+    if mag == 0.0:
+        return None
+    return (v[0] / mag, v[1] / mag, v[2] / mag)
+
+
 def _midpoint(a, b):
     """Synthetic landmark-like point at the midpoint of a and b."""
     class _P:
@@ -106,15 +114,39 @@ def _midpoint(a, b):
 def calculate_palm_angles(world_landmarks: Any):
     """Geometric roll/pitch (degrees) from WORLD hand landmarks.
 
+    Method -- palm NORMAL via cross product, then decoupled angles
+    --------------------------------------------------------------
+    Adapted from the researcher's face-angle reference (eye/mouth/vertical ->
+    face normal -> yaw/pitch). The earlier version of this function read roll
+    from `across` (x,y only) and pitch from `up` (y,z only), each DROPPING a
+    whole axis -- so a hand rotated on both axes at once had its two readings
+    BLEED into each other (a pure roll shifted the pitch number and vice versa).
+
+    This version builds ONE palm normal = normalize(cross(across, up)) and reads
+    both angles from a consistent frame:
+
+      - pitch: how far the palm normal tips up/down out of the frontal plane,
+               measured against its FULL horizontal projection:
+                   pitch = atan2(normal.y, sqrt(normal.x^2 + normal.z^2))
+               The sqrt(x^2+z^2) denominator is the decoupling fix: pitch stays
+               correct even when the palm is also rolled (the reference's trick).
+      - roll : in-plane tilt of the knuckle line. Kept as the angle of `across`
+               in the image plane, atan2(across.y, across.x), which is the
+               rotation about the camera view direction (independent of pitch).
+
+    NOTE on signs: switching to the normal improves the MAGNITUDE/decoupling of
+    pitch, but the SIGN per pose still depends on handedness + axis orientation,
+    so the L/R sign-calibration step (check_palm_pose / hand_sign_overrides) is
+    unchanged and still required.
+
     Args:
         world_landmarks: HandResult.world_landmarks -- an indexable sequence of
             21 landmark objects with .x/.y/.z in metres (origin at hand centre).
 
     Returns:
         (success, info_dict). On success info_dict has float "roll" and "pitch"
-        in degrees. On failure (missing/short landmarks) success is False and
-        info_dict has an "error" string. Never raises on bad input -- keeps the
-        no-crash contract the other checks follow.
+        in degrees (and "normal" as a 3-tuple for debugging/overlay). On failure
+        success is False and info_dict has an "error" string. Never raises.
     """
     if world_landmarks is None:
         return (False, {"error": "No world landmarks provided"})
@@ -134,28 +166,32 @@ def calculate_palm_angles(world_landmarks: Any):
 
         knuckle_mid = _midpoint(index_mcp, pinky_mcp)
 
-        up = _vec(wrist, knuckle_mid)       # wrist -> fingers, along the palm
+        up = _vec(wrist, knuckle_mid)        # wrist -> fingers, along the palm
         across = _vec(index_mcp, pinky_mcp)  # knuckle line, across the palm
-        _ = _cross(across, up)               # palm normal (reserved for future use)
 
-        # roll: tilt of the knuckle line in the image plane (x right, y down).
+        # Palm normal = across x up, normalized. This is the single consistent
+        # frame both angles are read from (the reference's cross-vector method).
+        normal = _normalize(_cross(across, up))
+        if normal is None:
+            return (False, {"error": "degenerate palm geometry (zero-length normal)"})
+
+        nx, ny, nz = normal
+
+        # pitch: normal's elevation out of the frontal plane, measured against
+        # the FULL horizontal projection sqrt(nx^2+nz^2) -> decoupled from roll.
+        pitch = math.degrees(math.atan2(ny, math.sqrt(nx * nx + nz * nz)))
+
+        # roll: in-plane tilt of the knuckle line about the view direction.
         roll = math.degrees(math.atan2(across[1], across[0]))
         # Fold into [-90, 90]: the knuckle line is undirected (index<->pinky),
-        # so a 180-degree flip is the same physical tilt. This keeps "level" near 0.
+        # so a 180-degree flip is the same physical tilt; keeps "level" near 0.
         if roll > 90:
             roll -= 180
         elif roll < -90:
             roll += 180
 
-        # pitch: how far the palm's up-axis tips out of the frontal plane
-        # toward/away from the camera (z toward camera, y down).
-        pitch = math.degrees(math.atan2(up[2], up[1]))
-        if pitch > 90:
-            pitch -= 180
-        elif pitch < -90:
-            pitch += 180
-
-        return (True, {"roll": float(roll), "pitch": float(pitch)})
+        return (True, {"roll": float(roll), "pitch": float(pitch),
+                       "normal": (float(nx), float(ny), float(nz))})
 
     except Exception as e:  # never crash a batch on one odd frame
         logger.debug("PALM_ANGLE | error: %s", e)
@@ -215,3 +251,165 @@ def check_palm_angle(
     else:
         reasons.append(f"pitch={pitch:.1f} ok")
     return (False, " ".join(reasons))
+
+# ---------------------------------------------------------------------------
+# Per-pose, per-hand directional validation (check_palm_pose)
+# ---------------------------------------------------------------------------
+# The symmetric check_palm_angle above only enforces |roll|,|pitch| <= 45 -- it
+# CANNOT tell a correctly-rolled RL (negative roll) from a wrong-way RL (positive
+# roll), so it is unsuitable for validating the 5 deliberate poses. This function
+# adds the directional rule the spec actually states (doc lines 36-47):
+#
+#   pose  spec wording                              expected band (deg)
+#   N     no rotation, parallel to camera           roll in [-N_tol, +N_tol],
+#                                                    pitch in [-N_tol, +N_tol]
+#   RL    roll not exceeding -45                     roll in [-45, -min_rot]
+#   RR    roll not exceeding +45                     roll in [+min_rot, +45]
+#   PU    pitch not exceeding -45                    pitch in [-45, -min_rot]
+#   PD    pitch not exceeding +45                    pitch in [+min_rot, +45]
+#
+# min_rot is the "must actually rotate" floor (a deliberate pose with ~0 roll is
+# a defect -> FAIL). For the rotated poses the OTHER axis should stay near zero
+# (an RL should not also be pitched), enforced by an off-axis tolerance.
+#
+# !!! HANDEDNESS / SIGN CALIBRATION -- READ BEFORE TRUSTING THE SIGNS !!!
+# The spec defines RL/RR relative to the VOLUNTEER's hand, and the motion is
+# MIRRORED between left and right hands (L-RL tilts the pinky edge toward the
+# sensor; R-RL tilts the THUMB edge). The roll SIGN that calculate_palm_angles
+# produces for a "correct RL" therefore MAY DIFFER between L and R, because the
+# across-axis (index_mcp -> pinky_mcp) flips direction with handedness. The signs
+# encoded in _POSE_BANDS below are the SPEC's nominal signs and are a STARTING
+# HYPOTHESIS ONLY. They MUST be calibrated: run one known-correct image per
+# (hand, pose) through calculate_palm_angles, observe the actual sign, and flip
+# the affected _POSE_BANDS / config rows if the code's convention disagrees.
+# Until that calibration is signed off (อ.เหมียว), treat FAILs from this check as
+# advisory.  [CONFIRM]
+
+# Axis each pose acts on.
+_POSE_AXIS = {"N": None, "RL": "roll", "RR": "roll", "PU": "pitch", "PD": "pitch"}
+
+# Nominal expected SIGN per pose (spec). +1 expects positive, -1 negative.
+# These are the calibration-pending hypothesis (see warning above).
+_POSE_SIGN = {"RL": -1, "RR": +1, "PU": -1, "PD": +1}
+
+
+def _band_for_pose(
+    hand: str,
+    pose: str,
+    *,
+    max_abs_deg: float,
+    min_rotation_deg: float,
+    neutral_tol_deg: float,
+    hand_sign_overrides: Optional[dict] = None,
+):
+    """Return (axis, lo, hi) the active-axis angle must fall within for this
+    (hand, pose), or (None, None, None) for N (handled separately).
+
+    hand_sign_overrides lets config flip the expected sign for a specific
+    (hand, pose) after calibration, e.g. {"R": {"RL": +1}} if a right-hand RL
+    measures positive in this code's convention. Without overrides the nominal
+    _POSE_SIGN is used.
+    """
+    if pose == "N":
+        return (None, None, None)
+    axis = _POSE_AXIS.get(pose)
+    if axis is None:
+        return (None, None, None)
+
+    sign = _POSE_SIGN.get(pose, +1)
+    if hand_sign_overrides:
+        ov = hand_sign_overrides.get(hand, {})
+        if pose in ov:
+            sign = ov[pose]
+
+    if sign < 0:
+        return (axis, -max_abs_deg, -min_rotation_deg)   # e.g. [-45, -10]
+    return (axis, +min_rotation_deg, +max_abs_deg)        # e.g. [+10, +45]
+
+
+def check_palm_pose(
+    world_landmarks: Any,
+    hand: str,
+    pose: str,
+    *,
+    max_abs_deg: float = 45.0,
+    min_rotation_deg: float = 10.0,
+    neutral_tol_deg: float = 10.0,
+    off_axis_tol_deg: float = 20.0,
+    hand_sign_overrides: Optional[dict] = None,
+):
+    """Validate a palm image against the DIRECTIONAL per-pose spec.
+
+    Args:
+        world_landmarks: HandResult.world_landmarks (21 metric 3D points).
+        hand: "L" or "R" (parsed from filename). Selects the sign convention.
+        pose: "N" | "RL" | "RR" | "PU" | "PD".
+        max_abs_deg: upper magnitude bound (spec: 45).
+        min_rotation_deg: a deliberate pose must rotate AT LEAST this much, else
+            it is treated as not-actually-posed -> FAIL.
+        neutral_tol_deg: for N, both roll and pitch must be within +/- this.
+        off_axis_tol_deg: for a rotated pose, the OTHER axis must stay within
+            +/- this (an RL should not also be strongly pitched).
+        hand_sign_overrides: optional config-supplied sign flips per (hand,pose),
+            applied AFTER calibration. See _band_for_pose.
+
+    Returns:
+        (success, message). Mirrors the (success, message) contract. A
+        non-measurable angle returns (False, error) and the pipeline decides
+        SKIP vs FAIL (same as the other angle path).
+    """
+    ok, info = calculate_palm_angles(world_landmarks)
+    if not ok:
+        return (False, info.get("error", "Could not compute palm angle"))
+
+    roll = info["roll"]
+    pitch = info["pitch"]
+    pose = (pose or "").upper()
+    hand = (hand or "").upper()
+
+    # --- Neutral: both axes near zero ---
+    if pose == "N":
+        roll_ok = abs(roll) <= neutral_tol_deg
+        pitch_ok = abs(pitch) <= neutral_tol_deg
+        if roll_ok and pitch_ok:
+            return (True, f"N ok: roll={roll:.1f} pitch={pitch:.1f} "
+                          f"within +/-{neutral_tol_deg:g}")
+        bad = []
+        if not roll_ok:
+            bad.append(f"roll={roll:.1f} > +/-{neutral_tol_deg:g}")
+        if not pitch_ok:
+            bad.append(f"pitch={pitch:.1f} > +/-{neutral_tol_deg:g}")
+        return (False, f"N not neutral: {', '.join(bad)}")
+
+    axis, lo, hi = _band_for_pose(
+        hand, pose,
+        max_abs_deg=max_abs_deg, min_rotation_deg=min_rotation_deg,
+        neutral_tol_deg=neutral_tol_deg, hand_sign_overrides=hand_sign_overrides)
+
+    if axis is None:
+        return (False, f"unknown pose '{pose}' (expected N/RL/RR/PU/PD)")
+
+    active = roll if axis == "roll" else pitch
+    other = pitch if axis == "roll" else roll
+    other_name = "pitch" if axis == "roll" else "roll"
+
+    in_band = lo <= active <= hi
+    off_axis_ok = abs(other) <= off_axis_tol_deg
+
+    if in_band and off_axis_ok:
+        return (True,
+                f"{hand}/{pose} ok: {axis}={active:.1f} in [{lo:g},{hi:g}]; "
+                f"{other_name}={other:.1f} within +/-{off_axis_tol_deg:g}")
+
+    reasons = []
+    if not in_band:
+        # Distinguish wrong-direction from out-of-range for a clear report.
+        if (lo < 0 and active > 0) or (lo > 0 and active < 0):
+            reasons.append(f"{axis}={active:.1f} WRONG DIRECTION (expected [{lo:g},{hi:g}])")
+        elif abs(active) < min_rotation_deg:
+            reasons.append(f"{axis}={active:.1f} not rotated enough (need |{axis}|>={min_rotation_deg:g})")
+        else:
+            reasons.append(f"{axis}={active:.1f} out of [{lo:g},{hi:g}]")
+    if not off_axis_ok:
+        reasons.append(f"{other_name}={other:.1f} off-axis > +/-{off_axis_tol_deg:g}")
+    return (False, f"{hand}/{pose} bad: {'; '.join(reasons)}")
