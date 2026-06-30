@@ -1,49 +1,72 @@
-"""live.py — run QC on ONE uploaded video and return the verdict synchronously.
+"""live.py — run QC on ONE uploaded file, dispatched by modality.
 
-This is the 'check a clip right after recording' path. One video is fast (a few
-seconds), so unlike the batch it's fine to run inside the request and return the
-result directly — no job machinery needed.
+POST /checks accepts any single file. router.route() parses the name and decides:
+  - face_rgb            -> run_face_rgb, return the verdict          (runnable)
+  - palm_* / walk_* /   -> raise NotImplementedModality              (501)
+    other face streams
+  - unrecognised name   -> raise UnrecognisedFile                    (422)
 
-Filename policy
----------------
-The uploaded file MUST be named exactly <id>_face_rgb.mp4 (lowercase), the same
-strict rule run_folder.py and validate_filenames.py enforce. The volunteer_id is
-parsed from that name. A wrong name is rejected (the caller gets a 400) rather
-than guessed — consistent with the rest of the system, and it means the verdict
-is always tied to a real id.
+Only face_rgb has a pipeline today. When palm/walk pipelines exist, add a branch
+in check_one() and list the key in router.RUNNABLE_MODALITIES.
 """
 
 from __future__ import annotations
 
 import os
-import re
 import tempfile
 
-# Same strict pattern as run_folder.FACE_RGB_RE.
-FACE_RGB_RE = re.compile(r"^(?P<vid>\d+)_face_rgb\.mp4$")
+from . import router
 
 
-class BadFilename(ValueError):
-    """Raised when the upload isn't a strict <id>_face_rgb.mp4 name."""
+class UnrecognisedFile(ValueError):
+    """Filename matches no pattern in config (-> 422)."""
 
 
-def parse_volunteer_id(filename: str) -> str:
-    m = FACE_RGB_RE.match(os.path.basename(filename or ""))
-    if not m:
-        raise BadFilename(
-            f"filename must be '<id>_face_rgb.mp4' (got '{filename}')"
-        )
-    return m.group("vid")
+class NotImplementedModality(Exception):
+    """Filename is valid for a modality with no pipeline yet (-> 501)."""
+    def __init__(self, data_key: str):
+        self.data_key = data_key
+        super().__init__(f"no QC pipeline for modality '{data_key}' yet")
 
 
-def check_one(filename: str, raw_bytes: bytes, config: dict) -> dict:
-    """Run the face_rgb pipeline on the uploaded bytes and return a JSON-safe
-    verdict. Saves to a temp file (run_face_rgb needs a path), runs QC, then
-    deletes the temp file regardless of outcome."""
+def _run_face_rgb(tmp_path: str, volunteer_id: str, config: dict) -> dict:
     from qc.pipelines.face_rgb import run_face_rgb
     from qc.utils.report import build_overall_record, summarize_rows_by_check
 
-    vid = parse_volunteer_id(filename)
+    rows, timeline = run_face_rgb(
+        tmp_path, volunteer_id, config,
+        sample_fps=1.0, overlay=None, progress=None, fail_fast=False,
+    )
+    overall = build_overall_record(rows, timeline, config=config)
+    agg = (config or {}).get("report", {}).get("aggregation", {})
+    checks = summarize_rows_by_check(rows, agg)
+    return {
+        "overall_status": overall["final_status"],
+        "failed_checks": overall["failed_checks"],
+        "checks": checks,
+    }
+
+
+def check_one(filename: str, raw_bytes: bytes, config: dict,
+              config_path: str) -> dict:
+    """Dispatch one uploaded file to the right pipeline and return a verdict.
+
+    Raises UnrecognisedFile (422) or NotImplementedModality (501) before doing
+    any heavy work, so bad/unsupported uploads are cheap to reject.
+    """
+    decision = router.route(filename, config_path)
+    outcome = decision["outcome"]
+
+    if outcome == router.UNRECOGNISED:
+        raise UnrecognisedFile(
+            f"filename '{filename}' matches no known modality pattern"
+        )
+    if outcome == router.MATCH_NOT_IMPLEMENTED:
+        raise NotImplementedModality(decision["data_key"])
+
+    # outcome == runnable
+    data_key = decision["data_key"]
+    volunteer_id = decision["volunteer_id"]
 
     tmp_dir = tempfile.mkdtemp(prefix="qc_live_")
     tmp_path = os.path.join(tmp_dir, os.path.basename(filename))
@@ -51,21 +74,16 @@ def check_one(filename: str, raw_bytes: bytes, config: dict) -> dict:
         with open(tmp_path, "wb") as f:
             f.write(raw_bytes)
 
-        rows, timeline = run_face_rgb(
-            tmp_path, vid, config,
-            sample_fps=1.0, overlay=None, progress=None, fail_fast=False,
-        )
-
-        overall = build_overall_record(rows, timeline, config=config)
-        agg = (config or {}).get("report", {}).get("aggregation", {})
-        checks = summarize_rows_by_check(rows, agg)
+        if data_key == "face_rgb":
+            result = _run_face_rgb(tmp_path, volunteer_id, config)
+        else:
+            raise NotImplementedModality(data_key)
 
         return {
-            "volunteer_id": vid,
+            "volunteer_id": volunteer_id,
+            "data_key": data_key,
             "filename": os.path.basename(filename),
-            "overall_status": overall["final_status"],
-            "failed_checks": overall["failed_checks"],
-            "checks": checks,
+            **result,
         }
     finally:
         try:

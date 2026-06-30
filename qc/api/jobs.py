@@ -120,7 +120,7 @@ def _watch(job_id: str, proc: subprocess.Popen) -> None:
         # A non-zero code here does NOT mean the run crashed — it can mean "ran
         # fine, some videos failed QC". So success = the process actually ran to
         # completion (we reached here), and we record the code for the caller.
-        job["status"] = "done" if proc.returncode is not None else "failed"
+        job["status"] = "completed" if proc.returncode is not None else "failed"
         # Keep only the tail of the log so a huge run doesn't bloat memory.
         if out:
             job["log_tail"] = "".join(out.splitlines(keepends=True)[-40:])
