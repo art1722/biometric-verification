@@ -82,6 +82,7 @@ def draw_palm_overlay(
     out_path: Optional[str] = None,
     panel_below: bool = True,
     draw_angle_vectors: bool = True,
+    min_strip_width: int = 900,
 ):
     """Annotate one image with a HandResult and optionally save it.
 
@@ -103,6 +104,12 @@ def draw_palm_overlay(
             check_palm_angle measures -- the palm "up" axis (wrist -> knuckle
             midpoint) and "across" axis (index_mcp -> pinky_mcp) -- on every
             pose including N, so the angle geometry is visible.
+        min_strip_width: minimum pixel width for the BELOW check strip. A
+            portrait/narrow palm photo would otherwise starve the reason column
+            and truncate reasons ("container ok (.jp..") even for a PASS. When
+            the source image is narrower than this, the strip is drawn at this
+            width and the photo is centre-padded to match so they stack cleanly.
+            No effect on wide images or when panel_below is False.
 
     Returns:
         The annotated BGR image array (and writes out_path if provided).
@@ -231,7 +238,8 @@ def draw_palm_overlay(
     # the runner's --overlay-on-image flag).
     if checks:
         if panel_below:
-            img = _append_check_strip(img, checks, w, fs)
+            img = _append_check_strip(img, checks, w, fs,
+                                      min_strip_width=min_strip_width)
         else:
             _draw_check_panel(img, checks, w, h, fs)
 
@@ -242,16 +250,27 @@ def draw_palm_overlay(
     return img
 
 
-def _append_check_strip(img, checks: dict, img_w: int, base_fs: float):
+def _append_check_strip(img, checks: dict, img_w: int, base_fs: float,
+                        min_strip_width: int = 900):
     """Return a NEW image: the original with a grey check-strip appended below.
 
-    The strip is its own band of pixels (not drawn over the photo), full image
-    width, tall enough to hold one row per check. Columns: STATUS | name |
-    reason. Reasons are truncated with ".." only if they exceed the (full-width)
-    strip, which is rare.
+    The strip is its own band of pixels (not drawn over the photo), tall enough
+    to hold one row per check. Columns: STATUS | name | reason.
+
+    Width handling (the portrait-image fix):
+      The strip is drawn at strip_w = max(img_w, min_strip_width). If the source
+      photo is narrower than min_strip_width (a portrait palm shot), the strip is
+      widened to a readable size so the reason column is not starved and reasons
+      stop truncating to "..". Because np.vstack needs equal widths, the photo is
+      then centre-padded (black bars left/right) to strip_w. Wide photos are
+      unaffected (strip_w == img_w, no padding).
     """
     if not checks:
         return img
+
+    # The strip (and therefore the whole output) is at least min_strip_width
+    # wide, so a narrow photo does not squeeze the reason column.
+    strip_w = max(img_w, int(min_strip_width))
 
     s = max(0.5, min(2.5, base_fs / 0.85))
     fs = 0.85 * s
@@ -271,13 +290,12 @@ def _append_check_strip(img, checks: dict, img_w: int, base_fs: float):
     name_col_w = max_label_w + gap
 
     strip_h = line_h * len(items) + pad * 2
-    # The strip matches the image width so it lines up flush underneath.
-    strip = np.full((strip_h, img_w, 3), 35, dtype=np.uint8)  # dark grey
+    strip = np.full((strip_h, strip_w, 3), 35, dtype=np.uint8)  # dark grey
 
     status_x = pad
     name_x = status_x + status_col_w
     reason_x = pad + name_col_w
-    reason_col_w = max(0, img_w - reason_x - pad)
+    reason_col_w = max(0, strip_w - reason_x - pad)
     y = pad + int(28 * s)
 
     for name, status, reason in items:
@@ -291,7 +309,16 @@ def _append_check_strip(img, checks: dict, img_w: int, base_fs: float):
         y += line_h
 
     # A thin divider line between photo and strip.
-    cv2.line(strip, (0, 0), (img_w, 0), (80, 80, 80), max(1, int(2 * s)))
+    cv2.line(strip, (0, 0), (strip_w, 0), (80, 80, 80), max(1, int(2 * s)))
+
+    # If the strip is wider than the photo, centre-pad the photo so the two
+    # bands have equal width and stack cleanly (np.vstack requirement).
+    if strip_w > img_w:
+        left = (strip_w - img_w) // 2
+        right = strip_w - img_w - left
+        img = cv2.copyMakeBorder(img, 0, 0, left, right,
+                                 cv2.BORDER_CONSTANT, value=(0, 0, 0))
+
     return np.vstack([img, strip])
 
 

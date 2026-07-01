@@ -117,6 +117,13 @@ def run_palm(
     min_w = size_cfg.get("min_width_px", 200)
     min_h = size_cfg.get("min_height_px", 200)
 
+    # Palm-fully-visible (wrist + upper-palm not cut by the frame edge). The
+    # margin mirrors face's head_fully.margin_px. Gated by config so it can be
+    # turned off like the other quality checks. [DESIGN -> CONFIRM]
+    vis_cfg = palm_cfg.get("visibility", {})
+    fully_enabled = vis_cfg.get("check_palm_fully_enabled", True)
+    fully_margin_px = vis_cfg.get("margin_px", 10)
+
     # Brightness thresholds for the hand region. Defaults mirror face, but palm
     # skin may sit in a different V range and the spec's "veins visible" is a
     # contrast cue mean-V does not capture -- tune palm.brightness.* on real
@@ -280,6 +287,29 @@ def run_palm(
                 add("check_palm_spread", "SKIP",
                     "no normalized landmarks (see check_palm_present)", level="image")
 
+            # --- check_palm_fully: the whole hand is inside the frame (wrist +
+            # upper palm not cut by an edge). Palm-side mirror of face's
+            # check_head_fully, using two anchor landmarks -- WRIST (0) and
+            # MIDDLE_FINGER_MCP (9) -- in PIXEL space. SKIP when disabled, or
+            # when there is no single-hand result with pixel landmarks (same
+            # root cause as size: present already FAILed). ---
+            if not fully_enabled:
+                add("check_palm_fully", "SKIP",
+                    "palm.visibility.check_palm_fully_enabled=false", level="image")
+            elif (hand_result.ok and hand_result.landmarks_px is not None
+                  and meta.width and meta.height):
+                from qc.checks.check_palm_fully import check_palm_fully
+                ok, reason = check_palm_fully(
+                    hand_result.landmarks_px,
+                    image_height=meta.height, image_width=meta.width,
+                    margin_px=fully_margin_px)
+                add("check_palm_fully", "PASS" if ok else "FAIL",
+                    reason, level="image")
+            else:
+                add("check_palm_fully", "SKIP",
+                    "no pixel landmarks / image dims (see check_palm_present)",
+                    level="image")
+
             # --- check_palm_angle: now graded at PARTICIPANT/BATCH level, not
             # per-image. Absolute per-image angles are unreliable (a valid N
             # reads non-zero), so a rotated pose is graded RELATIVE to this
@@ -299,11 +329,11 @@ def run_palm(
             # Model bundle missing -- don't crash the run. The metadata rows
             # already passed; mark the hand checks SKIP so the gap is explicit.
             logger.warning("PALM | hand model unavailable, hand checks skipped: %s", e)
-            for cname in ("check_palm_present", "check_palm_size", "check_palm_brightness", "check_palm_spread", "check_palm_angle"):
+            for cname in ("check_palm_present", "check_palm_size", "check_palm_brightness", "check_palm_spread", "check_palm_fully", "check_palm_angle"):
                 add(cname, "SKIP", "hand model bundle unavailable", level="image")
         except Exception as e:
             logger.warning("PALM | hand detection error, hand checks skipped: %s", e)
-            for cname in ("check_palm_present", "check_palm_size", "check_palm_brightness", "check_palm_spread", "check_palm_angle"):
+            for cname in ("check_palm_present", "check_palm_size", "check_palm_brightness", "check_palm_spread", "check_palm_fully", "check_palm_angle"):
                 add(cname, "SKIP", f"hand detection error: {e}", level="image")
 
     # timeline is [] -- a still has no per-frame timeline.

@@ -88,7 +88,7 @@ models:
 
   hands:
     max_num_hands: 1                 # [DESIGN]
-    min_detection_confidence: 0.5    # [DESIGN]
+    min_detection_confidence: 0.1    # [DESIGN]
     # Palm screening: a second hand in frame is a capture error (spec wants ONE
     # hand per shot), so >1 hand -> FAIL, NOT REVIEW. Contrast face, where a
     # second (background) face -> REVIEW because the spec does not forbid it.
@@ -389,6 +389,13 @@ palm:
   size:
     min_width_px: 200                # [SPEC]
     min_height_px: 200               # [SPEC]
+
+  # Palm-fully-visible: the whole hand must be inside the frame (wrist and upper
+  # palm not cut by an edge). Palm-side mirror of face.visibility + head_fully.
+  # check_palm_fully anchors on WRIST (0) and MIDDLE_FINGER_MCP (9).
+  visibility:
+    check_palm_fully_enabled: true   # [DESIGN -> CONFIRM] toggle like other palm checks
+    margin_px: 10                    # [DESIGN] mirrors face head_fully.margin_px
 
   quality:
     require_bright_and_clear: true   # [SPEC]
