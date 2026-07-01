@@ -54,10 +54,10 @@ _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
 
 
-def _count_videos(data_dir: str) -> int:
-    """How many *_face_rgb.mp4 files run_folder will process — the denominator
-    for the progress bar. Mirrors run_folder's strict match without importing it
-    (keeps this module independent of the CLI's globals)."""
+def _count_face_videos(data_dir: str) -> int:
+    """How many *_face_rgb.mp4 files run_folder will process. Mirrors
+    run_folder's strict match without importing it (keeps this module
+    independent of the CLI's globals)."""
     import re
 
     rgb = re.compile(r"^(\d+)_face_rgb\.mp4$")
@@ -68,16 +68,66 @@ def _count_videos(data_dir: str) -> int:
     return n
 
 
-def _count_summary_rows(summary_path: str) -> int:
-    """How many videos run_folder has finished so far = data rows in the summary
-    CSV (minus the header). Missing file -> 0 (not started writing yet)."""
+def _count_palm_images(data_dir: str) -> int:
+    """How many strict palm image files run_folder --palm will process. The
+    batch grades PER PARTICIPANT but emits one summary row PER IMAGE, so the
+    progress UNIT is the image (matches the palm_summary.csv grain). Mirrors
+    run_folder.PALM_RE without importing it."""
+    import re
+
+    palm = re.compile(r"^(\d+)_palm_[LR]_(N|RL|RR|PU|PD)\.jpg$")
+    n = 0
+    if os.path.isdir(data_dir):
+        for _, _, files in os.walk(data_dir):
+            n += sum(1 for name in files if palm.match(name))
+    return n
+
+
+def _count_expected(data_dir: str, want_face: bool, want_palm: bool) -> int:
+    """Total UNITS the run will process = face videos (if face is on) + palm
+    images (if --palm is set). Both denominators and the 'done' numerator use
+    the same unit (one file), so progress stays in [0, 1]."""
+    total = 0
+    if want_face:
+        total += _count_face_videos(data_dir)
+    if want_palm:
+        total += _count_palm_images(data_dir)
+    return total
+
+
+def _count_distinct_filenames(summary_path: str) -> int:
+    """How many DISTINCT files a summary CSV has finished so far.
+
+    The summary CSVs (face_summary.csv / palm_summary.csv) have ONE ROW PER
+    FAILED CHECK — a file that fails N checks writes N rows, a PASS file writes
+    1. So a raw row count over-counts multi-failure files and can exceed the
+    file total. Counting DISTINCT values of the 'filename' column gives one
+    unit per finished file, so done never exceeds total.
+
+    Missing file -> 0 (the run hasn't started writing it yet).
+    """
     if not os.path.exists(summary_path):
         return 0
+    names = set()
     try:
         with open(summary_path, "r", encoding="utf-8-sig", newline="") as f:
-            return max(0, sum(1 for _ in csv.reader(f)) - 1)
+            reader = csv.DictReader(f)
+            for row in reader:
+                name = (row.get("filename") or "").strip()
+                if name:
+                    names.add(name)
     except OSError:
         return 0
+    return len(names)
+
+
+def _count_done(job: dict) -> int:
+    """Distinct finished files across every summary CSV this job writes (face
+    and/or palm), so the numerator matches the combined unit denominator."""
+    done = 0
+    for path in job.get("_summary_paths", []):
+        done += _count_distinct_filenames(path)
+    return done
 
 
 def _launch(data_dir: str, reports_dir: str, config_path: str,
@@ -126,15 +176,36 @@ def _watch(job_id: str, proc: subprocess.Popen) -> None:
             job["log_tail"] = "".join(out.splitlines(keepends=True)[-40:])
 
 
-def start_job(extra_args: Optional[list[str]] = None) -> dict:
-    """Launch a batch QC run. Returns the new job's public record immediately."""
+def start_job(extra_args: Optional[list[str]] = None, *,
+              run_palm: bool = False, run_face: bool = True) -> dict:
+    """Launch a batch QC run. Returns the new job's public record immediately.
+
+    run_face / run_palm decide which modalities the batch processes AND which
+    summary CSVs the progress counter watches, so 'total' and 'done' agree on
+    the unit set. When run_palm is True, '--palm' is added to the subprocess
+    args; run_face=False adds '--no-face'.
+    """
     job_id = uuid.uuid4().hex[:12]
     data = store.data_dir()
     reports = store.reports_dir()
     config = store.config_path()
-    total = _count_videos(data)
 
-    proc = _launch(data, reports, config, extra_args)
+    args = list(extra_args or [])
+    if run_palm and "--palm" not in args:
+        args.append("--palm")
+    if not run_face and "--no-face" not in args:
+        args.append("--no-face")
+
+    total = _count_expected(data, want_face=run_face, want_palm=run_palm)
+
+    # Which summary CSVs to sum 'done' from — must match the modalities run.
+    summary_paths = []
+    if run_face:
+        summary_paths.append(store.summary_csv_path())
+    if run_palm:
+        summary_paths.append(store.palm_summary_csv_path())
+
+    proc = _launch(data, reports, config, args)
 
     record = {
         "job_id": job_id,
@@ -143,7 +214,7 @@ def start_job(extra_args: Optional[list[str]] = None) -> dict:
         "started_at": time.time(),
         "finished_at": None,
         "return_code": None,
-        "_summary_path": store.summary_csv_path(),
+        "_summary_paths": summary_paths,
     }
     with _lock:
         _jobs[job_id] = record
@@ -155,7 +226,7 @@ def start_job(extra_args: Optional[list[str]] = None) -> dict:
 def public_view(job: dict) -> dict:
     """The JSON-safe shape returned to clients (drops private '_' fields, adds
     live progress)."""
-    done = _count_summary_rows(job["_summary_path"])
+    done = _count_done(job)
     total = job.get("total", 0)
     return {
         "job_id": job["job_id"],

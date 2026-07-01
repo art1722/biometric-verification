@@ -55,11 +55,14 @@ except ImportError:
     sys.exit("PyYAML required: pip install pyyaml")
 
 from qc.pipelines.face_rgb import run_face_rgb
+from qc.pipelines.palm import run_palm_participant
 from qc.utils.report import (
     build_overall_record,
     write_result_csv,
     write_detail_header_csv,
     write_detail_csv,
+    summarize_rows_by_check,
+    summarize_overall,
     SummaryWriter,
     AllSummaryWriter,
 )
@@ -69,6 +72,16 @@ from qc.utils.report import (
 # is NOT processed here — it would be flagged unrecognised by the validator,
 # so the contractor must fix the casing first. (No re.IGNORECASE on purpose.)
 FACE_RGB_RE = re.compile(r"^(\d+)_face_rgb\.mp4$")
+
+# Palm: <id>_palm_<L|R>_<N|RL|RR|PU|PD>.jpg. Strict case to match
+# validate_filenames.py (a wrong-case palm file is surfaced, not processed).
+PALM_RE = re.compile(
+    r"^(?P<vid>\d+)_palm_(?P<hand>[LR])_(?P<pose>N|RL|RR|PU|PD)\.jpg$"
+)
+PALM_LOOSE_RE = re.compile(
+    r"^(?P<vid>\d+)_palm_(?P<hand>[LR])_(?P<pose>N|RL|RR|PU|PD)\.jpg$",
+    flags=re.IGNORECASE,
+)
 
 # The customer-facing summaries are per-check (one row per failed check), so
 # this runner no longer owns a flat per-video column list — SummaryWriter /
@@ -109,6 +122,15 @@ def parse_args():
                     help="process only the first N videos (smoke test)")
     ap.add_argument("--no-detail", action="store_true",
                     help="skip the big per-frame detail CSV (keep result/overall only)")
+    ap.add_argument("--palm", action="store_true",
+                    help="also run the palm image batch (per-participant grading; "
+                         "one summary row per palm image). Writes palm_summary.csv "
+                         "and appends FAIL/ERROR rows to the shared all_summary.")
+    ap.add_argument("--palm-summary-csv", default=None,
+                    help="palm per-check summary CSV "
+                         "(default: <out-root>/palm_summary.csv)")
+    ap.add_argument("--no-face", action="store_true",
+                    help="skip the face batch (e.g. run palm only with --palm --no-face)")
     return ap.parse_args()
 
 
@@ -223,6 +245,182 @@ def error_row(path, vid, exc, elapsed):
     }
 
 
+# ---------------------------------------------------------------------------
+# Palm batch
+# ---------------------------------------------------------------------------
+# Palm differs from face in ONE structural way: the angle check grades each
+# rotated pose (RL/RR/PU/PD) relative to that hand's OWN neutral (N), so palm
+# must be graded PER PARTICIPANT (all 10 images together), not per file. So we
+# GROUP palm JPGs by volunteer id first, then call run_palm_participant once
+# per volunteer. Its rows are then split back per image, and each image gets
+# its OWN per-image overall record (the grain the team chose) fed to the
+# palm_summary / all_summary writers — mirroring write_consolidated_overall in
+# run_palm.py so a batch image row is identical to a standalone one.
+
+
+def find_palm_images(input_dir):
+    """Return (by_vid, wrong_case).
+
+    by_vid     : dict {volunteer_id -> sorted list of (filename, path)} for
+                 strict '<id>_palm_<L|R>_<N|RL|RR|PU|PD>.jpg'.
+    wrong_case : palm files that match only case-insensitively (surfaced, not
+                 processed), mirroring the face wrong-case policy.
+    """
+    by_vid = {}
+    wrong_case = []
+    for root, _, files in os.walk(input_dir):
+        for name in sorted(files):
+            path = os.path.join(root, name)
+            m = PALM_RE.match(name)
+            if m:
+                by_vid.setdefault(m.group("vid"), []).append((name, path))
+            elif PALM_LOOSE_RE.match(name):
+                wrong_case.append(path)
+    for vid in by_vid:
+        by_vid[vid].sort(key=lambda t: t[0])
+    return by_vid, wrong_case
+
+
+def _image_record(file_rows, config):
+    """Build ONE per-image overall record from that image's CheckRows.
+
+    Shaped like build_overall_record's output so SummaryWriter/AllSummaryWriter
+    expand it identically to a face record: it carries data_type, volunteer_id,
+    filename, final_status, and a failed_checks_detail list (one entry per
+    failed check, with check_name + reason) that expand_to_check_rows consumes.
+    """
+    aggregation_cfg = (config or {}).get("report", {}).get("aggregation", {})
+    summaries = summarize_rows_by_check(file_rows, aggregation_cfg)
+    overall = summarize_overall(summaries)
+    r0 = file_rows[0]
+    failed_detail = [
+        {"check_name": s["check_name"], "reason": s.get("reason", "")}
+        for s in summaries
+        if s["final_status"] == "FAIL"
+    ]
+    return {
+        "volunteer_id": r0.volunteer_id,
+        "data_type": r0.data_type or "palm",
+        "filename": r0.filename,
+        "final_status": overall["final_status"],
+        "failed_checks": [d["check_name"] for d in failed_detail],
+        "failed_checks_detail": failed_detail,
+        "error": "",
+    }
+
+
+def process_palm_participant(vid, files, config, args):
+    """Run palm QC for ONE participant and write their per-volunteer files.
+
+    Returns (records, counts_delta) where `records` is a list of per-IMAGE
+    overall records (the chosen grain) for the summary writers, and
+    counts_delta tallies image verdicts. Raises nothing: a participant-level
+    failure becomes one ERROR record so the batch keeps going.
+    """
+    out_dir = os.path.join(args.out_root, vid)
+    os.makedirs(out_dir, exist_ok=True)
+    image_paths = [p for _name, p in files]
+    image_order = [name for name, _p in files]
+
+    rows, _timelines = run_palm_participant(
+        vid, image_paths, config, progress=None, detect=True,
+    )
+
+    # Group rows back per image (per-file grain the writers expand).
+    rows_by_file = {}
+    for r in rows:
+        rows_by_file.setdefault(r.filename, []).append(r)
+
+    # Per-volunteer detail CSV (every check row, all images) — mirrors run_palm.
+    if not args.no_detail:
+        write_detail_csv(
+            os.path.join(out_dir, f"palm_{vid}_detail.csv"), rows, [], quiet=True
+        )
+
+    records = []
+    counts_delta = {}
+    # Preserve filename order; skip any expected image with no rows (absent file).
+    seen = set()
+    for name in image_order:
+        if name in seen:
+            continue
+        seen.add(name)
+        file_rows = rows_by_file.get(name)
+        if not file_rows:
+            continue
+        rec = _image_record(file_rows, config)
+        records.append(rec)
+        counts_delta[rec["final_status"]] = counts_delta.get(rec["final_status"], 0) + 1
+    return records, counts_delta
+
+
+def run_palm_batch(input_dir, config, args, all_summary, counts):
+    """Discover palm images, grade each participant, feed the shared writers.
+
+    Uses a SEPARATE palm_summary.csv (opened here) but the SAME all_summary
+    writer passed in, so palm FAIL/ERROR rows append to the cross-modal roll-up
+    after face. Mutates `counts` in place with palm image verdicts.
+    """
+    by_vid, wrong_case = find_palm_images(input_dir)
+    if args.limit is not None:
+        keep = dict(sorted(by_vid.items())[: args.limit])
+        by_vid = keep
+
+    if not by_vid:
+        return 0, wrong_case
+
+    palm_summary_csv = args.palm_summary_csv or os.path.join(
+        args.out_root, "palm_summary.csv"
+    )
+    os.makedirs(os.path.dirname(palm_summary_csv) or ".", exist_ok=True)
+
+    total_p = len(by_vid)
+    n_images = 0
+    print(f"\n=== palm batch: {total_p} participant(s) ===")
+    with SummaryWriter(palm_summary_csv, mode="w") as palm_summary:
+        for i, (vid, files) in enumerate(sorted(by_vid.items()), start=1):
+            t0 = time.perf_counter()
+            try:
+                records, counts_delta = process_palm_participant(
+                    vid, files, config, args
+                )
+            except Exception as exc:  # noqa: BLE001 — one bad participant must not kill the batch
+                elapsed = time.perf_counter() - t0
+                rec = {
+                    "volunteer_id": vid,
+                    "data_type": "palm",
+                    "filename": f"{vid}_palm_*",
+                    "final_status": "ERROR",
+                    "failed_checks": [],
+                    "failed_checks_detail": [],
+                    "error": " ".join(str(exc).split())[:300],
+                }
+                palm_summary.add(rec)
+                all_summary.add(rec)
+                counts["ERROR"] = counts.get("ERROR", 0) + 1
+                print(f"[{i}/{total_p}] {vid:>5}  ERROR  {rec['error']}", flush=True)
+                traceback.print_exc()
+                continue
+
+            for rec in records:
+                palm_summary.add(rec)
+                all_summary.add(rec)
+                counts[rec["final_status"]] = counts.get(rec["final_status"], 0) + 1
+            n_images += len(records)
+            elapsed = time.perf_counter() - t0
+            statuses = " ".join(
+                f"{r['filename'].split('_palm_')[-1].replace('.jpg','')}:{r['final_status']}"
+                for r in records
+            )
+            print(
+                f"[{i}/{total_p}] {vid:>5}  {len(records)} img  ({elapsed:.1f}s)  {statuses}",
+                flush=True,
+            )
+
+    print(f"  palm summary: {palm_summary_csv}  ({n_images} image row(s))")
+    return n_images, wrong_case
+
+
 def main():
     args = parse_args()
 
@@ -245,7 +443,10 @@ def main():
     if args.limit is not None:
         matched = matched[: args.limit]
 
-    if not matched:
+    run_face = not args.no_face
+    run_palm = args.palm
+
+    if run_face and not matched:
         print(f"No *_face_rgb.mp4 found under {args.input_dir}")
         if wrong_case:
             print(f"({len(wrong_case)} wrong-case file(s) found — fix the casing:)")
@@ -253,18 +454,26 @@ def main():
                 print(f"  - {p}")
         if skipped:
             print(f"({len(skipped)} other .mp4 files were ignored)")
-        return 1
+        # With no face videos, only continue if palm was explicitly requested.
+        if not run_palm:
+            return 1
+        run_face = False
 
     total = len(matched)
     print(f"=== run_folder.py ===")
     print(f"input     : {args.input_dir}")
-    print(f"videos    : {total} face_rgb files  (sample_fps={args.sample_fps}, "
-          f"overlay={'on' if args.overlay else 'off'})")
+    if run_face:
+        print(f"videos    : {total} face_rgb files  (sample_fps={args.sample_fps}, "
+              f"overlay={'on' if args.overlay else 'off'})")
+    if run_palm:
+        print(f"palm      : ON  (per-participant grading, one row per image)")
     print(f"out root  : {args.out_root}")
     print(f"summary   : {summary_csv}  (per-check, all videos)")
     print(f"all       : {all_stem}.csv / .json  (FAIL/ERROR only, cross-modal)\n")
 
     counts = {"PASS": 0, "FAIL": 0, "SKIP": 0, "ERROR": 0}
+    palm_wrong_case = []
+    n_palm_images = 0
     run_start = time.perf_counter()
 
     # Two writers, opened together so both flush per video and a crash mid-run
@@ -272,45 +481,63 @@ def main():
     #   SummaryWriter   -> face_summary.csv  (per-check rows; PASS gets one row)
     #   AllSummaryWriter-> all_summary.csv + .json (FAIL/ERROR only, cross-modal)
     # Both expand the SAME overall record, so face/palm/walk stay identical.
+    # The all_summary writer stays open across BOTH the face loop and the palm
+    # batch so palm rows append to the same cross-modal roll-up in one process.
     all_mode = "w" if args.fresh_all else "a"
-    with SummaryWriter(summary_csv, mode="w") as summary, \
-            AllSummaryWriter(all_stem, mode=all_mode) as all_summary:
+    with AllSummaryWriter(all_stem, mode=all_mode) as all_summary:
 
-        for i, (vid, path) in enumerate(matched, start=1):
-            t0 = time.perf_counter()
-            try:
-                rec = process_one(path, vid, config, args)
-            except Exception as exc:  # noqa: BLE001 — one bad file must not kill the batch
-                elapsed = time.perf_counter() - t0
-                rec = error_row(path, vid, exc, elapsed)
-                print(f"[{i}/{total}] {vid:>5}  ERROR  {rec['error']}", flush=True)
-                traceback.print_exc()
-            else:
-                status = rec["final_status"]
-                print(f"[{i}/{total}] {vid:>5}  {status:<6} "
-                      f"({rec['processing_time_sec']}s, "
-                      f"{rec.get('frames_sampled', '')} frames, "
-                      f"{rec.get('detection_gaps', '')} gaps)", flush=True)
+        if run_face:
+            with SummaryWriter(summary_csv, mode="w") as summary:
+                for i, (vid, path) in enumerate(matched, start=1):
+                    t0 = time.perf_counter()
+                    try:
+                        rec = process_one(path, vid, config, args)
+                    except Exception as exc:  # noqa: BLE001 — one bad file must not kill the batch
+                        elapsed = time.perf_counter() - t0
+                        rec = error_row(path, vid, exc, elapsed)
+                        print(f"[{i}/{total}] {vid:>5}  ERROR  {rec['error']}", flush=True)
+                        traceback.print_exc()
+                    else:
+                        status = rec["final_status"]
+                        print(f"[{i}/{total}] {vid:>5}  {status:<6} "
+                              f"({rec['processing_time_sec']}s, "
+                              f"{rec.get('frames_sampled', '')} frames, "
+                              f"{rec.get('detection_gaps', '')} gaps)", flush=True)
 
-            counts[rec["final_status"]] = counts.get(rec["final_status"], 0) + 1
-            # Per-modality summary gets EVERY video (PASS included); the
-            # cross-modal all_summary keeps only FAIL/ERROR (it filters itself).
-            summary.add(rec)
-            all_summary.add(rec)
+                    counts[rec["final_status"]] = counts.get(rec["final_status"], 0) + 1
+                    # Per-modality summary gets EVERY video (PASS included); the
+                    # cross-modal all_summary keeps only FAIL/ERROR (self-filtering).
+                    summary.add(rec)
+                    all_summary.add(rec)
+
+        if run_palm:
+            n_palm_images, palm_wrong_case = run_palm_batch(
+                args.input_dir, config, args, all_summary, counts
+            )
 
     all_kept = all_summary.kept
 
     elapsed = time.perf_counter() - run_start
-    print(f"\n=== done: {total} videos in {elapsed:.1f}s ===")
+    print(f"\n=== done in {elapsed:.1f}s ===")
+    if run_face:
+        print(f"  face: {total} video(s)")
+    if run_palm:
+        print(f"  palm: {n_palm_images} image row(s)")
     print(f"  PASS={counts.get('PASS',0)}  FAIL={counts.get('FAIL',0)}  "
           f"SKIP={counts.get('SKIP',0)}  ERROR={counts.get('ERROR',0)}")
-    print(f"  summary: {summary_csv}")
+    if run_face:
+        print(f"  summary: {summary_csv}")
     print(f"  all    : {all_stem}.csv / .json  ({all_kept} FAIL/ERROR video(s) "
           f"{'written' if args.fresh_all else 'appended'})")
     if wrong_case:
         print(f"\n  WARNING: {len(wrong_case)} wrong-case face_rgb file(s) were "
               f"NOT processed (strict naming). Fix the casing to '_face_rgb.mp4':")
         for p in wrong_case:
+            print(f"    - {p}")
+    if palm_wrong_case:
+        print(f"\n  WARNING: {len(palm_wrong_case)} wrong-case palm file(s) were "
+              f"NOT processed (strict naming). Fix the casing:")
+        for p in palm_wrong_case:
             print(f"    - {p}")
     if skipped:
         print(f"\n  note: {len(skipped)} non-RGB .mp4 files were ignored "
