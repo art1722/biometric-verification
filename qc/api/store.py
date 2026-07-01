@@ -67,17 +67,19 @@ def palm_summary_csv_path() -> str:
     return os.path.join(reports_dir(), "palm_summary.csv")
 
 
-def all_summary_json_path() -> str:
-    """The cross-modal FAIL/ERROR roll-up the /results endpoints read."""
-    return os.path.join(reports_dir(), "all_summary.json")
+def all_summary_json_path(reports: Optional[str] = None) -> str:
+    """The cross-modal roll-up the /results endpoints read. Defaults to the
+    shared reports dir; pass `reports` to read a specific upload's dir."""
+    return os.path.join(reports or reports_dir(), "all_summary.json")
 
 
 # --- the one reader every /results endpoint builds on ---
 
-def _read_all_summary() -> list[dict]:
-    """all_summary.json as a list of per-file problem records. Missing/unreadable
-    file -> [] (nothing has been flagged yet, or no batch has run)."""
-    path = all_summary_json_path()
+def _read_all_summary(reports: Optional[str] = None) -> list[dict]:
+    """all_summary.json as a list of per-file records. Missing/unreadable
+    file -> [] (nothing processed yet, or no batch has run). `reports` selects
+    which reports dir to read (an upload's own dir vs the shared default)."""
+    path = all_summary_json_path(reports)
     if not os.path.exists(path):
         return []
     try:
@@ -90,31 +92,35 @@ def _read_all_summary() -> list[dict]:
 
 # --- endpoints' data ---
 
-def list_volunteer_ids() -> list[str]:
-    """Every volunteer id that has at least one FAIL/ERROR file in the roll-up,
-    sorted. (PASS-only volunteers are absent by design — see module docstring.)"""
+def list_volunteer_ids(reports: Optional[str] = None) -> list[str]:
+    """Every volunteer id present in the roll-up, sorted. Now that all_summary
+    records PASS media too, this is every processed volunteer (not just those
+    with a problem)."""
     ids = {
         (rec.get("volunteer_id") or "").strip()
-        for rec in _read_all_summary()
+        for rec in _read_all_summary(reports)
     }
     ids.discard("")
     return sorted(ids)
 
 
-def read_batch_summary(status: Optional[str] = None) -> list[dict]:
-    """The cross-modal problem list as flat per-CHECK rows, so a reviewer can
+def read_batch_summary(status: Optional[str] = None,
+                       reports: Optional[str] = None) -> list[dict]:
+    """The cross-modal result list as flat per-CHECK rows, so a reviewer can
     scan/pivot it the way the old face_summary.csv allowed.
 
-    One row per failed check (ERROR files get one row carrying the error text),
-    across ALL modalities. If `status` is given (e.g. "FAIL"/"ERROR"), only rows
-    whose overall_status matches (case-insensitive) are returned.
+    One row per failed check; a PASS media contributes one placeholder row
+    (blank check_name/reason); an ERROR media one row carrying the error text.
+    If `status` is given (e.g. "FAIL"/"PASS"/"ERROR"), only rows whose
+    overall_status matches (case-insensitive) are returned — so ?status=FAIL
+    yields just the problem set.
 
     Row shape mirrors the old CSV columns so existing consumers keep working:
       data_type, volunteer_id, filename, overall_status, check_name, reason
     """
     want = status.strip().upper() if status else None
     rows: list[dict] = []
-    for rec in _read_all_summary():
+    for rec in _read_all_summary(reports):
         st = (rec.get("overall_status") or "").upper()
         if want and st != want:
             continue
@@ -135,57 +141,72 @@ def read_batch_summary(status: Optional[str] = None) -> list[dict]:
                     "reason": fl.get("reason", ""),
                 })
         else:
-            # FAIL with no detail (shouldn't happen) -> one placeholder row.
+            # PASS media (or a FAIL with no detail) -> one placeholder row.
             rows.append({**base, "check_name": "", "reason": ""})
     return rows
 
 
-def _volunteer_records(volunteer_id: str) -> list[dict]:
-    """All problem FILES for one volunteer, across modalities."""
+def _volunteer_records(volunteer_id: str,
+                       reports: Optional[str] = None) -> list[dict]:
+    """All result FILES for one volunteer, across modalities (PASS + FAIL + ERROR)."""
     vid = str(volunteer_id).strip()
     return [
-        rec for rec in _read_all_summary()
+        rec for rec in _read_all_summary(reports)
         if (rec.get("volunteer_id") or "").strip() == vid
     ]
 
 
-def read_overall(volunteer_id: str) -> Optional[dict]:
-    """One volunteer's overall verdict, aggregated across their problem files.
+def read_overall(volunteer_id: str,
+                 reports: Optional[str] = None) -> Optional[dict]:
+    """One volunteer's overall verdict, aggregated across their media files.
 
-    Returns None if the volunteer has NO FAIL/ERROR files in the roll-up (either
-    they passed everything, or they were never processed — the roll-up cannot
-    tell these apart, since PASS files are not recorded). ERROR outranks FAIL.
+    Returns None only if the volunteer is absent from the roll-up entirely (not
+    processed). ERROR outranks FAIL outranks PASS. Now that PASS media are
+    recorded, a volunteer who passed everything returns final_status=PASS
+    instead of None.
     """
-    recs = _volunteer_records(volunteer_id)
+    recs = _volunteer_records(volunteer_id, reports)
     if not recs:
         return None
 
     statuses = {(r.get("overall_status") or "").upper() for r in recs}
-    final = "ERROR" if "ERROR" in statuses else "FAIL"
+    if "ERROR" in statuses:
+        final = "ERROR"
+    elif "FAIL" in statuses:
+        final = "FAIL"
+    else:
+        final = "PASS"
 
-    # Which files (and their modalities) tripped, for a quick overview.
-    problem_files = sorted(
+    # All this volunteer's files + which ones are problems, for a quick overview.
+    all_files = sorted(
         {(r.get("data_type") or "", r.get("filename") or "") for r in recs}
     )
-    modalities = sorted({dt for dt, _fn in problem_files if dt})
+    problem_files = sorted(
+        {(r.get("data_type") or "", r.get("filename") or "") for r in recs
+         if (r.get("overall_status") or "").upper() in ("FAIL", "ERROR")}
+    )
+    modalities = sorted({dt for dt, _fn in all_files if dt})
 
     return {
         "volunteer_id": str(volunteer_id).strip(),
         "final_status": final,
         "modalities": modalities,
+        "file_count": len(all_files),
         "problem_file_count": len(problem_files),
         "problem_files": [fn for _dt, fn in problem_files],
     }
 
 
-def read_checks(volunteer_id: str) -> list[dict]:
-    """One volunteer's failed checks across ALL modalities, one row per check.
+def read_checks(volunteer_id: str,
+                reports: Optional[str] = None) -> list[dict]:
+    """One volunteer's checks across ALL modalities, one row per failed check.
 
-    Shape: data_type, filename, check_name, reason (+ overall_status). ERROR
-    files contribute one row with the error text in `reason`.
+    Shape: data_type, filename, check_name, reason (+ overall_status). A PASS
+    media contributes one placeholder row (blank check_name/reason); an ERROR
+    file one row with the error text in `reason`.
     """
     out: list[dict] = []
-    for rec in _volunteer_records(volunteer_id):
+    for rec in _volunteer_records(volunteer_id, reports):
         st = (rec.get("overall_status") or "").upper()
         base = {
             "data_type": rec.get("data_type") or "",
@@ -195,7 +216,12 @@ def read_checks(volunteer_id: str) -> list[dict]:
         if st == "ERROR":
             out.append({**base, "check_name": "", "reason": rec.get("error", "")})
             continue
-        for fl in (rec.get("failures") or []):
+        failures = rec.get("failures") or []
+        if not failures:
+            # PASS media -> one clean placeholder row so it's visible in detail.
+            out.append({**base, "check_name": "", "reason": ""})
+            continue
+        for fl in failures:
             out.append({
                 **base,
                 "check_name": fl.get("check_name", ""),

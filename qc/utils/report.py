@@ -451,19 +451,26 @@ class SummaryWriter:
 
 
 class AllSummaryWriter:
-    """Cross-modal FAIL/ERROR roll-up in BOTH csv and json.
+    """Cross-modal COMPLETE roll-up in BOTH csv and json.
 
-    Fed the SAME per-video records as SummaryWriter, but keeps only the
-    problem cases (FAIL/ERROR). Writes two files that stay in lock-step:
+    Fed the SAME per-video records as SummaryWriter, and now keeps EVERY
+    processed media file (PASS, FAIL, and ERROR) so all_summary is the full
+    result set, not just a problem worklist. Writes two files that stay in
+    lock-step:
 
-      <stem>.csv  — flat per-check rows (Excel-pivotable), PASS rows omitted.
+      <stem>.csv  — flat per-check rows (Excel-pivotable). A FAIL media contributes
+                    one row per failed check; a PASS media contributes exactly one
+                    row (blank check_name/reason); an ERROR media one error row.
       <stem>.json — list of {data_type, volunteer_id, filename, overall_status,
                     failures: [{check_name, reason}, ...]} ; one object per
-                    problem video, the clean nested shape for customer tooling.
+                    media file. failures is [] for a PASS (and for ERROR, which
+                    carries `error` instead).
+
+    To get just the problem set, filter overall_status == FAIL/ERROR (the API's
+    /results?status=FAIL does this).
 
     JSON is rewritten in full on each add() (the registry is held in memory)
-    so the file on disk is always valid; for ~1,500 volunteers with only the
-    failing subset kept, that is cheap.
+    so the file on disk is always valid; for ~1,500 volunteers this is cheap.
 
     csv_mode/json default to "w" (fresh). Pass mode="a" so palm/walk append to
     the same all_summary after face has run — the JSON is re-loaded and merged.
@@ -501,11 +508,17 @@ class AllSummaryWriter:
             self._cf.flush()
 
     def add(self, rec):
-        """Keep `rec` IFF it's a FAIL/ERROR; write its CSV rows and update JSON.
-        Returns True if kept."""
+        """Keep `rec` and write its rows: one row per failed check for a FAIL,
+        one error row for an ERROR, and ONE PASS row for a clean media file.
+
+        Previously all_summary kept only FAIL/ERROR (a reviewer worklist). It now
+        records EVERY processed media file so all_summary is the COMPLETE result
+        set: a PASS video/image contributes exactly one row (overall_status=PASS,
+        blank check_name/reason) and one JSON object with an empty failures list.
+        Callers filter to the problem set with status=FAIL on the API/CSV side.
+
+        Returns True (every record is now kept)."""
         status = (rec.get("final_status") or rec.get("overall_status") or "").upper()
-        if status not in ATTENTION_STATUSES:
-            return False
 
         check_rows = expand_to_check_rows(rec)
         for row in check_rows:

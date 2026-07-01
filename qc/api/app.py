@@ -7,7 +7,7 @@ the grain in the path. Reading stored results stays under /results (a separate
 concern from running checks).
 
   Checks (run QC):
-    POST /checks/file          one uploaded file, SYNC — returns the verdict (200)
+    POST /checks/file          one uploaded file, SYNC — returns the status (200)
     POST /checks/batch         start a batch over local data/; ASYNC — 202 + job_id
     GET  /checks/batch         list batch runs
     GET  /checks/batch/{id}    poll one batch run's status + progress
@@ -22,7 +22,7 @@ concern from running checks).
 
 Why the split (sync vs async)
 -----------------------------
-POST /checks/file runs inline and returns the verdict in the response body — the
+POST /checks/file runs inline and returns the status in the response body — the
 caller waits. POST /checks/batch cannot: a run over ~1,500 volunteers is far too
 long for one request, so it returns 202 + a job_id immediately and the caller
 POLLs GET /checks/batch/{id}. The returned object still carries job_id/status/
@@ -41,11 +41,14 @@ Run (from repo root):  uvicorn main:app --reload   ->  http://localhost:8000/doc
 from __future__ import annotations
 
 import functools
+import os
+
+from typing import List
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Query, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 
-from . import store, jobs, live
+from . import store, jobs, live, uploads
 
 app = FastAPI(
     title="Biometric QC API",
@@ -137,6 +140,73 @@ def get_batch(job_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Checks — uploaded batch (async): upload files -> QC the whole set
+# ---------------------------------------------------------------------------
+
+@app.post("/checks/uploads", status_code=status.HTTP_202_ACCEPTED,
+          tags=["Checks"])
+async def create_uploads_batch(
+    files: List[UploadFile] = File(
+        ..., description="Either ONE .zip of the data folder, or MANY files "
+                         "from a folder picker (each keeps its relative path)."),
+    run_face: bool = Query(default=True,
+                           description="run the face video batch"),
+    run_palm: bool = Query(default=True,
+                           description="run the palm image batch"),
+):
+    """Upload a whole data set and QC it in one shot.
+
+    Accepts the folder in whichever shape the client sends it:
+      - ONE .zip                -> unpacked server-side
+      - MANY files (folder pick) -> written into a temp tree, subpaths preserved
+
+    The upload is unpacked into its OWN isolated temp dir (never the shared
+    data/), then the existing batch runs over it and writes to that upload's own
+    reports dir with a FRESH all_summary (this upload only). Returns 202 + a
+    job_id immediately; poll GET /checks/batch/{job_id}, then read the results
+    from GET /results (the job's reports_dir is also returned for reference).
+
+    Errors:
+      - empty upload / corrupt zip / unsafe path -> 422
+    """
+    # Read every uploaded file into (name, bytes). UploadFile.filename carries
+    # the relative path for folder-picker uploads (webkitRelativePath), which
+    # unpack_uploads preserves under the temp root.
+    pairs = []
+    for f in files:
+        raw = await f.read()
+        pairs.append((f.filename or "", raw))
+
+    try:
+        data_dir, n_files = uploads.unpack_uploads(pairs)
+    except uploads.BadUpload as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    # Each upload writes into a reports dir NEXT TO its data dir, so its output
+    # is isolated from the shared reports/ and from other uploads.
+    reports_dir = data_dir.rstrip("/\\") + "_reports"
+
+    job = jobs.start_job(
+        run_face=run_face, run_palm=run_palm,
+        data_dir=data_dir, reports_dir=reports_dir, fresh_all=True,
+    )
+    job["uploaded_files"] = n_files
+    # Tell the caller exactly where to poll and where to fetch all_summary once
+    # this async run finishes. all_summary does NOT exist yet at 202 time (the
+    # batch is still running), so we return the URLs rather than the file: poll
+    # batch_url until status=completed, then GET results_url / download_url.
+    jid = job["job_id"]
+    job["batch_url"] = f"/checks/batch/{jid}"
+    job["results_url"] = f"/results?job_id={jid}"
+    job["download_url"] = f"/results/download?job_id={jid}&format=json"
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content=job,
+        headers={"Location": f"/checks/batch/{jid}"},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Checks — single file (sync)
 # ---------------------------------------------------------------------------
 
@@ -154,7 +224,7 @@ async def _check_one_file(file: UploadFile):
 @app.post("/checks/file", tags=["Checks"])
 async def create_check_file(file: UploadFile = File(...)):
     """Upload one file. Its name is parsed to decide the modality:
-      - face_rgb            -> run QC, return the verdict        (200)
+      - face_rgb            -> run QC, return the status         (200)
       - palm_* / walk_* /   -> not built yet                     (501)
         other face streams
       - unrecognised name   -> rejected                          (422)
@@ -166,16 +236,79 @@ async def create_check_file(file: UploadFile = File(...)):
 # Results
 # ---------------------------------------------------------------------------
 
+def _reports_for_job(job_id: str | None) -> str | None:
+    """Resolve which reports dir a /results call should read.
+
+    job_id given   -> that job's own reports dir (an upload's isolated dir).
+                      Unknown job_id -> 404.
+    job_id omitted -> None, so store.* falls back to the shared reports dir
+                      (the pre-upload behaviour, unchanged).
+    """
+    if not job_id:
+        return None
+    reports = jobs.reports_dir_for(job_id)
+    if reports is None:
+        raise HTTPException(status_code=404, detail=f"No batch run '{job_id}'")
+    return reports
+
+
 @app.get("/results", tags=["Results"])
-def results(status_filter: str | None = Query(default=None, alias="status",
-            description="filter by overall status, e.g. FAIL")):
-    rows = store.read_batch_summary(status=status_filter)
-    return {"count": len(rows), "status_filter": status_filter, "results": rows}
+def results(
+    status_filter: str | None = Query(
+        default=None, alias="status",
+        description="filter by overall status, e.g. FAIL (omit for all: "
+                    "PASS + FAIL + ERROR)"),
+    job_id: str | None = Query(
+        default=None,
+        description="read THIS upload's results (its own reports dir). Omit to "
+                    "read the shared reports dir."),
+):
+    """Cross-modal results as flat per-check rows.
+
+    all_summary now records every processed media file, so with no status filter
+    this returns PASS + FAIL + ERROR. Pass status=FAIL for just the problem set.
+    Pass job_id to read a specific upload's results.
+    """
+    reports = _reports_for_job(job_id)
+    rows = store.read_batch_summary(status=status_filter, reports=reports)
+    return {
+        "count": len(rows),
+        "status_filter": status_filter,
+        "job_id": job_id,
+        "results": rows,
+    }
+
+
+@app.get("/results/download", tags=["Results"])
+def download_all_summary(
+    fmt: str = Query(default="json", alias="format", pattern="^(json|csv)$",
+                     description="all_summary.json or all_summary.csv"),
+    job_id: str | None = Query(
+        default=None, description="download THIS upload's all_summary"),
+):
+    """Download the raw all_summary file (the reviewer's single-file deliverable). 
+    json is the full nested set; csv is the flat per-check
+    grain. Pass job_id for an upload's own file."""
+    reports = _reports_for_job(job_id)
+    base = reports or store.reports_dir()
+    fname = "all_summary.json" if fmt == "json" else "all_summary.csv"
+    path = os.path.join(base, fname)
+    if not os.path.exists(path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"{fname} not found (has the batch finished writing?)")
+    media = "application/json" if fmt == "json" else "text/csv"
+    return FileResponse(path, media_type=media, filename=fname)
 
 
 @app.get("/results/{volunteer_id}", tags=["Results"])
-def result_for_volunteer(volunteer_id: str):
-    overall = store.read_overall(volunteer_id)
+def result_for_volunteer(
+    volunteer_id: str,
+    job_id: str | None = Query(
+        default=None, description="read from THIS upload's results"),
+):
+    reports = _reports_for_job(job_id)
+    overall = store.read_overall(volunteer_id, reports=reports)
     if overall is None:
         raise HTTPException(
             status_code=404,
@@ -184,13 +317,15 @@ def result_for_volunteer(volunteer_id: str):
     return {
         "volunteer_id": volunteer_id,
         "overall": overall,
-        "checks": store.read_checks(volunteer_id),
+        "checks": store.read_checks(volunteer_id, reports=reports),
     }
 
 
 @app.get("/volunteers", tags=["Results"])
-def volunteers():
-    ids = store.list_volunteer_ids()
+def volunteers(job_id: str | None = Query(
+        default=None, description="list volunteers in THIS upload's results")):
+    reports = _reports_for_job(job_id)
+    ids = store.list_volunteer_ids(reports=reports)
     return {"count": len(ids), "volunteer_ids": ids}
 
 

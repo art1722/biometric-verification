@@ -177,17 +177,32 @@ def _watch(job_id: str, proc: subprocess.Popen) -> None:
 
 
 def start_job(extra_args: Optional[list[str]] = None, *,
-              run_palm: bool = False, run_face: bool = True) -> dict:
+              run_palm: bool = False, run_face: bool = True,
+              data_dir: Optional[str] = None,
+              reports_dir: Optional[str] = None,
+              fresh_all: bool = False) -> dict:
     """Launch a batch QC run. Returns the new job's public record immediately.
 
     run_face / run_palm decide which modalities the batch processes AND which
     summary CSVs the progress counter watches, so 'total' and 'done' agree on
     the unit set. When run_palm is True, '--palm' is added to the subprocess
     args; run_face=False adds '--no-face'.
+
+    data_dir / reports_dir override where the batch READS input and WRITES
+    output. Both default to the shared server dirs (store.data_dir() /
+    store.reports_dir()), so the normal batch is unchanged. An UPLOAD run passes
+    its own temp dirs here so each upload is isolated from the shared data/ and
+    from other uploads.
+
+    fresh_all truncates the all_summary roll-up before writing (adds
+    --fresh-all) instead of appending. An upload run sets this True so its
+    all_summary reflects ONLY that upload — otherwise uploads would pile onto
+    the shared cross-modal roll-up. The normal batch leaves it False (append),
+    preserving the face-then-palm accumulation behaviour.
     """
     job_id = uuid.uuid4().hex[:12]
-    data = store.data_dir()
-    reports = store.reports_dir()
+    data = data_dir if data_dir is not None else store.data_dir()
+    reports = reports_dir if reports_dir is not None else store.reports_dir()
     config = store.config_path()
 
     args = list(extra_args or [])
@@ -195,15 +210,19 @@ def start_job(extra_args: Optional[list[str]] = None, *,
         args.append("--palm")
     if not run_face and "--no-face" not in args:
         args.append("--no-face")
+    if fresh_all and "--fresh-all" not in args:
+        args.append("--fresh-all")
 
     total = _count_expected(data, want_face=run_face, want_palm=run_palm)
 
-    # Which summary CSVs to sum 'done' from — must match the modalities run.
+    # Which summary CSVs to sum 'done' from — must match the modalities run AND
+    # the reports dir this job writes to (an upload writes to its own reports
+    # dir, so the progress counter must watch THOSE CSVs, not the shared ones).
     summary_paths = []
     if run_face:
-        summary_paths.append(store.summary_csv_path())
+        summary_paths.append(os.path.join(reports, "face_summary.csv"))
     if run_palm:
-        summary_paths.append(store.palm_summary_csv_path())
+        summary_paths.append(os.path.join(reports, "palm_summary.csv"))
 
     proc = _launch(data, reports, config, args)
 
@@ -215,6 +234,9 @@ def start_job(extra_args: Optional[list[str]] = None, *,
         "finished_at": None,
         "return_code": None,
         "_summary_paths": summary_paths,
+        # Where this job wrote its output. For an upload run this is the upload's
+        # own reports dir; the client reads all_summary from here.
+        "reports_dir": reports,
     }
     with _lock:
         _jobs[job_id] = record
@@ -237,6 +259,7 @@ def public_view(job: dict) -> dict:
         "started_at": job["started_at"],
         "finished_at": job["finished_at"],
         "return_code": job["return_code"],
+        "reports_dir": job.get("reports_dir"),
     }
 
 
@@ -249,3 +272,11 @@ def get_job(job_id: str) -> Optional[dict]:
 def list_jobs() -> list[dict]:
     with _lock:
         return [public_view(j) for j in _jobs.values()]
+
+
+def reports_dir_for(job_id: str) -> Optional[str]:
+    """The reports dir a given job wrote to (its own dir for an upload run, the
+    shared dir otherwise). None if the job_id is unknown — lets the API 404."""
+    with _lock:
+        job = _jobs.get(job_id)
+        return job.get("reports_dir") if job else None
