@@ -257,7 +257,7 @@ def results(
     status_filter: str | None = Query(
         default=None, alias="status",
         description="filter by overall status, e.g. FAIL (omit for all: "
-                    "PASS + FAIL + ERROR)"),
+                    "PASS + FAIL)"),
     job_id: str | None = Query(
         default=None,
         description="read THIS upload's results (its own reports dir). Omit to "
@@ -266,7 +266,7 @@ def results(
     """Cross-modal results as flat per-check rows.
 
     all_summary now records every processed media file, so with no status filter
-    this returns PASS + FAIL + ERROR. Pass status=FAIL for just the problem set.
+    this returns PASS + FAIL. Pass status=FAIL for just the problem set.
     Pass job_id to read a specific upload's results.
     """
     reports = _reports_for_job(job_id)
