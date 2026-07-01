@@ -128,6 +128,23 @@ _REQUIRED_FINGERS = ["thumb", "index", "middle", "ring", "pinky"]
 _DEFAULT_FRAME_MARGIN = 0.02  # a point must sit inside [margin, 1-margin] to count
 
 
+def _mid_joint_label(finger: str) -> str:
+    """Human-readable name of a finger's MIDDLE joint (the pip-source landmark).
+
+    Anatomically the thumb has no PIP -- its middle joint is the IP
+    (interphalangeal). Only the four long fingers have a true PIP. The code uses
+    "pip" internally as a generic term for this middle-joint source, but the
+    user-facing reason should name the joint correctly so a report never claims
+    a thumb has a PIP.
+    """
+    return "IP" if finger == "thumb" else "PIP"
+
+
+def _label_joints(fingers: Sequence) -> str:
+    """'thumb (IP), index (PIP)' — each finger tagged with its real joint name."""
+    return ", ".join(f"{f} ({_mid_joint_label(f)})" for f in fingers)
+
+
 def _pt(landmarks: Sequence, i: int) -> Optional[Tuple[float, float]]:
     """(x, y) of a normalized landmark (.x/.y or [0]/[1]), or None."""
     try:
@@ -205,14 +222,15 @@ def _select_source(
             name for name in required_fingers
             if not _in_frame(_pt(landmarks, _FINGERS[name][2]), margin)
         ]
-        return ("pip", f"tip cropped ({', '.join(cropped)}) -> using PIP")
+        return ("pip", f"tip cropped ({', '.join(cropped)}) -> "
+                       f"using mid joint ({_label_joints(cropped)})")
 
     # 4. Neither source is fully usable.
     bad = [
         name for name in required_fingers
         if not _in_frame(_pt(landmarks, _FINGERS[name][1]), margin)
     ]
-    return (None, f"PIP also out of frame: {', '.join(bad)}")
+    return (None, f"mid joint also out of frame: {_label_joints(bad)}")
 
 
 def calculate_finger_gaps(

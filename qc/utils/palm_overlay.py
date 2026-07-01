@@ -268,10 +268,6 @@ def _append_check_strip(img, checks: dict, img_w: int, base_fs: float,
     if not checks:
         return img
 
-    # The strip (and therefore the whole output) is at least min_strip_width
-    # wide, so a narrow photo does not squeeze the reason column.
-    strip_w = max(img_w, int(min_strip_width))
-
     s = max(0.5, min(2.5, base_fs / 0.85))
     fs = 0.85 * s
     thick = max(1, int(round(1.25 * s)))
@@ -281,21 +277,43 @@ def _append_check_strip(img, checks: dict, img_w: int, base_fs: float,
     names = sorted(checks.keys())
     items = [(nm, *_normalize_check(checks[nm])) for nm in names]
 
-    # Column geometry, measured from the actual text.
+    # Column geometry, measured from the actual rendered text.
     label_texts = [f"{st:5s} {nm}" for nm, st, _r in items]
     max_label_w = max(
-        cv2.getTextSize(t, _FONT, fs, thick)[0][0] for t in label_texts)
+        cv2.getTextSize(t, _FONT, fs, thick)[0][0]
+        for t in label_texts
+    )
+
     gap = int(30 * s)
     status_col_w = int(95 * s)
     name_col_w = max_label_w + gap
 
-    strip_h = line_h * len(items) + pad * 2
-    strip = np.full((strip_h, strip_w, 3), 35, dtype=np.uint8)  # dark grey
-
     status_x = pad
     name_x = status_x + status_col_w
     reason_x = pad + name_col_w
+
+    reason_texts = [reason for _name, _status, reason in items if reason]
+    max_reason_w = max(
+        (
+            cv2.getTextSize(reason, _FONT, fs, thick)[0][0]
+            for reason in reason_texts
+        ),
+        default=0,
+    )
+
+    wanted_reason_w = max(int(420 * s), max_reason_w + int(20 * s))
+
+    strip_w = max(
+        img_w,
+        int(min_strip_width),
+        reason_x + wanted_reason_w + pad,
+    )
+
     reason_col_w = max(0, strip_w - reason_x - pad)
+
+    strip_h = line_h * len(items) + pad * 2
+    strip = np.full((strip_h, strip_w, 3), 35, dtype=np.uint8)  # dark grey
+
     y = pad + int(28 * s)
 
     for name, status, reason in items:

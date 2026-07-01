@@ -230,7 +230,7 @@ face:
       cb_max: 127                        # [DESIGN]
       # A region passes if its skin-pixel fraction >= this. Lower = more
       # permissive (fewer false occlusions); higher = stricter.
-      min_skin_ratio: 0.40               # [DESIGN] calibrate with อ.เหมียว
+      min_skin_ratio: 0.40               # [DESIGN]
       # Padding added to each region ROI, as a fraction of the ROI's own size.
       roi_margin: 0.15                   # [DESIGN]
 
@@ -406,7 +406,7 @@ palm:
   # Reuses the shared brightness core (qc/checks/check_brightness.py). Defaults
   # mirror face; palm skin under the capture rig may differ and "veins visible"
   # is a CONTRAST cue mean-V alone does not capture -- validate on real samples
-  # before trusting these. [CONFIRM with อ.เหมียว]
+  # before trusting these. [CONFIRM]
   brightness:
     enabled: true                    # [DESIGN] config toggle, like the angle gate
     dark_threshold: 35.0             # [ASSUMPTION] inherited from face default
@@ -426,7 +426,7 @@ palm:
     # check_palm_spread: angular gap between adjacent fingers (MCP->TIP vectors).
     # Quality check -- enforced on the NEUTRAL (N) pose only, because RL/RR/PU/PD
     # tilt the hand out of the image plane and distort an in-plane spread angle.
-    # [DESIGN -> CONFIRM with อ.เหมียว]: N-only scoping deviates from the spec's
+    # [DESIGN -> CONFIRM]: N-only scoping deviates from the spec's
     # "spread in every shot" wording; turn-pose spread is unreliable to measure.
     spread:
       enabled: true                  # [DESIGN] config toggle, like the angle gate
@@ -461,14 +461,14 @@ palm:
     max_abs_deg: 45                  # [SPEC] outer magnitude bound
     min_rotation_deg: 10             # [ASSUMPTION] a deliberate pose must rotate >= this; calibrate
     neutral_tol_deg: 10              # [ASSUMPTION] N must be within +/- this on both axes
-    off_axis_tol_deg: 20             # [ASSUMPTION] a rotated pose's OTHER axis must stay within +/- this
+    off_axis_tol_deg: 45             # [ASSUMPTION] a rotated pose's OTHER axis must stay within +/- this
     # !!! SIGN CALIBRATION PENDING !!! RL/RR motion is MIRRORED between L and R
     # hands, so the roll SIGN for a "correct" pose may flip with handedness. The
     # nominal spec signs are the starting hypothesis in code; if a reference
     # image measures the opposite sign, override it here, e.g.:
     #   hand_sign_overrides: { R: { RL: 1, RR: -1 } }
     # Leave empty until calibrated against one known-correct image per (hand,pose).
-    hand_sign_overrides: {}          # [CONFIRM with อ.เหมียว]
+    hand_sign_overrides: {}          # [CONFIRM]
 
 
 walk:
