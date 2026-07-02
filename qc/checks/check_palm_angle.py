@@ -76,7 +76,7 @@ logger = logging.getLogger(__name__)
 # HandLandmark enum in hand_landmarker.py.
 _WRIST = 0
 _INDEX_MCP = 5
-_PINKY_MCP = 17
+_PINKY_MCP = 13
 
 
 def _vec(a, b):
@@ -176,13 +176,12 @@ def calculate_palm_angles(world_landmarks: Any):
             return (False, {"error": "degenerate palm geometry (zero-length normal)"})
 
         nx, ny, nz = normal
+        print(nx, ny, nz, sep="\n")
 
         # pitch: normal's elevation out of the frontal plane, measured against
         # the FULL horizontal projection sqrt(nx^2+nz^2) -> decoupled from roll.
-        pitch = math.degrees(math.atan2(ny, math.sqrt(nx * nx + nz * nz)))
-
-        # roll: in-plane tilt of the knuckle line about the view direction.
-        roll = math.degrees(math.atan2(across[1], across[0]))
+        pitch = math.degrees(math.atan2(nx, math.sqrt(nx * nx + nz * nz)))
+        roll = math.degrees(math.atan2(ny, math.sqrt(ny * ny + nz * nz)))
         # Fold into [-90, 90]: the knuckle line is undirected (index<->pinky),
         # so a 180-degree flip is the same physical tilt; keeps "level" near 0.
         if roll > 90:
