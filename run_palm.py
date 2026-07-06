@@ -90,6 +90,9 @@ def parse_args():
                          "back-compat. Use --no-overlay to disable.")
     ap.add_argument("--no-overlay", action="store_true",
                     help="do NOT write the per-image overlay images.")
+    ap.add_argument("--angle-3d", action="store_true",
+                    help="write interactive 3D palm-angle HTML debug files to "
+                         "the output folder; requires plotly.")
     ap.add_argument("--overlay-on-image", action="store_true",
                     help="draw the check panel ON TOP of the image instead of "
                          "on a separate strip below it (default is below, so "
@@ -272,15 +275,30 @@ def main():
     overall_path = write_consolidated_overall(
         out_dir, vid, rows_by_file, image_order, config, args.quiet)
 
-    # --- overlays: ON BY DEFAULT, one per image (unless --no-overlay) ---
-    if not args.no_overlay:
-        from qc.utils.palm_overlay import draw_palm_overlay
+    # --- visual debug outputs, one per image ---
+    # Overlay is ON by default. 3D angle HTML is opt-in via --angle-3d because it
+    # adds an optional Plotly dependency and is meant for researcher/debug review,
+    # not normal batch QC.
+    if (not args.no_overlay) or args.angle_3d:
         from types import SimpleNamespace
+        if not args.no_overlay:
+            from qc.utils.palm_overlay import draw_palm_overlay
+        if args.angle_3d:
+            try:
+                from qc.debug.visualize_palm_angle import save_palm_angle_debug_html
+            except ImportError as e:
+                sys.exit(
+                    "--angle-3d requires plotly. Install it with:\n"
+                    "  python -m pip install plotly\n"
+                    f"Original import error: {e}"
+                )
+
         for path in images:
             fname = os.path.basename(path)
             hand, pose = parse_hand_pose(path)
-            # Re-detect this image just for drawing (cheap; keeps the batch
-            # grading path clean). The status panel uses the FINALISED rows.
+            # Re-detect this image just for visual outputs. This keeps the batch
+            # grading path clean and gives both overlay + 3D HTML the same
+            # HandResult.
             _, _, hand_result, _ = run_palm_image(
                 path, vid, config, hand=hand, pose=pose, detect=True)
             # {check_name: (status, reason)} so the overlay's bottom panel can
@@ -292,14 +310,36 @@ def main():
                 hand_result = SimpleNamespace(
                     ok=False, message="hand model unavailable",
                     landmarks_px=None, bbox=None,
-                    handedness=None, handedness_score=None)
+                    norm_box=None, landmarks_norm=None,
+                    handedness=None, handedness_score=None,
+                    world_landmarks=None)
             tag = "_".join(x for x in (hand, pose) if x)
-            ov_path = os.path.join(out_dir, f"palm_{vid}_{tag}_overlay.jpg")
-            draw_palm_overlay(path, hand_result,
-                              checks=check_status, out_path=ov_path,
-                              panel_below=not args.overlay_on_image)
-            if not args.quiet:
-                print(f"wrote overlay image to {ov_path}")
+
+            if not args.no_overlay:
+                ov_path = os.path.join(out_dir, f"palm_{vid}_{tag}_overlay.jpg")
+                draw_palm_overlay(path, hand_result,
+                                  checks=check_status, out_path=ov_path,
+                                  panel_below=not args.overlay_on_image)
+                if not args.quiet:
+                    print(f"wrote overlay image to {ov_path}")
+
+            if args.angle_3d:
+                html_path = os.path.join(out_dir, f"palm_{vid}_{tag}_angle3d.html")
+                if getattr(hand_result, "ok", False) and getattr(hand_result, "world_landmarks", None) is not None:
+                    try:
+                        save_palm_angle_debug_html(
+                            hand_result.world_landmarks,
+                            html_path,
+                            title=f"{fname} — palm angle 3D debug",
+                        )
+                        if not args.quiet:
+                            print(f"wrote 3D angle debug HTML to {html_path}")
+                    except Exception as e:
+                        if not args.quiet:
+                            print(f"skip 3D angle debug for {fname}: {e}")
+                elif not args.quiet:
+                    msg = getattr(hand_result, "message", "no hand result")
+                    print(f"skip 3D angle debug for {fname}: {msg}")
 
     elapsed = time.time() - t0
 

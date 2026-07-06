@@ -29,29 +29,30 @@ with perspective)". So this check consumes HandResult.world_landmarks. Image/
 pixel landmarks scale x by width and y by height and bend under perspective,
 which would corrupt an angle; world coords do not.
 
-Method (geometry, no model)
----------------------------
-Build a hand reference frame from three stable keypoints -- WRIST (0),
-INDEX_FINGER_MCP (5), PINKY_MCP (17) -- the base of the palm, which is rigid
-relative to the wrist (finger curl does not move these much):
+Method (v3: 5-point least-squares palm plane; no model)
+-------------------------------------------------------
+The palm PLANE is least-squares fitted through the FIVE rigid base-of-palm
+keypoints -- WRIST(0), INDEX_MCP(5), MIDDLE_MCP(9), RING_MCP(13), PINKY_MCP(17)
+(PLANE_LANDMARK_IDXS). The plane normal is the right singular vector of the
+smallest singular value of the centred points (standard total-least-squares
+plane fit), so one noisy landmark shifts the plane slightly instead of rotating
+the whole normal (the old 3-point cross product was hostage to its worst point,
+and one of its three indices was WRONG: 13 = RING_FINGER_MCP, not PINKY_MCP).
 
-  - palm "up" axis    : wrist  -> midpoint(index_mcp, pinky_mcp)
-                        (points from wrist toward the fingers, along the palm)
-  - palm "across" axis : index_mcp -> pinky_mcp
-                        (spans the knuckle line, left-right across the palm)
-  - palm normal        : across x up   (out of the palm surface)
+The SVD normal has an ARBITRARY sign, so it is oriented TOWARD the camera
+(nz >= 0) before reading angles. This also cancels the palm-side vs
+back-of-hand flip of the old cross product. Then, in MediaPipe world axes
+(x right, y down, z toward camera) -- SPEC TERMS roll/pitch ARE KEPT:
 
-Then, in MediaPipe world axes (x right, y down, z toward camera):
-  - roll  = rotation of the across-axis about the camera's view direction,
-            i.e. how tilted the knuckle line is in the image plane:
-            atan2(across.y, across.x)
-  - pitch = how much the palm's up-axis tips toward/away from the camera
-            (out of the frontal plane): atan2(up.z, up.y)
+  - roll  = atan2(nx, nz)             side tilt (RL/RR), bounded [-90, +90]
+  - pitch = atan2(ny, hypot(nx, nz))  vertical tilt (PU/PD), bounded (-90, +90)
 
-These are intentionally simple, monotonic readings (not a full solvePnP),
-matching head_pose's "geometric, empirically-read" style. They give a stable,
-signed magnitude suitable for a +/-45 threshold; exact per-pose calibration is a
-[CONFIRM] item, which is why the check ships gated off.
+The hypot(nx, nz) denominator is the decoupling fix: pitch stays correct when
+the palm is ALSO rolled, and neither reading can wrap past +/-90 (the old
+atan2(ny, nz) read +138 deg on a real capture when nz went negative). Exact
+per-pose sign calibration is still a [CONFIRM] item; calibrate ONLY on
+PALM-SIDE reference images (dorsal test shots invert the physical direction of
+"toward the sensor").
 
 Returns -- two-layer, like check_head_pose
 ------------------------------------------
@@ -69,75 +70,33 @@ import logging
 import math
 from typing import Any, Optional
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 # Base-of-palm keypoints (rigid relative to the wrist; finger curl barely moves
 # them). Indices are the standard MediaPipe HandLandmark order, matching the
-# HandLandmark enum in hand_landmarker.py.
+# HandLandmark enum in hand_landmarker.py (PINKY_MCP is 17; 13 is RING).
 _WRIST = 0
 _INDEX_MCP = 5
-_PINKY_MCP = 13
+_MIDDLE_MCP = 9
+_RING_MCP = 13
+_PINKY_MCP = 17
 
-
-def _vec(a, b):
-    """b - a for two world-landmark objects (.x/.y/.z, metres)."""
-    return (b.x - a.x, b.y - a.y, b.z - a.z)
-
-
-def _cross(u, v):
-    return (
-        u[1] * v[2] - u[2] * v[1],
-        u[2] * v[0] - u[0] * v[2],
-        u[0] * v[1] - u[1] * v[0],
-    )
-
-
-def _normalize(v):
-    """Unit vector of a 3-tuple, or None if it has zero length."""
-    mag = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
-    if mag == 0.0:
-        return None
-    return (v[0] / mag, v[1] / mag, v[2] / mag)
-
-
-def _midpoint(a, b):
-    """Synthetic landmark-like point at the midpoint of a and b."""
-    class _P:
-        __slots__ = ("x", "y", "z")
-    p = _P()
-    p.x = (a.x + b.x) / 2.0
-    p.y = (a.y + b.y) / 2.0
-    p.z = (a.z + b.z) / 2.0
-    return p
+# The five keypoints the palm plane is fitted through. Exported so the overlay
+# can highlight exactly the points the measurement uses.
+PLANE_LANDMARK_IDXS = (_WRIST, _INDEX_MCP, _MIDDLE_MCP, _RING_MCP, _PINKY_MCP)
 
 
 def calculate_palm_angles(world_landmarks: Any):
-    """Geometric roll/pitch (degrees) from WORLD hand landmarks.
+    """Roll/pitch (degrees) of the least-squares palm plane (v3).
 
-    Method -- palm NORMAL via cross product, then decoupled angles
-    --------------------------------------------------------------
-    Adapted from the researcher's face-angle reference (eye/mouth/vertical ->
-    face normal -> yaw/pitch). The earlier version of this function read roll
-    from `across` (x,y only) and pitch from `up` (y,z only), each DROPPING a
-    whole axis -- so a hand rotated on both axes at once had its two readings
-    BLEED into each other (a pure roll shifted the pitch number and vice versa).
+    See the module docstring for the method: 5-point plane fit
+    (PLANE_LANDMARK_IDXS) -> normal oriented toward the camera (nz >= 0) ->
+    bounded, decoupled spherical angles:
 
-    This version builds ONE palm normal = normalize(cross(across, up)) and reads
-    both angles from a consistent frame:
-
-      - pitch: how far the palm normal tips up/down out of the frontal plane,
-               measured against its FULL horizontal projection:
-                   pitch = atan2(normal.y, sqrt(normal.x^2 + normal.z^2))
-               The sqrt(x^2+z^2) denominator is the decoupling fix: pitch stays
-               correct even when the palm is also rolled (the reference's trick).
-      - roll : in-plane tilt of the knuckle line. Kept as the angle of `across`
-               in the image plane, atan2(across.y, across.x), which is the
-               rotation about the camera view direction (independent of pitch).
-
-    NOTE on signs: switching to the normal improves the MAGNITUDE/decoupling of
-    pitch, but the SIGN per pose still depends on handedness + axis orientation,
-    so the L/R sign-calibration step (check_palm_pose / hand_sign_overrides) is
-    unchanged and still required.
+        roll  = atan2(nx, nz)                in [-90, +90]
+        pitch = atan2(ny, hypot(nx, nz))     in (-90, +90)
 
     Args:
         world_landmarks: HandResult.world_landmarks -- an indexable sequence of
@@ -145,8 +104,9 @@ def calculate_palm_angles(world_landmarks: Any):
 
     Returns:
         (success, info_dict). On success info_dict has float "roll" and "pitch"
-        in degrees (and "normal" as a 3-tuple for debugging/overlay). On failure
-        success is False and info_dict has an "error" string. Never raises.
+        in degrees plus "normal" as an oriented unit 3-tuple (consumed by the
+        overlay's normal arrow). On failure success is False and info_dict has
+        an "error" string. Never raises.
     """
     if world_landmarks is None:
         return (False, {"error": "No world landmarks provided"})
@@ -156,41 +116,36 @@ def calculate_palm_angles(world_landmarks: Any):
     except TypeError:
         return (False, {"error": "world_landmarks is not indexable"})
 
-    if n <= _PINKY_MCP:
+    if n <= max(PLANE_LANDMARK_IDXS):
         return (False, {"error": f"Expected 21 landmarks, got {n}"})
 
     try:
-        wrist = world_landmarks[_WRIST]
-        index_mcp = world_landmarks[_INDEX_MCP]
-        pinky_mcp = world_landmarks[_PINKY_MCP]
+        pts = np.array(
+            [[world_landmarks[i].x, world_landmarks[i].y, world_landmarks[i].z]
+             for i in PLANE_LANDMARK_IDXS],
+            dtype=np.float64,
+        )
+        centered = pts - pts.mean(axis=0)
 
-        knuckle_mid = _midpoint(index_mcp, pinky_mcp)
+        # Least-squares plane: the normal is the right singular vector of the
+        # SMALLEST singular value of the centred points. s[1] ~ 0 means the 5
+        # points are nearly collinear -> the plane (hence normal) is undefined.
+        _, sv, vt = np.linalg.svd(centered)
+        if sv[1] < 1e-9:
+            return (False, {"error": "degenerate palm geometry (points collinear)"})
 
-        up = _vec(wrist, knuckle_mid)        # wrist -> fingers, along the palm
-        across = _vec(index_mcp, pinky_mcp)  # knuckle line, across the palm
+        nx, ny, nz = (float(v) for v in vt[-1])
 
-        # Palm normal = across x up, normalized. This is the single consistent
-        # frame both angles are read from (the reference's cross-vector method).
-        normal = _normalize(_cross(across, up))
-        if normal is None:
-            return (False, {"error": "degenerate palm geometry (zero-length normal)"})
+        # SVD sign ambiguity: orient the normal toward the camera (nz >= 0).
+        # Also makes palm-side and back-of-hand shots read consistently.
+        if nz < 0:
+            nx, ny, nz = -nx, -ny, -nz
 
-        nx, ny, nz = normal
-        print(nx, ny, nz, sep="\n")
-
-        # pitch: normal's elevation out of the frontal plane, measured against
-        # the FULL horizontal projection sqrt(nx^2+nz^2) -> decoupled from roll.
-        pitch = math.degrees(math.atan2(nx, math.sqrt(nx * nx + nz * nz)))
-        roll = math.degrees(math.atan2(ny, math.sqrt(ny * ny + nz * nz)))
-        # Fold into [-90, 90]: the knuckle line is undirected (index<->pinky),
-        # so a 180-degree flip is the same physical tilt; keeps "level" near 0.
-        if roll > 90:
-            roll -= 180
-        elif roll < -90:
-            roll += 180
+        roll = math.degrees(math.atan2(nx, nz))
+        pitch = math.degrees(math.atan2(ny, math.hypot(nx, nz)))
 
         return (True, {"roll": float(roll), "pitch": float(pitch),
-                       "normal": (float(nx), float(ny), float(nz))})
+                       "normal": (nx, ny, nz)})
 
     except Exception as e:  # never crash a batch on one odd frame
         logger.debug("PALM_ANGLE | error: %s", e)
@@ -448,6 +403,7 @@ def check_palm_pose_delta(
     min_rotation_deg: float = 10.0,
     off_axis_tol_deg: float = 20.0,
     hand_sign_overrides: Optional[dict] = None,
+    enforce_abs_cap: bool = True,
 ):
     """Validate a rotated pose against this hand's OWN N baseline (delta space).
 
@@ -459,6 +415,9 @@ def check_palm_pose_delta(
         n_angles:    {"roll":..,"pitch":..} measured for this hand's N image.
         max_abs_deg, min_rotation_deg, off_axis_tol_deg, hand_sign_overrides:
             same meaning as check_palm_pose, applied to the DELTA.
+        enforce_abs_cap: also FAIL when the RAW |roll| or |pitch| exceeds
+            max_abs_deg (the spec's absolute +/-45 bound), independent of the
+            delta verdict. Default True. [SPEC]
 
     Returns:
         (success, message). Mirrors the (success, message) contract.
@@ -474,10 +433,24 @@ def check_palm_pose_delta(
         return (False, f"unknown pose '{pose}' (expected RL/RR/PU/PD)")
 
     try:
-        d_roll = float(pose_angles["roll"]) - float(n_angles["roll"])
-        d_pitch = float(pose_angles["pitch"]) - float(n_angles["pitch"])
+        p_roll = float(pose_angles["roll"])
+        p_pitch = float(pose_angles["pitch"])
+        d_roll = p_roll - float(n_angles["roll"])
+        d_pitch = p_pitch - float(n_angles["pitch"])
     except (KeyError, TypeError, ValueError) as e:
         return (False, f"missing angle data for delta: {e}")
+
+    # ABSOLUTE spec cap, independent of the delta: the spec's "+/-45" bounds the
+    # RAW angle of the capture, not only its change vs N. Researchers asked for
+    # the absolute value to be graded and reported too. [SPEC]
+    abs_reasons = []
+    if enforce_abs_cap:
+        if abs(p_roll) > max_abs_deg:
+            abs_reasons.append(
+                f"|raw roll|={abs(p_roll):.1f} > {max_abs_deg:g} [SPEC]")
+        if abs(p_pitch) > max_abs_deg:
+            abs_reasons.append(
+                f"|raw pitch|={abs(p_pitch):.1f} > {max_abs_deg:g} [SPEC]")
 
     _, lo, hi = _band_for_pose(
         hand, pose,
@@ -492,7 +465,7 @@ def check_palm_pose_delta(
     in_band = lo <= active <= hi
     off_axis_ok = abs(other) <= off_axis_tol_deg
 
-    if in_band and off_axis_ok:
+    if in_band and off_axis_ok and not abs_reasons:
         return (True,
                 f"{hand}/{pose} ok: {active_name}={active:+.1f} in [{lo:g},{hi:g}]; "
                 f"{other_name}={other:+.1f} within +/-{off_axis_tol_deg:g} "
@@ -508,4 +481,47 @@ def check_palm_pose_delta(
             reasons.append(f"{active_name}={active:+.1f} out of [{lo:g},{hi:g}]")
     if not off_axis_ok:
         reasons.append(f"{other_name}={other:+.1f} off-axis > +/-{off_axis_tol_deg:g}")
+    reasons.extend(abs_reasons)
     return (False, f"{hand}/{pose} bad (vs N): {'; '.join(reasons)}")
+
+
+def check_palm_n_reference(
+    n_angles: Optional[dict],
+    *,
+    n_reference_max_deg: float = 15.0,
+):
+    """Grade the N (neutral) image ABSOLUTELY.
+
+    Researchers expect a valid N to read roll ~ 0 AND pitch ~ 0 -- and N is the
+    baseline every rotated pose's delta is judged against, so a tilted N is
+    both a capture defect in its own right (re-capture it) and a bias on every
+    delta for that hand.
+
+    Args:
+        n_angles: {"roll":..,"pitch":..} measured for the N image (or None).
+        n_reference_max_deg: |roll| and |pitch| must both be <= this.
+            config: palm.angle.n_reference_max_deg  [ASSUMPTION -> CONFIRM].
+
+    Returns:
+        (success, message) -- the standard contract.
+    """
+    if not n_angles:
+        return (False, "N reference unmeasurable (no angle)")
+    try:
+        roll = float(n_angles["roll"])
+        pitch = float(n_angles["pitch"])
+    except (KeyError, TypeError, ValueError) as e:
+        return (False, f"N reference missing angle data: {e}")
+
+    roll_ok = abs(roll) <= n_reference_max_deg
+    pitch_ok = abs(pitch) <= n_reference_max_deg
+    if roll_ok and pitch_ok:
+        return (True,
+                f"N ok (reference): roll={roll:+.1f} pitch={pitch:+.1f} "
+                f"within +/-{n_reference_max_deg:g}")
+    bad = []
+    if not roll_ok:
+        bad.append(f"roll={roll:+.1f} > +/-{n_reference_max_deg:g}")
+    if not pitch_ok:
+        bad.append(f"pitch={pitch:+.1f} > +/-{n_reference_max_deg:g}")
+    return (False, "N not neutral (re-capture N): " + ", ".join(bad))

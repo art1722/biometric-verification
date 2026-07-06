@@ -453,14 +453,25 @@ palm:
     max_abs_roll_deg: 45             # [SPEC]
     max_abs_pitch_deg: 45            # [SPEC]
     check_angle_enabled: true       # [DESIGN] flip TRUE after sign calibration
-    # --- Per-pose directional validation (check_palm_pose) ---
-    # The spec gives each pose a DIRECTIONAL band, not a symmetric |angle|<=45:
-    #   N : roll & pitch within +/- neutral_tol_deg
-    #   RL: roll in [-45, -min_rotation_deg]   RR: roll in [+min_rotation_deg, +45]
-    #   PU: pitch in [-45, -min_rotation_deg]  PD: pitch in [+min_rotation_deg, +45]
-    max_abs_deg: 45                  # [SPEC] outer magnitude bound
+    # --- v3 measurement (check_palm_angle.calculate_palm_angles) ---
+    # 5-point least-squares palm PLANE through wrist + the 4 finger MCPs
+    # (0, 5, 9, 13, 17); normal oriented toward the camera (nz >= 0); bounded
+    # decoupled angles (SPEC terms roll/pitch kept -- do NOT rename):
+    #   roll  = atan2(nx, nz)              pitch = atan2(ny, hypot(nx, nz))
+    # --- Grading (run_palm_participant) ---
+    #   N : graded ABSOLUTELY -- researchers expect roll ~ 0 AND pitch ~ 0;
+    #       tolerance n_reference_max_deg. A FAILed-but-measurable N still
+    #       yields deltas, but the rotated verdicts are demoted to REVIEW
+    #       ("delta may be biased -- re-capture N"). [DESIGN -> CONFIRM]
+    #   RL/RR/PU/PD: graded on the DELTA vs this hand's own N:
+    #     RL: d_roll in [-45, -min_rotation_deg]   RR: d_roll in [+min_rotation_deg, +45]
+    #     PU: d_pitch in [-45, -min_rotation_deg]  PD: d_pitch in [+min_rotation_deg, +45]
+    #   PLUS the raw absolute cap |roll|,|pitch| <= max_abs_deg [SPEC], and the
+    #   raw values are always reported next to the delta verdict.
+    max_abs_deg: 45                  # [SPEC] outer magnitude bound (raw AND delta)
     min_rotation_deg: 10             # [ASSUMPTION] a deliberate pose must rotate >= this; calibrate
-    neutral_tol_deg: 10              # [ASSUMPTION] N must be within +/- this on both axes
+    neutral_tol_deg: 10              # [ASSUMPTION] used by the per-image absolute path (check_palm_pose)
+    n_reference_max_deg: 15          # [ASSUMPTION] N must read |roll|,|pitch| <= this to be a trusted baseline; calibrate
     off_axis_tol_deg: 45             # [ASSUMPTION] a rotated pose's OTHER axis must stay within +/- this
     # !!! SIGN CALIBRATION PENDING !!! RL/RR motion is MIRRORED between L and R
     # hands, so the roll SIGN for a "correct" pose may flip with handedness. The
@@ -468,6 +479,9 @@ palm:
     # image measures the opposite sign, override it here, e.g.:
     #   hand_sign_overrides: { R: { RL: 1, RR: -1 } }
     # Leave empty until calibrated against one known-correct image per (hand,pose).
+    # !!! CALIBRATE ON PALM-SIDE IMAGES ONLY !!! Back-of-hand (dorsal) test
+    # shots physically invert which edge tilts "toward the sensor", so signs
+    # calibrated on them would be WRONG for real palm-vein data.
     hand_sign_overrides: {}          # [CONFIRM]
 
 

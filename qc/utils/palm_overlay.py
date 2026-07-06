@@ -100,10 +100,17 @@ def draw_palm_overlay(
             separate grey strip APPENDED BELOW the image, so it never covers the
             palm. When False, the panel is drawn ON TOP of the image (the old
             behaviour; the runner's --overlay-on-image flag sets this).
-        draw_angle_vectors: when True (DEFAULT), draw the vectors that
-            check_palm_angle measures -- the palm "up" axis (wrist -> knuckle
-            midpoint) and "across" axis (index_mcp -> pinky_mcp) -- on every
-            pose including N, so the angle geometry is visible.
+        draw_angle_vectors: when True (DEFAULT), draw the angle geometry on
+            every pose including N: the palm "up" axis (wrist -> knuckle
+            midpoint), the "across" axis (index_mcp -> pinky_mcp), orange rings
+            on the FIVE plane-fit landmarks (PLANE_LANDMARK_IDXS: wrist + the
+            four finger MCPs -- exactly the points v3's least-squares palm
+            plane is fitted through), and the palm NORMAL projected into the
+            image as an orange arrow from the plane points' centroid (its 2D
+            length grows with how far the palm is tilted away from the camera;
+            near-zero tilt is drawn as a small circle labelled "normal ->
+            camera"). Roll/pitch from the plane fit are also added to the
+            header panel.
         min_strip_width: minimum pixel width for the BELOW check strip. A
             portrait/narrow palm photo would otherwise starve the reason column
             and truncate reasons ("container ok (.jp..") even for a PASS. When
@@ -123,6 +130,20 @@ def draw_palm_overlay(
     bbox = getattr(result, "bbox", None)
     handedness = getattr(result, "handedness", None)
     hand_score = getattr(result, "handedness_score", None)
+
+    # v3 plane-fit angles: computed here from the WORLD landmarks (when the
+    # HandResult carries them) so the overlay reports/draws EXACTLY what
+    # check_palm_angle measures -- one source of truth, no re-derivation.
+    angle_info = None
+    _world_lms = getattr(result, "world_landmarks", None)
+    if _world_lms is not None:
+        try:
+            from qc.checks.check_palm_angle import calculate_palm_angles
+            _aok, _ainfo = calculate_palm_angles(_world_lms)
+            if _aok:
+                angle_info = _ainfo
+        except Exception:
+            angle_info = None  # drawing must never break on a math error
 
     # Sizes scale with the image so dots/lines/text are proportionate on a
     # small crop or a large photo (same idea as the face overlay's scaling).
@@ -150,13 +171,14 @@ def draw_palm_overlay(
                 else:
                     cv2.circle(img, (px, py), lm_radius, (210, 210, 210), -1, cv2.LINE_AA)
 
-    # --- angle vectors: draw what check_palm_angle measures (every pose,
-    # including N). The angle is built from WRIST(0), INDEX_MCP(5), PINKY_MCP(17):
-    #   up     = wrist -> midpoint(index_mcp, pinky_mcp)   (along the palm)
-    #   across = index_mcp -> pinky_mcp                     (the knuckle line)
-    # We draw both in PIXEL space (world coords aren't drawable) so the geometry
-    # behind roll/pitch is visible. The math uses world coords; these pixel
-    # vectors are the faithful 2D shadow of the same three points. ---
+    # --- angle geometry: draw what check_palm_angle (v3) measures, on every
+    # pose including N. The v3 measurement fits a least-squares PLANE through
+    # WRIST(0) + the four finger MCPs (5, 9, 13, 17) and reads roll/pitch from
+    # the plane NORMAL. We draw, in PIXEL space (world coords aren't drawable):
+    #   - orange rings on the five plane-fit landmarks,
+    #   - the projected palm NORMAL as an orange arrow from their centroid
+    #     (2D length ~ sin(tilt); a palm facing the camera has a ~zero arrow),
+    #   - the legacy "up" / "across" axes, kept as orientation context.
     if draw_angle_vectors and landmarks and len(landmarks) > 17:
         try:
             import math as _math
@@ -193,6 +215,45 @@ def draw_palm_overlay(
                  scale=fs * 0.7, thick=max(1, int(fs)))
             _put(img, "up", (mx + 6, my), (60, 255, 255),
                  scale=fs * 0.7, thick=max(1, int(fs)))
+
+            # --- v3 additions: plane-fit landmarks + projected palm normal ---
+            _ORANGE = (60, 160, 255)  # BGR
+            try:
+                from qc.checks.check_palm_angle import PLANE_LANDMARK_IDXS
+            except Exception:
+                PLANE_LANDMARK_IDXS = (0, 5, 9, 13, 17)
+
+            plane_pts = [(landmarks[i][0], landmarks[i][1])
+                         for i in PLANE_LANDMARK_IDXS if i < len(landmarks)]
+            for (ppx, ppy) in plane_pts:
+                if 0 <= ppx < w and 0 <= ppy < h:
+                    cv2.circle(img, (ppx, ppy), lm_radius + 4, _ORANGE,
+                               max(2, bone_thick), cv2.LINE_AA)
+
+            if angle_info is not None and plane_pts:
+                cx = int(sum(p[0] for p in plane_pts) / len(plane_pts))
+                cy = int(sum(p[1] for p in plane_pts) / len(plane_pts))
+                n3 = angle_info.get("normal") or (0.0, 0.0, 1.0)
+                nx_, ny_ = float(n3[0]), float(n3[1])
+                # World axes are x right / y down -- same as pixel axes, so the
+                # normal's (x, y) components project directly. |(nx, ny)| is
+                # sin(tilt) for a unit normal: flat palm -> ~zero-length arrow.
+                tilt2d = _math.hypot(nx_, ny_)
+                base_len = (0.5 * min(bbox[2], bbox[3])) if bbox is not None \
+                    else (0.25 * dim_min)
+                if tilt2d < 0.05:
+                    cv2.circle(img, (cx, cy), int(max(6, head_px * 0.5)),
+                               _ORANGE, max(2, vec_thick), cv2.LINE_AA)
+                    _put(img, "normal -> camera", (cx + 10, cy - 10), _ORANGE,
+                         scale=fs * 0.7, thick=max(1, int(fs)))
+                else:
+                    ex = int(round(cx + nx_ * base_len))
+                    ey = int(round(cy + ny_ * base_len))
+                    cv2.arrowedLine(img, (cx, cy), (ex, ey), _ORANGE,
+                                    vec_thick, cv2.LINE_AA,
+                                    tipLength=_tip_frac(cx, cy, ex, ey))
+                    _put(img, "normal", (ex + 6, ey), _ORANGE,
+                         scale=fs * 0.7, thick=max(1, int(fs)))
         except Exception:
             pass  # never let a drawing glitch break the overlay
 
@@ -214,6 +275,9 @@ def draw_palm_overlay(
     if bbox is not None:
         lines.append((f"bbox: {bbox[2]}x{bbox[3]} px", _WHITE))
     lines.append((f"landmarks: {len(landmarks) if landmarks else 0}/21", _WHITE))
+    if angle_info is not None:
+        lines.append((f"roll={angle_info['roll']:+.1f} "
+                      f"pitch={angle_info['pitch']:+.1f} (plane fit)", _WHITE))
     if not getattr(result, "ok", True):
         lines.append((f"detect: {getattr(result, 'message', 'no hand')}", _AMBER))
 

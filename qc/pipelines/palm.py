@@ -310,10 +310,11 @@ def run_palm(
                     "no pixel landmarks / image dims (see check_palm_present)",
                     level="image")
 
-            # --- check_palm_angle: now graded at PARTICIPANT/BATCH level, not
-            # per-image. Absolute per-image angles are unreliable (a valid N
-            # reads non-zero), so a rotated pose is graded RELATIVE to this
-            # hand's own N (see run_palm_participant / check_palm_pose_delta).
+            # --- check_palm_angle: graded at PARTICIPANT/BATCH level, not
+            # per-image. v3 measurement is the 5-point plane fit; grading is
+            # delta-vs-N PLUS the raw +/-45 spec cap, and N itself is graded
+            # absolutely (see run_palm_participant / check_palm_pose_delta /
+            # check_palm_n_reference).
             # Here we only (a) emit a deferred SKIP row, and (b) capture the raw
             # measured angle so the batch layer can compute the N-delta. The raw
             # angle is returned via `measured_angle` (None if unmeasurable). ---
@@ -365,7 +366,9 @@ def run_palm_participant(
          with the real PASS/FAIL verdict.
 
     Decisions (confirmed with the project):
-      - N's own angle row: SKIP (N is the reference, not graded).
+      - N's own angle row: GRADED ABSOLUTELY (researchers expect roll ~ 0 and
+        pitch ~ 0 on N; palm.angle.n_reference_max_deg). A measurable but
+        non-neutral N demotes the rotated poses' delta verdicts to REVIEW.
       - No N FILE for a hand            -> rotated poses FAIL ("no N reference").
       - N file present but undetectable -> rotated poses FAIL ("N unusable").
       - Rotated pose undetectable        -> that pose FAIL ("no hand; likely
@@ -397,9 +400,12 @@ def run_palm_participant(
     max_abs_angle = angle_cfg.get("max_abs_deg", 45)
     min_rotation = angle_cfg.get("min_rotation_deg", 10)
     off_axis_tol = angle_cfg.get("off_axis_tol_deg", 20)
+    n_ref_max = angle_cfg.get("n_reference_max_deg", 15.0)
     sign_overrides = angle_cfg.get("hand_sign_overrides", {}) or None
 
-    from qc.checks.check_palm_angle import check_palm_pose_delta
+    from qc.checks.check_palm_angle import (
+        check_palm_pose_delta, check_palm_n_reference,
+    )
 
     all_rows: list[CheckRow] = []
     all_timelines: list = []
@@ -446,18 +452,29 @@ def run_palm_participant(
         poses = angle_state[hand]
         n_entry = poses.get("N")
 
-        # N row (if the N file exists): SKIP -- reference, not graded. We STILL
-        # report N's raw measured roll/pitch so the reference value is visible
-        # (it is the baseline every rotated pose is judged against).
+        # N row (if the N file exists): now GRADED ABSOLUTELY. Researchers
+        # expect a valid N to read roll ~ 0 AND pitch ~ 0 on both axes -- and N
+        # is the baseline every rotated pose's delta is judged against, so a
+        # tilted N is a defect in its own right (re-capture) AND biases every
+        # delta. Tolerance: palm.angle.n_reference_max_deg. [DESIGN -> CONFIRM]
+        n_neutral = False
         if n_entry and n_entry["row"] is not None:
-            n_reason = "N is the reference (not graded)"
-            raw = _fmt_raw_angle(n_entry.get("angle"))
-            if raw:
-                n_reason = f"{n_reason}; {raw}"
-            n_row = _set_row(n_entry["row"], "SKIP", n_reason)
+            if n_entry["detected"] and n_entry["angle"] is not None:
+                n_pass, n_reason = check_palm_n_reference(
+                    n_entry["angle"], n_reference_max_deg=n_ref_max)
+                n_neutral = n_pass
+                n_row = _set_row(n_entry["row"],
+                                 "PASS" if n_pass else "FAIL", n_reason)
+            else:
+                n_row = _set_row(
+                    n_entry["row"], "FAIL",
+                    "N reference unusable (hand undetected / angle unmeasurable)")
             _emit(all_rows, progress, n_row)
 
-        # Determine the usable N baseline (file present AND detectable AND measured).
+        # Usable N baseline for DELTAS = file present AND measured. Neutrality
+        # is tracked separately (n_neutral): a measurable-but-tilted N still
+        # lets deltas be computed, but their verdicts are demoted to REVIEW
+        # below (biased baseline). [DESIGN -> CONFIRM]
         n_ok = bool(n_entry and n_entry["detected"] and n_entry["angle"] is not None)
         n_angle = n_entry["angle"] if n_ok else None
 
@@ -487,12 +504,21 @@ def run_palm_participant(
                     off_axis_tol_deg=off_axis_tol,
                     hand_sign_overrides=sign_overrides)
                 # Report this pose's RAW roll/pitch IN ADDITION to the delta
-                # verdict (the delta vs N is the grading; the raw value is the
-                # extra context you asked for).
+                # verdict: the delta vs N is the grading, the raw absolute
+                # value is what the researchers read (and the raw +/-45 spec
+                # cap is enforced inside check_palm_pose_delta).
                 raw = _fmt_raw_angle(entry.get("angle"))
                 if raw:
                     reason = f"{reason} | {raw}"
-                row = _set_row(row, "PASS" if ok else "FAIL", reason)
+                if not n_neutral:
+                    # Delta was computed against a non-neutral N: the numbers
+                    # stand, but the baseline is biased -> demote the verdict
+                    # to REVIEW until N is re-captured. [DESIGN -> CONFIRM]
+                    reason = (f"{reason}; N reference not neutral -- "
+                              f"delta may be biased (re-capture N)")
+                    row = _set_row(row, "REVIEW", reason)
+                else:
+                    row = _set_row(row, "PASS" if ok else "FAIL", reason)
 
             _emit(all_rows, progress, row)
 

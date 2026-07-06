@@ -44,3 +44,5 @@ pytest==8.3.4
 # The tests surfaced python-multipart as a hard requirement for file uploads
 # (POST /check). fastapi + uvicorn you already added.
 python-multipart==0.0.20   # required by FastAPI for UploadFile / form data
+# --- debug visualization ---
+plotly==6.8.0        # optional: run_palm.py --angle-3d interactive HTML debug
