@@ -230,30 +230,6 @@ def draw_palm_overlay(
                     cv2.circle(img, (ppx, ppy), lm_radius + 4, _ORANGE,
                                max(2, bone_thick), cv2.LINE_AA)
 
-            if angle_info is not None and plane_pts:
-                cx = int(sum(p[0] for p in plane_pts) / len(plane_pts))
-                cy = int(sum(p[1] for p in plane_pts) / len(plane_pts))
-                n3 = angle_info.get("normal") or (0.0, 0.0, 1.0)
-                nx_, ny_ = float(n3[0]), float(n3[1])
-                # World axes are x right / y down -- same as pixel axes, so the
-                # normal's (x, y) components project directly. |(nx, ny)| is
-                # sin(tilt) for a unit normal: flat palm -> ~zero-length arrow.
-                tilt2d = _math.hypot(nx_, ny_)
-                base_len = (0.5 * min(bbox[2], bbox[3])) if bbox is not None \
-                    else (0.25 * dim_min)
-                if tilt2d < 0.05:
-                    cv2.circle(img, (cx, cy), int(max(6, head_px * 0.5)),
-                               _ORANGE, max(2, vec_thick), cv2.LINE_AA)
-                    _put(img, "normal -> camera", (cx + 10, cy - 10), _ORANGE,
-                         scale=fs * 0.7, thick=max(1, int(fs)))
-                else:
-                    ex = int(round(cx + nx_ * base_len))
-                    ey = int(round(cy + ny_ * base_len))
-                    cv2.arrowedLine(img, (cx, cy), (ex, ey), _ORANGE,
-                                    vec_thick, cv2.LINE_AA,
-                                    tipLength=_tip_frac(cx, cy, ex, ey))
-                    _put(img, "normal", (ex + 6, ey), _ORANGE,
-                         scale=fs * 0.7, thick=max(1, int(fs)))
         except Exception:
             pass  # never let a drawing glitch break the overlay
 
