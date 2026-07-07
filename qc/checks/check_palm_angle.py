@@ -44,7 +44,7 @@ The SVD normal has an ARBITRARY sign, so it is oriented TOWARD the camera
 back-of-hand flip of the old cross product. Then, in MediaPipe world axes
 (x right, y down, z toward camera) -- SPEC TERMS roll/pitch ARE KEPT:
 
-  - roll  = atan2(nx, nz)             side tilt (RL/RR), bounded [-90, +90]
+  - roll  = atan2(nx, hypot(ny, nz))  side tilt (RL/RR), bounded [-90, +90]
   - pitch = atan2(ny, hypot(nx, nz))  vertical tilt (PU/PD), bounded (-90, +90)
 
 The hypot(nx, nz) denominator is the decoupling fix: pitch stays correct when
@@ -95,7 +95,7 @@ def calculate_palm_angles(world_landmarks: Any):
     (PLANE_LANDMARK_IDXS) -> normal oriented toward the camera (nz >= 0) ->
     bounded, decoupled spherical angles:
 
-        roll  = atan2(nx, nz)                in [-90, +90]
+        roll  = atan2(nx, hypot(ny, nz))     in [-90, +90]
         pitch = atan2(ny, hypot(nx, nz))     in (-90, +90)
 
     Args:
@@ -141,7 +141,7 @@ def calculate_palm_angles(world_landmarks: Any):
         if nz < 0:
             nx, ny, nz = -nx, -ny, -nz
 
-        roll = math.degrees(math.atan2(nx, nz))
+        roll = math.degrees(math.atan2(nx, math.hypot(ny, nz)))
         pitch = math.degrees(math.atan2(ny, math.hypot(nx, nz)))
 
         return (True, {"roll": float(roll), "pitch": float(pitch),
@@ -226,25 +226,31 @@ def check_palm_angle(
 # a defect -> FAIL). For the rotated poses the OTHER axis should stay near zero
 # (an RL should not also be pitched), enforced by an off-axis tolerance.
 #
-# !!! HANDEDNESS / SIGN CALIBRATION -- READ BEFORE TRUSTING THE SIGNS !!!
-# The spec defines RL/RR relative to the VOLUNTEER's hand, and the motion is
-# MIRRORED between left and right hands (L-RL tilts the pinky edge toward the
-# sensor; R-RL tilts the THUMB edge). The roll SIGN that calculate_palm_angles
-# produces for a "correct RL" therefore MAY DIFFER between L and R, because the
-# across-axis (index_mcp -> pinky_mcp) flips direction with handedness. The signs
-# encoded in _POSE_BANDS below are the SPEC's nominal signs and are a STARTING
-# HYPOTHESIS ONLY. They MUST be calibrated: run one known-correct image per
-# (hand, pose) through calculate_palm_angles, observe the actual sign, and flip
-# the affected _POSE_BANDS / config rows if the code's convention disagrees.
-# Until that calibration is signed off (อ.เหมียว), treat FAILs from this check as
-# advisory.  [CONFIRM]
+# !!! HANDEDNESS / SIGN CALIBRATION -- STATUS !!!
+# The spec defines RL/RR relative to the VOLUNTEER (L-RL tilts the pinky edge
+# toward the sensor; R-RL tilts the THUMB edge). Both describe the SAME body
+# direction (for RL the palm normal sweeps toward the volunteer's left), so
+# the measured roll sign is expected to be IDENTICAL for L and R hands under
+# one capture geometry; what flips it is IMAGE MIRRORING, not handedness.
+# CALIBRATED 2026-07-07 on a real LEFT-hand, palm-side, MIRRORED front-camera
+# set (see _POSE_SIGN below). Still open before full sign-off (อ.เหมียว):
+#   (a) verify the RIGHT hand reproduces the same signs (prediction: R/RL
+#       should ALSO measure a NEGATIVE d_roll under mirrored capture),
+#   (b) confirm whether the PRODUCTION rig saves mirrored or unmirrored
+#       images -- if unmirrored, RL/RR signs flip back to {+1, -1},
+#   (c) keep directional FAILs advisory/REVIEW until (a)+(b) are confirmed.
+# [CONFIRM]
 
 # Axis each pose acts on.
 _POSE_AXIS = {"N": None, "RL": "roll", "RR": "roll", "PU": "pitch", "PD": "pitch"}
 
-# Nominal expected SIGN per pose (spec). +1 expects positive, -1 negative.
-# These are the calibration-pending hypothesis (see warning above).
-_POSE_SIGN = {"RL": -1, "RR": +1, "PU": -1, "PD": +1}
+# Expected SIGN per pose. +1 expects a positive delta, -1 negative.
+# [CALIBRATED 2026-07-07] Real left-hand set (mirrored front camera,
+# palm-side, correct labels): L/RL d_roll=-10.0, L/RR d_roll=+21.1,
+# L/PU d_pitch=+27.1, L/PD d_pitch=-11.8. Matches the bands documented in
+# config.yml (RL negative / RR positive) and the unit tests. Valid for
+# MIRRORED capture; flip RL/RR back to {+1, -1} if the rig is unmirrored.
+_POSE_SIGN = {"RL": -1, "RR": +1, "PU": +1, "PD": -1}
 
 
 def _band_for_pose(
@@ -525,3 +531,26 @@ def check_palm_n_reference(
     if not pitch_ok:
         bad.append(f"pitch={pitch:+.1f} > +/-{n_reference_max_deg:g}")
     return (False, "N not neutral (re-capture N): " + ", ".join(bad))
+
+
+def calculate_palm_axis_tilts(world_landmarks):
+    """DEBUG cross-check for calculate_palm_angles -- NOT used for grading.
+
+    Tilt (degrees) of the two physical palm axes out of the camera plane,
+    computed WITHOUT the plane fit:
+      across_tilt: index_mcp(5) -> pinky_mcp(17); on good data ~= -roll
+      up_tilt:     wrist(0)     -> middle_mcp(9); on good data ~= +pitch
+    Verified on the 2026-07-07 calibration set: agreement within ~2-4 deg
+    (except one off-axis-contaminated PU at ~8 deg). Suggested guard:
+    |across_tilt + roll| > 10 or |up_tilt - pitch| > 10  ->  REVIEW.
+    """
+    try:
+        p = lambda i: (float(world_landmarks[i].x),
+                       float(world_landmarks[i].y),
+                       float(world_landmarks[i].z))
+        ax = [b - a for a, b in zip(p(_INDEX_MCP), p(_PINKY_MCP))]
+        up = [b - a for a, b in zip(p(_WRIST), p(_MIDDLE_MCP))]
+        tilt = lambda v: math.degrees(math.atan2(v[2], math.hypot(v[0], v[1])))
+        return (True, {"across_tilt": tilt(ax), "up_tilt": tilt(up)})
+    except Exception as e:
+        return (False, {"error": f"axis tilt failed: {e}"})

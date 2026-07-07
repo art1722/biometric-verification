@@ -436,10 +436,10 @@ palm:
       # tips if every required finger's tip is in-frame, else PIPs. tip-tip gaps
       # fan wider than pip-pip gaps, so each source has its own floors. All
       # [ASSUMPTION] -- calibrate on real spread/closed samples.
-      min_gap_inter_tip_deg: 5.0     # index-middle/middle-ring/ring-pinky (tip source)
-      min_gap_thumb_tip_deg: 20.0    # thumb-index (tip source)
-      min_gap_inter_pip_deg: 3.0     # inter-finger (pip source; PIPs fan less)
-      min_gap_thumb_pip_deg: 12.0    # thumb-index (pip source)
+      min_gap_inter_tip_deg: 2.0     # index-middle/middle-ring/ring-pinky (tip source)
+      min_gap_thumb_tip_deg: 15.0    # thumb-index (tip source)
+      min_gap_inter_pip_deg: 2.0     # inter-finger (pip source; PIPs fan less)
+      min_gap_thumb_pip_deg: 15.0    # thumb-index (pip source)
       # A landmark must sit inside [margin, 1-margin] to count as in-frame; a
       # point at/over the edge is treated as cropped/extrapolated.
       frame_margin: 0.02             # [DESIGN]

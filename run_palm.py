@@ -93,6 +93,10 @@ def parse_args():
     ap.add_argument("--angle-3d", action="store_true",
                     help="write interactive 3D palm-angle HTML debug files to "
                          "the output folder; requires plotly.")
+    ap.add_argument("--angle-3d-tabs", action="store_true",
+                    help="write ONE combined 3D palm-angle HTML per participant "
+                         "with a clickable tab per hand/pose (front-on start "
+                         "view, gradient plane); requires plotly.")
     ap.add_argument("--overlay-on-image", action="store_true",
                     help="draw the check panel ON TOP of the image instead of "
                          "on a separate strip below it (default is below, so "
@@ -279,19 +283,25 @@ def main():
     # Overlay is ON by default. 3D angle HTML is opt-in via --angle-3d because it
     # adds an optional Plotly dependency and is meant for researcher/debug review,
     # not normal batch QC.
-    if (not args.no_overlay) or args.angle_3d:
+    if (not args.no_overlay) or args.angle_3d or args.angle_3d_tabs:
         from types import SimpleNamespace
         if not args.no_overlay:
             from qc.utils.palm_overlay import draw_palm_overlay
-        if args.angle_3d:
+        if args.angle_3d or args.angle_3d_tabs:
             try:
-                from qc.debug.visualize_palm_angle import save_palm_angle_debug_html
+                from qc.debug.visualize_palm_angle import (
+                    save_palm_angle_debug_html,
+                    save_palm_angle_debug_tabs_html,
+                )
+                from qc.checks.check_palm_angle import calculate_palm_angles
             except ImportError as e:
                 sys.exit(
-                    "--angle-3d requires plotly. Install it with:\n"
+                    "--angle-3d / --angle-3d-tabs requires plotly. Install it with:\n"
                     "  python -m pip install plotly\n"
                     f"Original import error: {e}"
                 )
+        # Collected across the image loop for the combined tabbed file.
+        tab_entries = []
 
         for path in images:
             fname = os.path.basename(path)
@@ -323,9 +333,12 @@ def main():
                 if not args.quiet:
                     print(f"wrote overlay image to {ov_path}")
 
+            has_hand = (getattr(hand_result, "ok", False)
+                        and getattr(hand_result, "world_landmarks", None) is not None)
+
             if args.angle_3d:
                 html_path = os.path.join(out_dir, f"palm_{vid}_{tag}_angle3d.html")
-                if getattr(hand_result, "ok", False) and getattr(hand_result, "world_landmarks", None) is not None:
+                if has_hand:
                     try:
                         save_palm_angle_debug_html(
                             hand_result.world_landmarks,
@@ -340,6 +353,35 @@ def main():
                 elif not args.quiet:
                     msg = getattr(hand_result, "message", "no hand result")
                     print(f"skip 3D angle debug for {fname}: {msg}")
+
+            if args.angle_3d_tabs and has_hand:
+                # One tab per hand/pose in a single combined file (written after
+                # the loop). Precompute the angle so a per-hand failure to
+                # measure becomes a note tab rather than aborting the file.
+                aok, ainfo = calculate_palm_angles(hand_result.world_landmarks)
+                tab_entries.append({
+                    "label": tag.replace("_", " / ") or fname,
+                    "world_landmarks": hand_result.world_landmarks,
+                    "angle_info": ainfo if aok else None,
+                    "title": f"{fname} — palm angle 3D debug",
+                })
+
+        # --- one combined tabbed HTML for this participant ---
+        if args.angle_3d_tabs:
+            if tab_entries:
+                tabs_path = os.path.join(out_dir, f"palm_{vid}_angle3d_tabs.html")
+                try:
+                    save_palm_angle_debug_tabs_html(
+                        tab_entries, tabs_path,
+                        page_title=f"{vid} — palm angle 3D debug (all hands)",
+                    )
+                    if not args.quiet:
+                        print(f"wrote combined 3D angle tabs HTML to {tabs_path}")
+                except Exception as e:
+                    if not args.quiet:
+                        print(f"skip combined 3D angle tabs for {vid}: {e}")
+            elif not args.quiet:
+                print(f"no detectable hands for {vid}; skipped combined tabs HTML")
 
     elapsed = time.time() - t0
 

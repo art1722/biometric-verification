@@ -60,6 +60,55 @@ def make_plane_patch(plane_pts: np.ndarray, scale: float = 1.35) -> np.ndarray:
     ])
 
 
+# Front-on "normal position" camera, matching the debug screenshot: the viewer
+# looks along +y (y-down points INTO the screen, toward the camera), so the
+# palm's roll (x) and the z-toward-camera axis are both in view. In Plotly the
+# camera sits on the -y side looking toward the scene centre; up is -z so the
+# skeleton is not upside down.
+#   NOTE: this is a starting view only -- the user can still orbit freely.
+NORMAL_POSITION_CAMERA = dict(
+    eye=dict(x=0.0, y=-2.2, z=0.0),   # sit below (y-down toward viewer)
+    up=dict(x=0.0, y=0.0, z=-1.0),    # -z is "up" on screen
+    center=dict(x=0.0, y=0.0, z=0.0),
+)
+
+
+def _subdivide_plane(corners: np.ndarray, n: int = 24):
+    """Triangulate a quad plane into an n x n grid so a per-vertex colour
+    gradient interpolates SMOOTHLY across it (a 2-triangle quad would only
+    shade the 4 corners). Returns (verts Nx3, i, j, k, t) where t in [0,1] is
+    the bilinear param along corner0->corner1 edge -- unused here but handy.
+
+    corners order (from make_plane_patch): c0, c1, c2, c3 counter-clockwise,
+    with edge c0->c1 = +u and edge c0->c3 = +v.
+    """
+    c0, c1, c2, c3 = corners
+    u_vec = c1 - c0
+    v_vec = c3 - c0
+
+    us = np.linspace(0.0, 1.0, n + 1)
+    vs = np.linspace(0.0, 1.0, n + 1)
+    verts = []
+    for vv in vs:
+        for uu in us:
+            verts.append(c0 + uu * u_vec + vv * v_vec)
+    verts = np.array(verts, dtype=np.float64)
+
+    stride = n + 1
+    i_idx, j_idx, k_idx = [], [], []
+    for row in range(n):
+        for col in range(n):
+            a = row * stride + col
+            b = a + 1
+            c = a + stride
+            d = c + 1
+            # two triangles per cell: (a,b,d) and (a,d,c)
+            i_idx += [a, a]
+            j_idx += [b, d]
+            k_idx += [d, c]
+    return verts, i_idx, j_idx, k_idx
+
+
 def _add_line(fig: go.Figure, p0, p1, *, name: str, width: int = 5, showlegend: bool = False):
     fig.add_trace(go.Scatter3d(
         x=[p0[0], p1[0]],
@@ -164,16 +213,35 @@ def build_palm_angle_figure(
         name="plane-fit landmarks",
     ))
 
-    # Palm plane patch.
+    # Palm plane patch -- subdivided so the purple gradient interpolates
+    # smoothly. Shade by SIGNED HEIGHT ALONG THE PLANE NORMAL: every vertex of a
+    # flat plane has height ~0 by construction, so instead we project each
+    # vertex onto the normal RELATIVE TO the palm centroid of all 21 points.
+    # This makes the pale->dark ramp read as a depth cue (which side of the palm
+    # tilts toward vs away from the camera along the fitted normal).
+    verts, pi, pj, pk = _subdivide_plane(plane, n=24)
+    # height of each plane vertex along the oriented normal, vs the hand centroid
+    hand_centroid = pts.mean(axis=0)
+    intensity = (verts - hand_centroid) @ normal   # signed metres along normal
+    # Pale -> dark purple ramp (light lavender to deep violet).
+    purple_scale = [
+        [0.0, "rgb(243, 235, 250)"],   # very pale lavender
+        [0.5, "rgb(179, 136, 220)"],   # mid purple
+        [1.0, "rgb(90, 40, 140)"],     # deep violet
+    ]
     fig.add_trace(go.Mesh3d(
-        x=plane[:, 0],
-        y=plane[:, 1],
-        z=plane[:, 2],
-        i=[0, 0],
-        j=[1, 2],
-        k=[2, 3],
-        opacity=0.28,
+        x=verts[:, 0],
+        y=verts[:, 1],
+        z=verts[:, 2],
+        i=pi, j=pj, k=pk,
+        intensity=intensity,
+        intensitymode="vertex",
+        colorscale=purple_scale,
+        showscale=False,
+        opacity=0.45,
+        flatshading=False,
         name="least-squares palm plane",
+        hoverinfo="skip",
     ))
 
     # Plane normal as a 3D cone/quiver arrow.
@@ -187,8 +255,11 @@ def build_palm_angle_figure(
         sizemode="absolute",
         sizeref=arrow_len,
         anchor="tail",
-        name="oriented plane normal",
+        name="plane normal cone",
+        showlegend=True,
+        visible="legendonly",
     ))
+
 
     _add_camera_axes(fig, center, arrow_len * 0.9)
 
@@ -199,6 +270,7 @@ def build_palm_angle_figure(
             yaxis_title="y down",
             zaxis_title="z toward camera",
             aspectmode="data",
+            camera=NORMAL_POSITION_CAMERA,
         ),
         margin=dict(l=0, r=0, b=0, t=70),
     )
@@ -229,3 +301,135 @@ def plot_palm_angle_debug(
     fig = build_palm_angle_figure(world_landmarks, angle_info, title=title)
     fig.show()
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Multi-tab HTML: one file, one clickable tab per hand/pose
+# ---------------------------------------------------------------------------
+
+_TABS_CSS = """
+:root { --accent:#5a288c; --accent-pale:#f3ebfa; --border:#d9c8ec; }
+* { box-sizing:border-box; }
+body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+       color:#222; background:#fff; }
+.tabbar { display:flex; flex-wrap:wrap; gap:4px; padding:10px 12px 0;
+          border-bottom:2px solid var(--border); position:sticky; top:0;
+          background:#fff; z-index:5; }
+.tabbtn { border:1px solid var(--border); border-bottom:none;
+          background:var(--accent-pale); color:var(--accent);
+          padding:7px 14px; border-radius:8px 8px 0 0; cursor:pointer;
+          font-size:14px; font-weight:600; }
+.tabbtn:hover { background:#e7d7f6; }
+.tabbtn.active { background:var(--accent); color:#fff; }
+.tabbtn .sub { font-weight:400; opacity:.85; margin-left:6px; font-size:12px; }
+.panel { display:none; padding:0; }
+.panel.active { display:block; }
+.plotwrap { width:100%; height:82vh; }
+.hint { font-size:12px; color:#666; padding:6px 14px; }
+"""
+
+_TABS_JS = """
+function showTab(idx){
+  document.querySelectorAll('.tabbtn').forEach((b,i)=>
+     b.classList.toggle('active', i===idx));
+  document.querySelectorAll('.panel').forEach((p,i)=>
+     p.classList.toggle('active', i===idx));
+  // Plotly needs a resize once its container becomes visible.
+  var gd = document.querySelectorAll('.panel')[idx].querySelector('.js-plotly-plot');
+  if (gd && window.Plotly) window.Plotly.Plots.resize(gd);
+}
+document.addEventListener('DOMContentLoaded', function(){ showTab(0); });
+"""
+
+
+def save_palm_angle_debug_tabs_html(
+    entries: list,
+    out_path: str,
+    *,
+    page_title: str = "Palm angle 3D debug",
+) -> str:
+    """Write ONE self-contained HTML file with a clickable tab per entry.
+
+    Args:
+        entries: list of dicts, each:
+            {
+              "label": str,                    # short tab label, e.g. "L / N"
+              "world_landmarks": <21 landmarks>,
+              "angle_info": dict | None,       # from calculate_palm_angles; if
+                                               # None it is computed here
+              "title": str | None,             # per-figure title (optional)
+            }
+            Entries whose angle cannot be computed are skipped with a note tab.
+        out_path: output .html path.
+        page_title: browser tab / page heading.
+
+    Returns:
+        out_path.
+
+    Notes:
+        - Only the FIRST embedded figure includes plotly.js (via CDN); the rest
+          are injected as bare <div>s that reuse the already-loaded library.
+          This keeps the file small even with 10 hands.
+        - Each figure opens in the front-on NORMAL_POSITION_CAMERA view.
+    """
+    import plotly.io as pio
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+
+    panels_html = []
+    tabs_html = []
+    first = True
+    for idx, e in enumerate(entries):
+        label = e.get("label", f"tab {idx+1}")
+        title = e.get("title") or label
+        wl = e.get("world_landmarks")
+        ainfo = e.get("angle_info")
+
+        # Build the figure; on failure emit a note panel instead of crashing.
+        try:
+            fig = build_palm_angle_figure(wl, ainfo, title=title)
+            roll = fig.layout.title.text  # already contains roll/pitch line
+            include_js = "cdn" if first else False
+            div = pio.to_html(
+                fig, include_plotlyjs=include_js, full_html=False,
+                default_height="82vh", config={"displaylogo": False},
+            )
+            body = f'<div class="plotwrap">{div}</div>'
+            sub = ""
+        except Exception as ex:
+            body = (f'<div class="hint">Could not render this hand: '
+                    f'{type(ex).__name__}: {ex}</div>')
+            sub = "n/a"
+
+        active = " active" if first else ""
+        tabs_html.append(
+            f'<button class="tabbtn{active}" onclick="showTab({idx})">'
+            f'{label}<span class="sub">{sub}</span></button>'
+        )
+        panels_html.append(f'<div class="panel{active}">{body}</div>')
+        first = False
+
+    if not entries:
+        tabs_html.append('<button class="tabbtn active">no hands</button>')
+        panels_html.append('<div class="panel active"><div class="hint">'
+                            'No detectable hands were provided.</div></div>')
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>{page_title}</title>
+<style>{_TABS_CSS}</style>
+</head>
+<body>
+<div class="tabbar">{''.join(tabs_html)}</div>
+<div class="hint">Front-on start view (y-down toward you). Drag to orbit; double-click to reset.</div>
+{''.join(panels_html)}
+<script>{_TABS_JS}</script>
+</body>
+</html>"""
+
+    with open(out_path, "w", encoding="utf-8") as fh:
+        fh.write(html)
+    return out_path
