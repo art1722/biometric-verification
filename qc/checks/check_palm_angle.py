@@ -554,3 +554,203 @@ def calculate_palm_axis_tilts(world_landmarks):
         return (True, {"across_tilt": tilt(ax), "up_tilt": tilt(up)})
     except Exception as e:
         return (False, {"error": f"axis tilt failed: {e}"})
+
+
+# ===========================================================================
+# EXPERIMENTAL: quaternion palm-orientation path  [CONFIRM -- not wired into
+# grading]. Added 2026-07-07. Dependency-free (numpy only), so it drops in
+# without adding scipy to the project.
+#
+# WHY THIS EXISTS
+# ---------------
+# An alternative to the roll/pitch plane-fit: represent the palm's full 3D
+# orientation as a QUATERNION, then grade a pose by the delta quaternion
+# q_delta = q_pose * inv(q_N) (rotation FROM this hand's own N TO the pose).
+# The single scalar `angle_deg` of q_delta is a gimbal-lock-free "how far did
+# the hand rotate from neutral" magnitude.
+#
+# FRAME CONSTRUCTION -- normal-anchored, NOT the raw two-seed-vector version.
+# On the 2026-07-07 calibration data the seed axis y=(wrist->middle_MCP) was
+# NOT stable across poses (it moved 28.3 deg on PU, 13.5 deg on PD -- pitch
+# poses that should not rotate that axis), which smeared one physical rotation
+# across several quaternion components. The plane NORMAL (the same SVD normal
+# calculate_palm_angles already trusts) moved cleanly and monotonically, so it
+# is used as the frame's z axis:
+#   z_palm = oriented SVD plane normal  (nz >= 0)
+#   x_palm = normalize( (pinky_mcp - index_mcp) projected off z )   [Gram-Schmidt]
+#   y_palm = z_palm x x_palm            (derived; orthonormal; det(R)=+1)
+# R = [x_palm | y_palm | z_palm] (columns) -> quaternion.
+#
+# STATUS: informational only. Returns a magnitude + axis + raw quaternion for
+# debugging and for a possible future REVIEW signal. It does NOT set PASS/FAIL.
+# Validated on volunteer 099 (see the docstring of calculate_palm_quaternion).
+# ===========================================================================
+
+def _palm_rotation_matrix(world_landmarks):
+    """Normal-anchored orthonormal palm frame R (3x3, columns = x,y,z axes).
+
+    Returns (True, R) or (False, {"error": ...}). Never raises. R is a proper
+    rotation (det = +1) by construction: z is the oriented plane normal, x is
+    the across-axis with its z-component removed (Gram-Schmidt), y = z cross x.
+    """
+    if world_landmarks is None:
+        return (False, {"error": "No world landmarks provided"})
+    try:
+        n = len(world_landmarks)
+    except TypeError:
+        return (False, {"error": "world_landmarks is not indexable"})
+    if n <= max(PLANE_LANDMARK_IDXS):
+        return (False, {"error": f"Expected 21 landmarks, got {n}"})
+
+    try:
+        pts = np.array(
+            [[world_landmarks[i].x, world_landmarks[i].y, world_landmarks[i].z]
+             for i in PLANE_LANDMARK_IDXS],
+            dtype=np.float64,
+        )
+        centered = pts - pts.mean(axis=0)
+        _, sv, vt = np.linalg.svd(centered)
+        if sv[1] < 1e-9:
+            return (False, {"error": "degenerate palm geometry (points collinear)"})
+
+        z = vt[-1].astype(np.float64)          # plane normal
+        if z[2] < 0:                            # orient toward camera (match roll/pitch)
+            z = -z
+        z /= np.linalg.norm(z)
+
+        # across-axis seed: index_mcp(5) -> pinky_mcp(17), then remove its z part
+        i5 = np.array([world_landmarks[_INDEX_MCP].x, world_landmarks[_INDEX_MCP].y,
+                       world_landmarks[_INDEX_MCP].z], dtype=np.float64)
+        p17 = np.array([world_landmarks[_PINKY_MCP].x, world_landmarks[_PINKY_MCP].y,
+                        world_landmarks[_PINKY_MCP].z], dtype=np.float64)
+        x = p17 - i5
+        x = x - np.dot(x, z) * z               # Gram-Schmidt against z
+        nx = np.linalg.norm(x)
+        if nx < 1e-9:
+            return (False, {"error": "across-axis parallel to normal (degenerate)"})
+        x /= nx
+
+        y = np.cross(z, x)                      # derived, already unit-length
+        R = np.column_stack([x, y, z])
+        return (True, R)
+    except Exception as e:
+        logger.debug("PALM_QUAT | frame error: %s", e)
+        return (False, {"error": f"Error building palm frame: {e}"})
+
+
+def _matrix_to_quaternion(R):
+    """Rotation matrix (3x3, det +1) -> unit quaternion (w, x, y, z).
+
+    Shepperd's method (numerically stable branch selection). numpy only.
+    """
+    m00, m11, m22 = R[0, 0], R[1, 1], R[2, 2]
+    tr = m00 + m11 + m22
+    if tr > 0.0:
+        s = math.sqrt(tr + 1.0) * 2.0
+        w = 0.25 * s
+        x = (R[2, 1] - R[1, 2]) / s
+        y = (R[0, 2] - R[2, 0]) / s
+        z = (R[1, 0] - R[0, 1]) / s
+    elif m00 > m11 and m00 > m22:
+        s = math.sqrt(1.0 + m00 - m11 - m22) * 2.0
+        w = (R[2, 1] - R[1, 2]) / s
+        x = 0.25 * s
+        y = (R[0, 1] + R[1, 0]) / s
+        z = (R[0, 2] + R[2, 0]) / s
+    elif m11 > m22:
+        s = math.sqrt(1.0 + m11 - m00 - m22) * 2.0
+        w = (R[0, 2] - R[2, 0]) / s
+        x = (R[0, 1] + R[1, 0]) / s
+        y = 0.25 * s
+        z = (R[1, 2] + R[2, 1]) / s
+    else:
+        s = math.sqrt(1.0 + m22 - m00 - m11) * 2.0
+        w = (R[1, 0] - R[0, 1]) / s
+        x = (R[0, 2] + R[2, 0]) / s
+        y = (R[1, 2] + R[2, 1]) / s
+        z = 0.25 * s
+    q = np.array([w, x, y, z], dtype=np.float64)
+    q /= np.linalg.norm(q)
+    if q[0] < 0:            # canonical sign: w >= 0
+        q = -q
+    return q
+
+
+def _quat_multiply(a, b):
+    """Hamilton product a*b, quaternions as (w, x, y, z)."""
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return np.array([
+        aw*bw - ax*bx - ay*by - az*bz,
+        aw*bx + ax*bw + ay*bz - az*by,
+        aw*by - ax*bz + ay*bw + az*bx,
+        aw*bz + ax*by - ay*bx + az*bw,
+    ], dtype=np.float64)
+
+
+def _quat_inverse(q):
+    """Inverse of a UNIT quaternion = its conjugate."""
+    return np.array([q[0], -q[1], -q[2], -q[3]], dtype=np.float64)
+
+
+def calculate_palm_quaternion(world_landmarks):
+    """EXPERIMENTAL palm orientation as a unit quaternion (w, x, y, z).
+
+    See the section banner above for the frame definition and why the normal
+    (not z = x_cross_y) anchors it. Informational only; not used for grading.
+
+    Returns (success, info). On success:
+        info = {"quaternion": (w,x,y,z), "matrix": R.tolist()}
+    On failure info has an "error" string. Never raises.
+    """
+    ok, R = _palm_rotation_matrix(world_landmarks)
+    if not ok:
+        return (False, R)
+    try:
+        q = _matrix_to_quaternion(R)
+        return (True, {"quaternion": tuple(float(v) for v in q),
+                       "matrix": R.tolist()})
+    except Exception as e:
+        return (False, {"error": f"quaternion conversion failed: {e}"})
+
+
+def calculate_palm_quaternion_delta(pose_landmarks, n_landmarks):
+    """EXPERIMENTAL delta rotation FROM this hand's own N TO the pose.
+
+    q_delta = q_pose * inv(q_N). Reports the gimbal-lock-free rotation MAGNITUDE
+    (`angle_deg`, always >= 0) and unit `axis`. Informational only.
+
+    Validated on volunteer 099 (mirrored front-camera, left hand):
+        RL angle=15.7  RR angle=24.8  PU angle=29.2  PD angle=13.7  (degrees)
+    The MAGNITUDE separates rotated poses from N cleanly; note the axis
+    labelling still needs sign calibration before any grading use.
+
+    Returns (success, info). On success:
+        info = {"angle_deg": float, "axis": (x,y,z), "q_delta": (w,x,y,z)}
+    On failure info has an "error" string. Never raises.
+    """
+    okP, infoP = calculate_palm_quaternion(pose_landmarks)
+    if not okP:
+        return (False, {"error": f"pose frame failed: {infoP.get('error')}"})
+    okN, infoN = calculate_palm_quaternion(n_landmarks)
+    if not okN:
+        return (False, {"error": f"N frame failed: {infoN.get('error')}"})
+
+    try:
+        qP = np.array(infoP["quaternion"], dtype=np.float64)
+        qN = np.array(infoN["quaternion"], dtype=np.float64)
+        qd = _quat_multiply(qP, _quat_inverse(qN))
+        qd /= np.linalg.norm(qd)
+        if qd[0] < 0:                     # canonical hemisphere
+            qd = -qd
+        w = max(-1.0, min(1.0, float(qd[0])))
+        angle = 2.0 * math.degrees(math.acos(w))
+        if angle > 180.0:                 # shortest-arc convention
+            angle = 360.0 - angle
+        vec = qd[1:]
+        nv = np.linalg.norm(vec)
+        axis = tuple(float(v) for v in (vec / nv)) if nv > 1e-9 else (0.0, 0.0, 0.0)
+        return (True, {"angle_deg": float(angle), "axis": axis,
+                       "q_delta": tuple(float(v) for v in qd)})
+    except Exception as e:
+        return (False, {"error": f"delta quaternion failed: {e}"})

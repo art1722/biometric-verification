@@ -21,6 +21,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 from qc.checks.check_palm_angle import PLANE_LANDMARK_IDXS, calculate_palm_angles
+import json
 
 HAND_CONNECTIONS = [
     (0, 1), (1, 2), (2, 3), (3, 4),
@@ -60,15 +61,12 @@ def make_plane_patch(plane_pts: np.ndarray, scale: float = 1.35) -> np.ndarray:
     ])
 
 
-# Front-on "normal position" camera, matching the debug screenshot: the viewer
-# looks along +y (y-down points INTO the screen, toward the camera), so the
-# palm's roll (x) and the z-toward-camera axis are both in view. In Plotly the
-# camera sits on the -y side looking toward the scene centre; up is -z so the
-# skeleton is not upside down.
-#   NOTE: this is a starting view only -- the user can still orbit freely.
+# Front-on camera looking from the +y side.
+# This makes +y ("y down") protrude out of the screen toward the viewer.
+# Keep up=-z so x still appears to the right in the initial Plotly view.
 NORMAL_POSITION_CAMERA = dict(
-    eye=dict(x=0.0, y=-2.2, z=0.0),   # sit below (y-down toward viewer)
-    up=dict(x=0.0, y=0.0, z=-1.0),    # -z is "up" on screen
+    eye=dict(x=0.0, y=+2.2, z=0.0),
+    up=dict(x=0.0, y=0.0, z=-1.0),
     center=dict(x=0.0, y=0.0, z=0.0),
 )
 
@@ -131,8 +129,9 @@ def _add_camera_axes(fig: go.Figure, origin: np.ndarray, length: float):
     for vec, label in axes:
         end = origin + vec
         _add_line(fig, origin, end, name=label, width=7, showlegend=True)
+        label_pos = origin + vec * 1.25
         fig.add_trace(go.Scatter3d(
-            x=[end[0]], y=[end[1]], z=[end[2]],
+            x=[label_pos[0]], y=[label_pos[1]], z=[label_pos[2]],
             mode="text",
             text=[label],
             textposition="top center",
@@ -253,11 +252,13 @@ def build_palm_angle_figure(
         v=[normal[1] * arrow_len],
         w=[normal[2] * arrow_len],
         sizemode="absolute",
-        sizeref=arrow_len,
+        sizeref=arrow_len * 0.35,
         anchor="tail",
         name="plane normal cone",
         showlegend=True,
         visible="legendonly",
+        showscale=False,   # hide meaningless green/pink cone colorbar
+        opacity=0.75,
     ))
 
 
@@ -322,23 +323,121 @@ body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
 .tabbtn:hover { background:#e7d7f6; }
 .tabbtn.active { background:var(--accent); color:#fff; }
 .tabbtn .sub { font-weight:400; opacity:.85; margin-left:6px; font-size:12px; }
+
+:root { --accent:#5a288c; --accent-pale:#f3ebfa; --border:#d9c8ec; }
+* { box-sizing:border-box; }
+body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+       color:#222; background:#fff; }
+.tabbar { display:flex; flex-wrap:wrap; gap:4px; padding:10px 12px 0;
+          border-bottom:2px solid var(--border); position:sticky; top:0;
+          background:#fff; z-index:5; }
+.tabbtn { border:1px solid var(--border); border-bottom:none;
+          background:var(--accent-pale); color:var(--accent);
+          padding:7px 14px; border-radius:8px 8px 0 0; cursor:pointer;
+          font-size:14px; font-weight:600; }
+.tabbtn:hover { background:#e7d7f6; }
+.tabbtn.active { background:var(--accent); color:#fff; }
+.tabbtn .sub { font-weight:400; opacity:.85; margin-left:6px; font-size:12px; }
+
+.resetbtn { margin-left:auto; border:1px solid var(--border);
+            background:#fff; color:var(--accent); cursor:pointer;
+            padding:7px 12px; border-radius:8px 8px 0 0;
+            font-size:13px; font-weight:600; }
+.resetbtn:hover { background:var(--accent-pale); }
+
+.panel { display:none; padding:0; }
+.panel.active { display:block; }
+.plotwrap { width:100%; height:82vh; }
+.hint { font-size:12px; color:#666; padding:6px 14px; }
+
 .panel { display:none; padding:0; }
 .panel.active { display:block; }
 .plotwrap { width:100%; height:82vh; }
 .hint { font-size:12px; color:#666; padding:6px 14px; }
 """
 
-_TABS_JS = """
+__TABS_JS = """
+function cloneNormalCamera(){
+  return JSON.parse(JSON.stringify(NORMAL_CAMERA));
+}
+
+function cameraRelayoutUpdate(){
+  const c = cloneNormalCamera();
+
+  // Set nested camera fields explicitly.
+  // This avoids Plotly partially preserving the old rotated 'up' vector.
+  return {
+    'scene.camera.eye': c.eye,
+    'scene.camera.up': c.up,
+    'scene.camera.center': c.center
+  };
+}
+
+function getPlotInPanel(panel){
+  if (!panel) return null;
+  return panel.querySelector('.js-plotly-plot') || panel.querySelector('.plotly-graph-div');
+}
+
+function resetOneCamera(gd){
+  if (!window.Plotly || !gd) return;
+
+  return Plotly.relayout(gd, cameraRelayoutUpdate()).then(function(){
+    Plotly.Plots.resize(gd);
+  });
+}
+
 function showTab(idx){
   document.querySelectorAll('.tabbtn').forEach((b,i)=>
      b.classList.toggle('active', i===idx));
   document.querySelectorAll('.panel').forEach((p,i)=>
      p.classList.toggle('active', i===idx));
-  // Plotly needs a resize once its container becomes visible.
-  var gd = document.querySelectorAll('.panel')[idx].querySelector('.js-plotly-plot');
-  if (gd && window.Plotly) window.Plotly.Plots.resize(gd);
+
+  const panel = document.querySelectorAll('.panel')[idx];
+  const gd = getPlotInPanel(panel);
+
+  if (gd && window.Plotly) {
+    Plotly.Plots.resize(gd);
+
+    // If reset was requested while this tab was hidden,
+    // apply reset only after the plot becomes visible.
+    if (panel.dataset.needsCameraReset === "1") {
+      setTimeout(function(){
+        resetOneCamera(gd);
+        panel.dataset.needsCameraReset = "0";
+      }, 50);
+    }
+  }
 }
-document.addEventListener('DOMContentLoaded', function(){ showTab(0); });
+
+function resetAllCameras(){
+  if (!window.Plotly || typeof NORMAL_CAMERA === 'undefined') {
+    console.warn("Plotly or NORMAL_CAMERA is missing");
+    return;
+  }
+
+  const panels = document.querySelectorAll('.panel');
+
+  panels.forEach(function(panel){
+    panel.dataset.needsCameraReset = "1";
+  });
+
+  // Reset only the currently visible plot immediately.
+  // Hidden plots are reset when their tab becomes visible.
+  const activePanel = document.querySelector('.panel.active');
+  const gd = getPlotInPanel(activePanel);
+
+  if (gd) {
+    resetOneCamera(gd);
+    activePanel.dataset.needsCameraReset = "0";
+  }
+}
+
+document.addEventListener('DOMContentLoaded', function(){
+  document.querySelectorAll('.panel').forEach(function(panel){
+    panel.dataset.needsCameraReset = "0";
+  });
+  showTab(0);
+});
 """
 
 
@@ -414,6 +513,8 @@ def save_palm_angle_debug_tabs_html(
         panels_html.append('<div class="panel active"><div class="hint">'
                             'No detectable hands were provided.</div></div>')
 
+    normal_camera_js = json.dumps(NORMAL_POSITION_CAMERA)
+    
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -423,10 +524,13 @@ def save_palm_angle_debug_tabs_html(
 <style>{_TABS_CSS}</style>
 </head>
 <body>
-<div class="tabbar">{''.join(tabs_html)}</div>
+<div class="tabbar">{''.join(tabs_html)}<button class="resetbtn" onclick="resetAllCameras()">Reset view</button></div>
 <div class="hint">Front-on start view (y-down toward you). Drag to orbit; double-click to reset.</div>
 {''.join(panels_html)}
-<script>{_TABS_JS}</script>
+<script>
+const NORMAL_CAMERA = {normal_camera_js};
+{_TABS_JS}
+</script>
 </body>
 </html>"""
 
