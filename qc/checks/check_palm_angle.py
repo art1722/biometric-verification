@@ -1,67 +1,43 @@
-"""Palm angle check -- wrist roll/pitch within the spec's +/-45 deg tolerance.
+"""Palm angle check -- spec-aligned depth-wise wrist roll/pitch.
 
-Spec requirement (source of truth)
-----------------------------------
-Each hand is captured at 5 wrist angles: N (neutral), RL (roll-left),
-RR (roll-right), PU (pitch-up), PD (pitch-down), with roll and pitch within
-+/-45 degrees. This check measures the hand's roll and pitch from landmarks and
-flags any image whose |roll| or |pitch| exceeds the configured maximum.
+Spec meaning
+------------
+Palm roll in the data specification is NOT image-plane rotation. It is the
+out-of-plane wrist rotation where one side of the palm moves closer to the
+sensor:
 
-GATING -- this check is OFF by default
---------------------------------------
-config: palm.angle.check_angle_enabled (default false). Per the project plan,
-angle is a stretch / later check: the spec's per-pose angles (RL/RR/PU/PD) are
-DELIBERATE captures, so a large roll/pitch is often CORRECT for that pose, not a
-defect. The pipeline therefore decides whether to run this at all; the function
-itself stays pure and always computes a value, but `check_angle_enabled` lets
-the caller emit SKIP instead of a PASS/FAIL row until per-pose expected angles
-are calibrated with the researcher (อ.เหมียว).
+  - RL/RR: thumb-side vs pinky-side palm edge moves toward the sensor.
+  - PU/PD: wrist-side vs finger-side palm region moves toward the sensor.
 
-Coordinate space -- WORLD landmarks, not image landmarks
---------------------------------------------------------
-This mirrors check_head_pose's lesson about coordinate space, taken one step
-further. head_pose uses MediaPipe's NORMALIZED (0..1) face landmarks because
-that is the space the researcher's notebook calibrated in. For the HAND, the
-Tasks-API HandLandmarker also exposes WORLD landmarks (metric 3D, origin at the
-hand centre), and hand_landmarker.py's own docstring states world coords are
-"the cleanest signal for the roll/pitch angle check (image-space coords distort
-with perspective)". So this check consumes HandResult.world_landmarks. Image/
-pixel landmarks scale x by width and y by height and bend under perspective,
-which would corrupt an angle; world coords do not.
+This module therefore measures depth-wise tilt from MediaPipe 3D hand landmarks:
 
-Method (v3: 5-point least-squares palm plane; no model)
--------------------------------------------------------
-The palm PLANE is least-squares fitted through the FIVE rigid base-of-palm
-keypoints -- WRIST(0), INDEX_MCP(5), MIDDLE_MCP(9), RING_MCP(13), PINKY_MCP(17)
-(PLANE_LANDMARK_IDXS). The plane normal is the right singular vector of the
-smallest singular value of the centred points (standard total-least-squares
-plane fit), so one noisy landmark shifts the plane slightly instead of rotating
-the whole normal (the old 3-point cross product was hostage to its worst point,
-and one of its three indices was WRONG: 13 = RING_FINGER_MCP, not PINKY_MCP).
+  - roll  from the z-depth difference between thumb/index side and pinky side.
+  - pitch from the z-depth difference between wrist side and upper/finger side.
 
-The SVD normal has an ARBITRARY sign, so it is oriented TOWARD the camera
-(nz >= 0) before reading angles. This also cancels the palm-side vs
-back-of-hand flip of the old cross product. Then, in MediaPipe world axes
-(x right, y down, z toward camera) -- SPEC TERMS roll/pitch ARE KEPT:
+MediaPipe's z convention is model-estimated, not calibrated physical depth. The
+pipeline still grades each rotated pose relative to the same hand's neutral (N)
+image, and keeps the raw +/-45 degree cap from the spec.
 
-  - roll  = atan2(nx, hypot(ny, nz))  side tilt (RL/RR), bounded [-90, +90]
-  - pitch = atan2(ny, hypot(nx, nz))  vertical tilt (PU/PD), bounded (-90, +90)
+Coordinate/sign convention used here
+------------------------------------
+MediaPipe hand landmarks use a camera-like z value where the side with the
+smaller z is closer to the camera/sensor. The returned signs are normalized to
+the filename/spec pose labels:
 
-The hypot(nx, nz) denominator is the decoupling fix: pitch stays correct when
-the palm is ALSO rolled, and neither reading can wrap past +/-90 (the old
-atan2(ny, nz) read +138 deg on a real capture when nz went negative). Exact
-per-pose sign calibration is still a [CONFIRM] item; calibrate ONLY on
-PALM-SIDE reference images (dorsal test shots invert the physical direction of
-"toward the sensor").
+  - RL should be negative roll.
+  - RR should be positive roll.
+  - PU should be negative pitch (wrist side closer).
+  - PD should be positive pitch (finger side closer).
 
-Returns -- two-layer, like check_head_pose
-------------------------------------------
-calculate_palm_angles(world_landmarks) -> (success, info_dict)
-    info_dict = {"roll": float, "pitch": float}  (degrees), or an "error" key.
-check_palm_angle(world_landmarks, ...) -> (success, message)
-    the pipeline-facing wrapper: applies the +/-max thresholds and formats a
-    report message, mirroring the (success, message) contract every other palm
-    check returns.
+Because the spec defines RL/RR differently for left and right hands, roll sign
+uses the FILENAME hand (L/R), not MediaPipe's mirrored handedness label.
+
+Returns
+-------
+calculate_palm_angles(world_landmarks, handedness="L"|"R") -> (ok, info)
+    info = {"roll": float, "pitch": float, "normal": (x,y,z), ...}
+check_palm_angle(...) -> (ok, message)
+    symmetric absolute wrapper for +/- roll/pitch caps.
 """
 
 from __future__ import annotations
@@ -83,30 +59,34 @@ _MIDDLE_MCP = 9
 _RING_MCP = 13
 _PINKY_MCP = 17
 
-# The five keypoints the palm plane is fitted through. Exported so the overlay
-# can highlight exactly the points the measurement uses.
+# Base landmarks used for the palm angle/reference geometry. The name is kept
+# for backwards compatibility with overlay/debug modules that import it.
 PLANE_LANDMARK_IDXS = (_WRIST, _INDEX_MCP, _MIDDLE_MCP, _RING_MCP, _PINKY_MCP)
 
 
-def calculate_palm_angles(world_landmarks: Any):
-    """Roll/pitch (degrees) of the least-squares palm plane (v3).
+def calculate_palm_angles(world_landmarks: Any, *, handedness: Any = None):
+    """Return spec-aligned depth-wise palm roll/pitch in degrees.
 
-    See the module docstring for the method: 5-point plane fit
-    (PLANE_LANDMARK_IDXS) -> normal oriented toward the camera (nz >= 0) ->
-    bounded, decoupled spherical angles:
+    This intentionally replaces the old local-normal formula
+    ``atan2(normal_x, -normal_y)``. That old formula reads the palm normal's
+    projected direction in the image plane; the spec's roll is depth-wise: which
+    side of the palm is closer to the sensor.
 
-        roll  = atan2(nx, hypot(ny, nz))     in [-90, +90]
-        pitch = atan2(ny, hypot(nx, nz))     in (-90, +90)
+    Landmarks used:
+      - thumb/index side: mean(THUMB_CMC=1, INDEX_MCP=5)
+      - pinky side:      mean(RING_MCP=13, PINKY_MCP=17)
+      - wrist side:      WRIST=0
+      - upper palm side: mean(INDEX_MCP=5, MIDDLE_MCP=9, RING_MCP=13, PINKY_MCP=17)
 
-    Args:
-        world_landmarks: HandResult.world_landmarks -- an indexable sequence of
-            21 landmark objects with .x/.y/.z in metres (origin at hand centre).
+    Sign convention after normalization:
+      - Left hand:  pinky closer -> negative roll; thumb/index closer -> positive.
+      - Right hand: thumb/index closer -> negative roll; pinky closer -> positive.
+      - Wrist closer -> negative pitch (PU); upper/finger side closer -> positive (PD).
 
-    Returns:
-        (success, info_dict). On success info_dict has float "roll" and "pitch"
-        in degrees plus "normal" as an oriented unit 3-tuple (consumed by the
-        overlay's normal arrow). On failure success is False and info_dict has
-        an "error" string. Never raises.
+    `handedness` should come from the filename (..._palm_L_... / ..._palm_R_...),
+    not from MediaPipe's mirrored handedness label. If handedness is omitted, the
+    roll magnitude is still useful for absolute caps, but the roll sign is
+    assumed left-hand style and should not be used for RL/RR grading.
     """
     if world_landmarks is None:
         return (False, {"error": "No world landmarks provided"})
@@ -116,45 +96,80 @@ def calculate_palm_angles(world_landmarks: Any):
     except TypeError:
         return (False, {"error": "world_landmarks is not indexable"})
 
-    if n <= max(PLANE_LANDMARK_IDXS):
+    required = (_WRIST, 1, _INDEX_MCP, _MIDDLE_MCP, _RING_MCP, _PINKY_MCP)
+    if n <= max(required):
         return (False, {"error": f"Expected 21 landmarks, got {n}"})
 
+    def _pt(idx: int) -> np.ndarray:
+        lm = world_landmarks[idx]
+        return np.array([float(lm.x), float(lm.y), float(lm.z)], dtype=np.float64)
+
+    def _unit(v: np.ndarray, name: str):
+        norm = float(np.linalg.norm(v))
+        if norm < 1e-9:
+            raise ValueError(f"degenerate palm geometry (zero-length {name})")
+        return v / norm
+
     try:
-        pts = np.array(
-            [[world_landmarks[i].x, world_landmarks[i].y, world_landmarks[i].z]
-             for i in PLANE_LANDMARK_IDXS],
-            dtype=np.float64,
+        wrist = _pt(_WRIST)
+        thumb_side = np.mean([_pt(1), _pt(_INDEX_MCP)], axis=0)
+        pinky_side = np.mean([_pt(_RING_MCP), _pt(_PINKY_MCP)], axis=0)
+        upper_palm = np.mean(
+            [_pt(_INDEX_MCP), _pt(_MIDDLE_MCP), _pt(_RING_MCP), _pt(_PINKY_MCP)],
+            axis=0,
         )
-        centered = pts - pts.mean(axis=0)
 
-        # Least-squares plane: the normal is the right singular vector of the
-        # SMALLEST singular value of the centred points. s[1] ~ 0 means the 5
-        # points are nearly collinear -> the plane (hence normal) is undefined.
-        _, sv, vt = np.linalg.svd(centered)
-        if sv[1] < 1e-9:
-            return (False, {"error": "degenerate palm geometry (points collinear)"})
+        # Across-palm vector: thumb/index edge -> pinky edge.
+        side_vec = pinky_side - thumb_side
+        side_xy = math.hypot(float(side_vec[0]), float(side_vec[1]))
+        if side_xy < 1e-9:
+            return (False, {"error": "degenerate palm geometry (zero-width palm side axis)"})
 
-        nx, ny, nz = (float(v) for v in vt[-1])
+        # Up-palm vector: wrist side -> upper/finger side.
+        up_vec = upper_palm - wrist
+        up_xy = math.hypot(float(up_vec[0]), float(up_vec[1]))
+        if up_xy < 1e-9:
+            return (False, {"error": "degenerate palm geometry (zero-length wrist-to-upper-palm axis)"})
 
-        # SVD sign ambiguity: orient the normal toward the camera (nz >= 0).
-        # Also makes palm-side and back-of-hand shots read consistently.
-        if nz < 0:
-            nx, ny, nz = -nx, -ny, -nz
+        # Raw side depth: negative means pinky side has smaller z => closer.
+        raw_side_depth_deg = math.degrees(math.atan2(float(side_vec[2]), side_xy))
 
-        roll = math.degrees(math.atan2(nx, math.hypot(ny, nz)))
-        pitch = math.degrees(math.atan2(ny, math.hypot(nx, nz)))
+        # Spec-normalized roll sign. With smaller z = closer:
+        #   Left:  pinky closer -> raw negative -> RL negative.
+        #   Right: thumb closer  -> raw positive -> RL negative, so flip sign.
+        hs = str(handedness or "").strip().upper()
+        is_right = hs in ("R", "RIGHT")
+        roll = -raw_side_depth_deg if is_right else raw_side_depth_deg
 
-        return (True, {"roll": float(roll), "pitch": float(pitch),
-                       "normal": (nx, ny, nz)})
+        # Raw vertical depth: positive means upper palm has larger z, so wrist is
+        # closer. Spec PU should be negative, hence the leading minus.
+        raw_up_depth_deg = math.degrees(math.atan2(float(up_vec[2]), up_xy))
+        pitch = -raw_up_depth_deg
 
-    except Exception as e:  # never crash a batch on one odd frame
+        # A visual/debug normal only. The grading uses the explicit depth-axis
+        # angles above, not this normal's x/y projection.
+        side_axis = _unit(side_vec, "side axis")
+        up_axis = _unit(up_vec, "up axis")
+        normal = np.cross(side_axis, up_axis)
+        normal = _unit(normal, "debug normal")
+
+        return (True, {
+            "roll": float(roll),
+            "pitch": float(pitch),
+            "normal": (float(normal[0]), float(normal[1]), float(normal[2])),
+            "raw_side_depth_deg": float(raw_side_depth_deg),
+            "raw_up_depth_deg": float(raw_up_depth_deg),
+            "handedness_used": "R" if is_right else "L_or_default",
+        })
+
+    except Exception as e:  # never crash a batch on one odd image
         logger.debug("PALM_ANGLE | error: %s", e)
         return (False, {"error": f"Error computing palm angle: {e}"})
-
 
 def check_palm_angle(
     world_landmarks: Any,
     *,
+    handedness: Any = None,
     max_abs_roll_deg: float = 45.0,
     max_abs_pitch_deg: float = 45.0,
 ):
@@ -176,7 +191,7 @@ def check_palm_angle(
             "roll=12.3 pitch=-8.0 within +/-45/+/-45"
             "roll=58.1 > 45 (pitch=-3.2 ok)"
     """
-    ok, info = calculate_palm_angles(world_landmarks)
+    ok, info = calculate_palm_angles(world_landmarks, handedness=handedness)
     if not ok:
         # Could not measure -> report the reason; the pipeline decides whether a
         # non-measurable angle is FAIL or SKIP (consistent with how a no-hand
@@ -245,12 +260,11 @@ def check_palm_angle(
 _POSE_AXIS = {"N": None, "RL": "roll", "RR": "roll", "PU": "pitch", "PD": "pitch"}
 
 # Expected SIGN per pose. +1 expects a positive delta, -1 negative.
-# [CALIBRATED 2026-07-07] Real left-hand set (mirrored front camera,
-# palm-side, correct labels): L/RL d_roll=-10.0, L/RR d_roll=+21.1,
-# L/PU d_pitch=+27.1, L/PD d_pitch=-11.8. Matches the bands documented in
-# config.yml (RL negative / RR positive) and the unit tests. Valid for
-# MIRRORED capture; flip RL/RR back to {+1, -1} if the rig is unmirrored.
-_POSE_SIGN = {"RL": -1, "RR": +1, "PU": +1, "PD": -1}
+# This follows the specification labels after calculate_palm_angles normalizes
+# depth signs by filename hand: RL=-, RR=+, PU=-, PD=+. If the production rig's
+# z/mirroring convention is shown to invert a pose, override it from config via
+# palm.angle.hand_sign_overrides.
+_POSE_SIGN = {"RL": -1, "RR": +1, "PU": -1, "PD": +1}
 
 
 def _band_for_pose(
@@ -318,14 +332,14 @@ def check_palm_pose(
         non-measurable angle returns (False, error) and the pipeline decides
         SKIP vs FAIL (same as the other angle path).
     """
-    ok, info = calculate_palm_angles(world_landmarks)
+    pose = (pose or "").upper()
+    hand = (hand or "").upper()
+    ok, info = calculate_palm_angles(world_landmarks, handedness=hand)
     if not ok:
         return (False, info.get("error", "Could not compute palm angle"))
 
     roll = info["roll"]
     pitch = info["pitch"]
-    pose = (pose or "").upper()
-    hand = (hand or "").upper()
 
     # --- Neutral: both axes near zero ---
     if pose == "N":
@@ -536,221 +550,29 @@ def check_palm_n_reference(
 def calculate_palm_axis_tilts(world_landmarks):
     """DEBUG cross-check for calculate_palm_angles -- NOT used for grading.
 
-    Tilt (degrees) of the two physical palm axes out of the camera plane,
-    computed WITHOUT the plane fit:
-      across_tilt: index_mcp(5) -> pinky_mcp(17); on good data ~= -roll
-      up_tilt:     wrist(0)     -> middle_mcp(9); on good data ~= +pitch
-    Verified on the 2026-07-07 calibration set: agreement within ~2-4 deg
-    (except one off-axis-contaminated PU at ~8 deg). Suggested guard:
-    |across_tilt + roll| > 10 or |up_tilt - pitch| > 10  ->  REVIEW.
+    Returns the raw depth tilts before handedness/sign normalization:
+      across_tilt_raw: thumb/index side -> pinky side depth tilt.
+      up_tilt_raw:     wrist side -> upper-palm side depth tilt.
+
+    calculate_palm_angles converts these into spec signs:
+      roll  = across_tilt_raw for L, -across_tilt_raw for R.
+      pitch = -up_tilt_raw.
     """
     try:
         p = lambda i: (float(world_landmarks[i].x),
                        float(world_landmarks[i].y),
                        float(world_landmarks[i].z))
-        ax = [b - a for a, b in zip(p(_INDEX_MCP), p(_PINKY_MCP))]
-        up = [b - a for a, b in zip(p(_WRIST), p(_MIDDLE_MCP))]
-        tilt = lambda v: math.degrees(math.atan2(v[2], math.hypot(v[0], v[1])))
-        return (True, {"across_tilt": tilt(ax), "up_tilt": tilt(up)})
+        def mean(indices):
+            arr = np.array([p(i) for i in indices], dtype=np.float64)
+            return arr.mean(axis=0)
+        thumb_side = mean([1, _INDEX_MCP])
+        pinky_side = mean([_RING_MCP, _PINKY_MCP])
+        upper_palm = mean([_INDEX_MCP, _MIDDLE_MCP, _RING_MCP, _PINKY_MCP])
+        wrist = np.array(p(_WRIST), dtype=np.float64)
+        side_vec = pinky_side - thumb_side
+        up_vec = upper_palm - wrist
+        tilt = lambda v: math.degrees(math.atan2(float(v[2]), math.hypot(float(v[0]), float(v[1]))))
+        return (True, {"across_tilt_raw": tilt(side_vec), "up_tilt_raw": tilt(up_vec)})
     except Exception as e:
         return (False, {"error": f"axis tilt failed: {e}"})
 
-
-# ===========================================================================
-# EXPERIMENTAL: quaternion palm-orientation path  [CONFIRM -- not wired into
-# grading]. Added 2026-07-07. Dependency-free (numpy only), so it drops in
-# without adding scipy to the project.
-#
-# WHY THIS EXISTS
-# ---------------
-# An alternative to the roll/pitch plane-fit: represent the palm's full 3D
-# orientation as a QUATERNION, then grade a pose by the delta quaternion
-# q_delta = q_pose * inv(q_N) (rotation FROM this hand's own N TO the pose).
-# The single scalar `angle_deg` of q_delta is a gimbal-lock-free "how far did
-# the hand rotate from neutral" magnitude.
-#
-# FRAME CONSTRUCTION -- normal-anchored, NOT the raw two-seed-vector version.
-# On the 2026-07-07 calibration data the seed axis y=(wrist->middle_MCP) was
-# NOT stable across poses (it moved 28.3 deg on PU, 13.5 deg on PD -- pitch
-# poses that should not rotate that axis), which smeared one physical rotation
-# across several quaternion components. The plane NORMAL (the same SVD normal
-# calculate_palm_angles already trusts) moved cleanly and monotonically, so it
-# is used as the frame's z axis:
-#   z_palm = oriented SVD plane normal  (nz >= 0)
-#   x_palm = normalize( (pinky_mcp - index_mcp) projected off z )   [Gram-Schmidt]
-#   y_palm = z_palm x x_palm            (derived; orthonormal; det(R)=+1)
-# R = [x_palm | y_palm | z_palm] (columns) -> quaternion.
-#
-# STATUS: informational only. Returns a magnitude + axis + raw quaternion for
-# debugging and for a possible future REVIEW signal. It does NOT set PASS/FAIL.
-# Validated on volunteer 099 (see the docstring of calculate_palm_quaternion).
-# ===========================================================================
-
-def _palm_rotation_matrix(world_landmarks):
-    """Normal-anchored orthonormal palm frame R (3x3, columns = x,y,z axes).
-
-    Returns (True, R) or (False, {"error": ...}). Never raises. R is a proper
-    rotation (det = +1) by construction: z is the oriented plane normal, x is
-    the across-axis with its z-component removed (Gram-Schmidt), y = z cross x.
-    """
-    if world_landmarks is None:
-        return (False, {"error": "No world landmarks provided"})
-    try:
-        n = len(world_landmarks)
-    except TypeError:
-        return (False, {"error": "world_landmarks is not indexable"})
-    if n <= max(PLANE_LANDMARK_IDXS):
-        return (False, {"error": f"Expected 21 landmarks, got {n}"})
-
-    try:
-        pts = np.array(
-            [[world_landmarks[i].x, world_landmarks[i].y, world_landmarks[i].z]
-             for i in PLANE_LANDMARK_IDXS],
-            dtype=np.float64,
-        )
-        centered = pts - pts.mean(axis=0)
-        _, sv, vt = np.linalg.svd(centered)
-        if sv[1] < 1e-9:
-            return (False, {"error": "degenerate palm geometry (points collinear)"})
-
-        z = vt[-1].astype(np.float64)          # plane normal
-        if z[2] < 0:                            # orient toward camera (match roll/pitch)
-            z = -z
-        z /= np.linalg.norm(z)
-
-        # across-axis seed: index_mcp(5) -> pinky_mcp(17), then remove its z part
-        i5 = np.array([world_landmarks[_INDEX_MCP].x, world_landmarks[_INDEX_MCP].y,
-                       world_landmarks[_INDEX_MCP].z], dtype=np.float64)
-        p17 = np.array([world_landmarks[_PINKY_MCP].x, world_landmarks[_PINKY_MCP].y,
-                        world_landmarks[_PINKY_MCP].z], dtype=np.float64)
-        x = p17 - i5
-        x = x - np.dot(x, z) * z               # Gram-Schmidt against z
-        nx = np.linalg.norm(x)
-        if nx < 1e-9:
-            return (False, {"error": "across-axis parallel to normal (degenerate)"})
-        x /= nx
-
-        y = np.cross(z, x)                      # derived, already unit-length
-        R = np.column_stack([x, y, z])
-        return (True, R)
-    except Exception as e:
-        logger.debug("PALM_QUAT | frame error: %s", e)
-        return (False, {"error": f"Error building palm frame: {e}"})
-
-
-def _matrix_to_quaternion(R):
-    """Rotation matrix (3x3, det +1) -> unit quaternion (w, x, y, z).
-
-    Shepperd's method (numerically stable branch selection). numpy only.
-    """
-    m00, m11, m22 = R[0, 0], R[1, 1], R[2, 2]
-    tr = m00 + m11 + m22
-    if tr > 0.0:
-        s = math.sqrt(tr + 1.0) * 2.0
-        w = 0.25 * s
-        x = (R[2, 1] - R[1, 2]) / s
-        y = (R[0, 2] - R[2, 0]) / s
-        z = (R[1, 0] - R[0, 1]) / s
-    elif m00 > m11 and m00 > m22:
-        s = math.sqrt(1.0 + m00 - m11 - m22) * 2.0
-        w = (R[2, 1] - R[1, 2]) / s
-        x = 0.25 * s
-        y = (R[0, 1] + R[1, 0]) / s
-        z = (R[0, 2] + R[2, 0]) / s
-    elif m11 > m22:
-        s = math.sqrt(1.0 + m11 - m00 - m22) * 2.0
-        w = (R[0, 2] - R[2, 0]) / s
-        x = (R[0, 1] + R[1, 0]) / s
-        y = 0.25 * s
-        z = (R[1, 2] + R[2, 1]) / s
-    else:
-        s = math.sqrt(1.0 + m22 - m00 - m11) * 2.0
-        w = (R[1, 0] - R[0, 1]) / s
-        x = (R[0, 2] + R[2, 0]) / s
-        y = (R[1, 2] + R[2, 1]) / s
-        z = 0.25 * s
-    q = np.array([w, x, y, z], dtype=np.float64)
-    q /= np.linalg.norm(q)
-    if q[0] < 0:            # canonical sign: w >= 0
-        q = -q
-    return q
-
-
-def _quat_multiply(a, b):
-    """Hamilton product a*b, quaternions as (w, x, y, z)."""
-    aw, ax, ay, az = a
-    bw, bx, by, bz = b
-    return np.array([
-        aw*bw - ax*bx - ay*by - az*bz,
-        aw*bx + ax*bw + ay*bz - az*by,
-        aw*by - ax*bz + ay*bw + az*bx,
-        aw*bz + ax*by - ay*bx + az*bw,
-    ], dtype=np.float64)
-
-
-def _quat_inverse(q):
-    """Inverse of a UNIT quaternion = its conjugate."""
-    return np.array([q[0], -q[1], -q[2], -q[3]], dtype=np.float64)
-
-
-def calculate_palm_quaternion(world_landmarks):
-    """EXPERIMENTAL palm orientation as a unit quaternion (w, x, y, z).
-
-    See the section banner above for the frame definition and why the normal
-    (not z = x_cross_y) anchors it. Informational only; not used for grading.
-
-    Returns (success, info). On success:
-        info = {"quaternion": (w,x,y,z), "matrix": R.tolist()}
-    On failure info has an "error" string. Never raises.
-    """
-    ok, R = _palm_rotation_matrix(world_landmarks)
-    if not ok:
-        return (False, R)
-    try:
-        q = _matrix_to_quaternion(R)
-        return (True, {"quaternion": tuple(float(v) for v in q),
-                       "matrix": R.tolist()})
-    except Exception as e:
-        return (False, {"error": f"quaternion conversion failed: {e}"})
-
-
-def calculate_palm_quaternion_delta(pose_landmarks, n_landmarks):
-    """EXPERIMENTAL delta rotation FROM this hand's own N TO the pose.
-
-    q_delta = q_pose * inv(q_N). Reports the gimbal-lock-free rotation MAGNITUDE
-    (`angle_deg`, always >= 0) and unit `axis`. Informational only.
-
-    Validated on volunteer 099 (mirrored front-camera, left hand):
-        RL angle=15.7  RR angle=24.8  PU angle=29.2  PD angle=13.7  (degrees)
-    The MAGNITUDE separates rotated poses from N cleanly; note the axis
-    labelling still needs sign calibration before any grading use.
-
-    Returns (success, info). On success:
-        info = {"angle_deg": float, "axis": (x,y,z), "q_delta": (w,x,y,z)}
-    On failure info has an "error" string. Never raises.
-    """
-    okP, infoP = calculate_palm_quaternion(pose_landmarks)
-    if not okP:
-        return (False, {"error": f"pose frame failed: {infoP.get('error')}"})
-    okN, infoN = calculate_palm_quaternion(n_landmarks)
-    if not okN:
-        return (False, {"error": f"N frame failed: {infoN.get('error')}"})
-
-    try:
-        qP = np.array(infoP["quaternion"], dtype=np.float64)
-        qN = np.array(infoN["quaternion"], dtype=np.float64)
-        qd = _quat_multiply(qP, _quat_inverse(qN))
-        qd /= np.linalg.norm(qd)
-        if qd[0] < 0:                     # canonical hemisphere
-            qd = -qd
-        w = max(-1.0, min(1.0, float(qd[0])))
-        angle = 2.0 * math.degrees(math.acos(w))
-        if angle > 180.0:                 # shortest-arc convention
-            angle = 360.0 - angle
-        vec = qd[1:]
-        nv = np.linalg.norm(vec)
-        axis = tuple(float(v) for v in (vec / nv)) if nv > 1e-9 else (0.0, 0.0, 0.0)
-        return (True, {"angle_deg": float(angle), "axis": axis,
-                       "q_delta": tuple(float(v) for v in qd)})
-    except Exception as e:
-        return (False, {"error": f"delta quaternion failed: {e}"})

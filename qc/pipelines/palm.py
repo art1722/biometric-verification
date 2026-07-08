@@ -311,7 +311,7 @@ def run_palm(
                     level="image")
 
             # --- check_palm_angle: graded at PARTICIPANT/BATCH level, not
-            # per-image. v3 measurement is the 5-point plane fit; grading is
+            # per-image. measurement is depth-wise palm-edge / upper-palm tilt; grading is
             # delta-vs-N PLUS the raw +/-45 spec cap, and N itself is graded
             # absolutely (see run_palm_participant / check_palm_pose_delta /
             # check_palm_n_reference).
@@ -320,9 +320,18 @@ def run_palm(
             # angle is returned via `measured_angle` (None if unmeasurable). ---
             if hand_result.ok and hand_result.world_landmarks is not None:
                 from qc.checks.check_palm_angle import calculate_palm_angles
-                aok, ainfo = calculate_palm_angles(hand_result.world_landmarks)
+                # Pass the FILENAME hand (ground truth) so the researcher's
+                # depth-wise method applies the correct L/R roll-sign branch.
+                aok, ainfo = calculate_palm_angles(
+                    hand_result.world_landmarks,
+                    handedness=hand,
+                )
                 if aok:
-                    measured_angle = {"roll": ainfo["roll"], "pitch": ainfo["pitch"]}
+                    measured_angle = {
+                        "roll": ainfo["roll"],
+                        "pitch": ainfo["pitch"],
+                        "normal": ainfo.get("normal"),
+                    }
             add("check_palm_angle", "SKIP",
                 "deferred to participant-level N-relative grading", level="image")
 

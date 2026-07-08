@@ -340,9 +340,12 @@ def main():
                 html_path = os.path.join(out_dir, f"palm_{vid}_{tag}_angle3d.html")
                 if has_hand:
                     try:
+                        aok, ainfo = calculate_palm_angles(
+                            hand_result.world_landmarks, handedness=hand)
                         save_palm_angle_debug_html(
                             hand_result.world_landmarks,
                             html_path,
+                            angle_info=ainfo if aok else None,
                             title=f"{fname} — palm angle 3D debug",
                         )
                         if not args.quiet:
@@ -358,7 +361,7 @@ def main():
                 # One tab per hand/pose in a single combined file (written after
                 # the loop). Precompute the angle so a per-hand failure to
                 # measure becomes a note tab rather than aborting the file.
-                aok, ainfo = calculate_palm_angles(hand_result.world_landmarks)
+                aok, ainfo = calculate_palm_angles(hand_result.world_landmarks, handedness=hand)
                 tab_entries.append({
                     "label": tag.replace("_", " / ") or fname,
                     "world_landmarks": hand_result.world_landmarks,

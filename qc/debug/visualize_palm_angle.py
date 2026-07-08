@@ -7,7 +7,7 @@ What it shows:
   - all 21 MediaPipe world landmarks,
   - hand skeleton,
   - the five v3 palm-plane landmarks: 0, 5, 9, 13, 17,
-  - the fitted least-squares palm plane,
+  - the fitted reference palm plane (visual aid),
   - the oriented palm normal used for roll/pitch,
   - camera/world axes: x right, y down, z toward camera.
 """
@@ -65,10 +65,14 @@ def make_plane_patch(plane_pts: np.ndarray, scale: float = 1.35) -> np.ndarray:
 # This makes +y ("y down") protrude out of the screen toward the viewer.
 # Keep up=-z so x still appears to the right in the initial Plotly view.
 NORMAL_POSITION_CAMERA = dict(
-    eye=dict(x=0.0, y=+2.2, z=0.0),
+    # Almost front-on from +y.
+    # Tiny x/z offsets avoid Plotly choosing the opposite 180° screen orientation
+    # after user orbit/reset.
+    eye=dict(x=0.001, y=+2.2, z=0.001),
     up=dict(x=0.0, y=0.0, z=-1.0),
     center=dict(x=0.0, y=0.0, z=0.0),
 )
+
 
 
 def _subdivide_plane(corners: np.ndarray, n: int = 24):
@@ -200,7 +204,7 @@ def build_palm_angle_figure(
     for a, b in HAND_CONNECTIONS:
         _add_line(fig, pts[a], pts[b], name="hand skeleton", width=4)
 
-    # The five landmarks used by the plane fit.
+    # The landmarks used by the angle/reference geometry.
     fig.add_trace(go.Scatter3d(
         x=plane_pts[:, 0],
         y=plane_pts[:, 1],
@@ -209,7 +213,7 @@ def build_palm_angle_figure(
         text=[str(i) for i in PLANE_LANDMARK_IDXS],
         textposition="bottom center",
         marker=dict(size=8),
-        name="plane-fit landmarks",
+        name="angle-reference landmarks",
     ))
 
     # Palm plane patch -- subdivided so the purple gradient interpolates
@@ -239,7 +243,7 @@ def build_palm_angle_figure(
         showscale=False,
         opacity=0.45,
         flatshading=False,
-        name="least-squares palm plane",
+        name="reference palm plane (visual aid)",
         hoverinfo="skip",
     ))
 
@@ -356,21 +360,9 @@ body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
 .hint { font-size:12px; color:#666; padding:6px 14px; }
 """
 
-__TABS_JS = """
+_TABS_JS = """
 function cloneNormalCamera(){
   return JSON.parse(JSON.stringify(NORMAL_CAMERA));
-}
-
-function cameraRelayoutUpdate(){
-  const c = cloneNormalCamera();
-
-  // Set nested camera fields explicitly.
-  // This avoids Plotly partially preserving the old rotated 'up' vector.
-  return {
-    'scene.camera.eye': c.eye,
-    'scene.camera.up': c.up,
-    'scene.camera.center': c.center
-  };
 }
 
 function getPlotInPanel(panel){
@@ -378,11 +370,24 @@ function getPlotInPanel(panel){
   return panel.querySelector('.js-plotly-plot') || panel.querySelector('.plotly-graph-div');
 }
 
+function cameraRelayoutUpdate(){
+  const c = cloneNormalCamera();
+
+  return {
+    'scene.camera.eye': c.eye,
+    'scene.camera.up': c.up,
+    'scene.camera.center': c.center
+  };
+}
+
 function resetOneCamera(gd){
   if (!window.Plotly || !gd) return;
 
-  return Plotly.relayout(gd, cameraRelayoutUpdate()).then(function(){
-    Plotly.Plots.resize(gd);
+  Plotly.Plots.resize(gd);
+  window.requestAnimationFrame(function(){
+    Plotly.relayout(gd, cameraRelayoutUpdate()).then(function(){
+      Plotly.Plots.resize(gd);
+    });
   });
 }
 
@@ -398,13 +403,11 @@ function showTab(idx){
   if (gd && window.Plotly) {
     Plotly.Plots.resize(gd);
 
-    // If reset was requested while this tab was hidden,
-    // apply reset only after the plot becomes visible.
     if (panel.dataset.needsCameraReset === "1") {
       setTimeout(function(){
         resetOneCamera(gd);
         panel.dataset.needsCameraReset = "0";
-      }, 50);
+      }, 80);
     }
   }
 }
@@ -421,8 +424,6 @@ function resetAllCameras(){
     panel.dataset.needsCameraReset = "1";
   });
 
-  // Reset only the currently visible plot immediately.
-  // Hidden plots are reset when their tab becomes visible.
   const activePanel = document.querySelector('.panel.active');
   const gd = getPlotInPanel(activePanel);
 

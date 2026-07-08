@@ -453,11 +453,11 @@ palm:
     max_abs_roll_deg: 45             # [SPEC]
     max_abs_pitch_deg: 45            # [SPEC]
     check_angle_enabled: true       # [DESIGN] flip TRUE after sign calibration
-    # --- v3 measurement (check_palm_angle.calculate_palm_angles) ---
-    # 5-point least-squares palm PLANE through wrist + the 4 finger MCPs
-    # (0, 5, 9, 13, 17); normal oriented toward the camera (nz >= 0); bounded
-    # decoupled angles (SPEC terms roll/pitch kept -- do NOT rename):
-    #   roll  = atan2(nx, nz)              pitch = atan2(ny, hypot(nx, nz))
+    # --- depth-wise measurement (check_palm_angle.calculate_palm_angles) ---
+    # Spec roll is NOT in-plane rotation. It is side-edge depth tilt: thumb/index
+    # side vs pinky side closer to the sensor. Pitch is wrist side vs upper/finger
+    # side closer to the sensor. Signs are normalized to the spec labels:
+    #   RL negative, RR positive, PU negative, PD positive.
     # --- Grading (run_palm_participant) ---
     #   N : graded ABSOLUTELY -- researchers expect roll ~ 0 AND pitch ~ 0;
     #       tolerance n_reference_max_deg. A FAILed-but-measurable N still
@@ -473,15 +473,13 @@ palm:
     neutral_tol_deg: 10              # [ASSUMPTION] used by the per-image absolute path (check_palm_pose)
     n_reference_max_deg: 15          # [ASSUMPTION] N must read |roll|,|pitch| <= this to be a trusted baseline; calibrate
     off_axis_tol_deg: 45             # [ASSUMPTION] a rotated pose's OTHER axis must stay within +/- this
-    # !!! SIGN CALIBRATION PENDING !!! RL/RR motion is MIRRORED between L and R
-    # hands, so the roll SIGN for a "correct" pose may flip with handedness. The
-    # nominal spec signs are the starting hypothesis in code; if a reference
-    # image measures the opposite sign, override it here, e.g.:
+    # SIGN CALIBRATION NOTE: this implementation normalizes signs to the spec
+    # labels using the filename hand: RL=-, RR=+, PU=-, PD=+. If the production
+    # rig uses a different z/mirroring convention, override specific pose signs
+    # here after checking known-correct reference images, e.g.:
     #   hand_sign_overrides: { R: { RL: 1, RR: -1 } }
-    # Leave empty until calibrated against one known-correct image per (hand,pose).
-    # !!! CALIBRATE ON PALM-SIDE IMAGES ONLY !!! Back-of-hand (dorsal) test
-    # shots physically invert which edge tilts "toward the sensor", so signs
-    # calibrated on them would be WRONG for real palm-vein data.
+    # Calibrate on palm-side images only; dorsal/back-of-hand tests invert the
+    # physical "toward the sensor" relation.
     hand_sign_overrides: {}          # [CONFIRM]
 
 

@@ -103,13 +103,13 @@ def draw_palm_overlay(
         draw_angle_vectors: when True (DEFAULT), draw the angle geometry on
             every pose including N: the palm "up" axis (wrist -> knuckle
             midpoint), the "across" axis (index_mcp -> pinky_mcp), orange rings
-            on the FIVE plane-fit landmarks (PLANE_LANDMARK_IDXS: wrist + the
+            on the FIVE angle-reference landmarks (PLANE_LANDMARK_IDXS: wrist + the
             four finger MCPs -- exactly the points v3's least-squares palm
             plane is fitted through), and the palm NORMAL projected into the
             image as an orange arrow from the plane points' centroid (its 2D
             length grows with how far the palm is tilted away from the camera;
             near-zero tilt is drawn as a small circle labelled "normal ->
-            camera"). Roll/pitch from the plane fit are also added to the
+            camera"). Roll/pitch from the depth-wise angle check are also added to the
             header panel.
         min_strip_width: minimum pixel width for the BELOW check strip. A
             portrait/narrow palm photo would otherwise starve the reason column
@@ -131,7 +131,7 @@ def draw_palm_overlay(
     handedness = getattr(result, "handedness", None)
     hand_score = getattr(result, "handedness_score", None)
 
-    # v3 plane-fit angles: computed here from the WORLD landmarks (when the
+    # v3 angle-reference angles: computed here from the WORLD landmarks (when the
     # HandResult carries them) so the overlay reports/draws EXACTLY what
     # check_palm_angle measures -- one source of truth, no re-derivation.
     angle_info = None
@@ -139,7 +139,8 @@ def draw_palm_overlay(
     if _world_lms is not None:
         try:
             from qc.checks.check_palm_angle import calculate_palm_angles
-            _aok, _ainfo = calculate_palm_angles(_world_lms)
+            _aok, _ainfo = calculate_palm_angles(
+                _world_lms, handedness=getattr(result, "handedness", None))
             if _aok:
                 angle_info = _ainfo
         except Exception:
@@ -175,7 +176,7 @@ def draw_palm_overlay(
     # pose including N. The v3 measurement fits a least-squares PLANE through
     # WRIST(0) + the four finger MCPs (5, 9, 13, 17) and reads roll/pitch from
     # the plane NORMAL. We draw, in PIXEL space (world coords aren't drawable):
-    #   - orange rings on the five plane-fit landmarks,
+    #   - orange rings on the five angle-reference landmarks,
     #   - the projected palm NORMAL as an orange arrow from their centroid
     #     (2D length ~ sin(tilt); a palm facing the camera has a ~zero arrow),
     #   - the legacy "up" / "across" axes, kept as orientation context.
@@ -216,7 +217,7 @@ def draw_palm_overlay(
             _put(img, "up", (mx + 6, my), (60, 255, 255),
                  scale=fs * 0.7, thick=max(1, int(fs)))
 
-            # --- v3 additions: plane-fit landmarks + projected palm normal ---
+            # --- depth-angle landmarks + projected debug normal ---
             _ORANGE = (60, 160, 255)  # BGR
             try:
                 from qc.checks.check_palm_angle import PLANE_LANDMARK_IDXS
@@ -253,7 +254,7 @@ def draw_palm_overlay(
     lines.append((f"landmarks: {len(landmarks) if landmarks else 0}/21", _WHITE))
     if angle_info is not None:
         lines.append((f"roll={angle_info['roll']:+.1f} "
-                      f"pitch={angle_info['pitch']:+.1f} (plane fit)", _WHITE))
+                      f"pitch={angle_info['pitch']:+.1f} (depth tilt)", _WHITE))
     if not getattr(result, "ok", True):
         lines.append((f"detect: {getattr(result, 'message', 'no hand')}", _AMBER))
 
