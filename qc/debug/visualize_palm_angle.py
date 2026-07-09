@@ -3,13 +3,25 @@
 This module is intentionally debug-only. The normal QC pipeline should not need
 Plotly unless the runner is called with --angle-3d.
 
+IMPORTANT (2026-07-09): the palm-angle math now runs on MediaPipe NORMALIZED
+landmarks (HandResult.landmarks_norm, wrist-origin z, smaller z = closer), NOT
+world_landmarks. So this visualizer must be fed the SAME normalized landmarks,
+and it computes/plots everything in that same normalized space -- otherwise the
+plane, the normal arrow, and the roll/pitch title disagree with the CSV that the
+pipeline reports. The caller (run_palm.py) passes landmarks_norm.
+
+The parameter is still named `world_landmarks` for backwards-compat with older
+callers, but any list of objects exposing .x/.y/.z works; correctness requires
+the caller to pass the SAME landmarks the angle CSV was computed from
+(landmarks_norm).
+
 What it shows:
-  - all 21 MediaPipe world landmarks,
+  - all 21 landmarks (normalized space),
   - hand skeleton,
-  - the five v3 palm-plane landmarks: 0, 5, 9, 13, 17,
+  - the five palm-reference landmarks: 0, 5, 9, 13, 17,
   - the fitted reference palm plane (visual aid),
   - the oriented palm normal used for roll/pitch,
-  - camera/world axes: x right, y down, z toward camera.
+  - camera axes: x right, y down, z toward camera (normalized-z convention).
 """
 
 from __future__ import annotations
@@ -32,10 +44,16 @@ HAND_CONNECTIONS = [
 ]
 
 
-def landmarks_to_np(world_landmarks: Any) -> np.ndarray:
-    """Convert MediaPipe world landmarks to an Nx3 float array."""
+def landmarks_to_np(landmarks: Any) -> np.ndarray:
+    """Convert a MediaPipe landmark list to an Nx3 float array.
+
+    Source-agnostic: reads .x/.y/.z, so it accepts either normalized landmarks
+    (what the angle math and this visualizer now use) or world landmarks. The
+    caller decides which; for consistency with the reported CSV, pass the
+    NORMALIZED landmarks.
+    """
     return np.array(
-        [[lm.x, lm.y, lm.z] for lm in world_landmarks],
+        [[lm.x, lm.y, lm.z] for lm in landmarks],
         dtype=np.float64,
     )
 
@@ -152,21 +170,36 @@ def build_palm_angle_figure(
     """Build an interactive Plotly figure for one detected hand.
 
     Args:
-        world_landmarks: MediaPipe HandResult.world_landmarks, length 21.
+        world_landmarks: the landmark list to PLOT. Now expected to be the
+            NORMALIZED landmarks (HandResult.landmarks_norm) so the drawn plane,
+            normal, and roll/pitch title match the pipeline's reported CSV.
+            (Name kept for backwards-compat; any .x/.y/.z list works.)
         angle_info: optional dict from calculate_palm_angles(). If omitted, this
-            function calculates it from world_landmarks.
+            function recomputes it FROM THE SAME landmarks passed here, so the
+            drawing and the numbers always agree. Pass the pipeline's angle_info
+            when you have it to guarantee identical numbers to the CSV.
         title: title shown at the top of the HTML figure.
 
     Returns:
         plotly.graph_objects.Figure.
 
     Raises:
-        ValueError when angle calculation fails or world landmarks are missing.
+        ValueError when angle calculation fails or landmarks are missing.
+
+    Note on normalized space: MediaPipe normalized z has a much smaller range
+    than x/y (it is a relative depth), so with aspectmode="data" the palm plane
+    reads as a thin sheet -- that is faithful, not a bug. The tilt is still
+    visible via the plane's depth-gradient shading and the normal cone.
     """
     if world_landmarks is None:
-        raise ValueError("no world landmarks available")
+        raise ValueError("no landmarks available")
 
     if angle_info is None:
+        # Recompute from the SAME landmarks we are about to plot, so the arrow
+        # and title can never disagree with the drawing. No handedness is passed
+        # here (debug view): the roll MAGNITUDE and the geometry are correct; the
+        # roll SIGN shown may be the left-hand-style sign. For an exact CSV match
+        # (correct sign), pass the pipeline's angle_info in.
         ok, angle_info = calculate_palm_angles(world_landmarks)
         if not ok:
             raise ValueError(angle_info.get("error", "could not compute palm angle"))

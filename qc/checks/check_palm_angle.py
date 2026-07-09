@@ -111,45 +111,66 @@ def calculate_palm_angles(world_landmarks: Any, *, handedness: Any = None):
         return v / norm
 
     try:
-        wrist = _pt(_WRIST)
-        thumb_side = np.mean([_pt(1), _pt(_INDEX_MCP)], axis=0)
-        pinky_side = np.mean([_pt(_RING_MCP), _pt(_PINKY_MCP)], axis=0)
-        upper_palm = np.mean(
-            [_pt(_INDEX_MCP), _pt(_MIDDLE_MCP), _pt(_RING_MCP), _pt(_PINKY_MCP)],
-            axis=0,
-        )
+        # -------------------------------------------------------------------
+        # MEASUREMENT CORE (researcher's live-camera method, verified on the
+        # real rig images in tmp/palm_pitch_roll_report.csv).
+        #
+        # Ported verbatim from tmp/hand_angle_estimation.py::calculate_orientation
+        # so the pipeline reports the SAME numbers the researcher validated. Two
+        # deliberate points to be aware of, both explained inline:
+        #   (1) Roll follows the researcher's raw convention (NO extra flip):
+        #       on the real rig CSV this reads RL POSITIVE, RR NEGATIVE, and the
+        #       module's _POSE_SIGN has been updated to {"RL":+1,"RR":-1} to
+        #       match. This is the OPPOSITE roll polarity to the old world-
+        #       landmark code. [CONFIRM final sign-off: อ.เหมียว.]
+        #   (2) Feed this from NORMALIZED landmarks (HandResult.landmarks_norm),
+        #       NOT world_landmarks. The researcher's z-depth reasoning assumes
+        #       MediaPipe's normalized z (wrist-origin, smaller=closer). world_
+        #       landmarks use a different origin/scale and gave the wrong result.
+        #       The caller in palm.py must pass landmarks_norm now.
+        #
+        # This function reads .x/.y/.z the same way regardless of source, so it
+        # is source-agnostic; correctness depends on the CALLER passing the
+        # normalized list.
+        # -------------------------------------------------------------------
+        p0 = _pt(_WRIST)         # wrist
+        p5 = _pt(_INDEX_MCP)     # index MCP  (thumb/index side)
+        p9 = _pt(_MIDDLE_MCP)    # middle MCP (central forward axis)
+        p13 = _pt(_RING_MCP)     # ring MCP
+        p17 = _pt(_PINKY_MCP)    # pinky MCP
 
-        # Across-palm vector: thumb/index edge -> pinky edge.
+        # ---- Pitch: wrist -> middle-MCP forward axis (researcher's exact form)
+        # atan2(-forward_z, |forward_xy|): smaller z = closer, so a wrist that is
+        # closer than the fingers (PU) yields NEGATIVE pitch; fingers closer (PD)
+        # yields POSITIVE. Matches _POSE_SIGN PU=-1, PD=+1 with no extra flip.
+        forward = p9 - p0
+        fwd_xy = math.hypot(float(forward[0]), float(forward[1]))
+        if fwd_xy < 1e-9:
+            return (False, {"error": "degenerate palm geometry (zero-length wrist-to-middle axis)"})
+        pitch = math.degrees(math.atan2(-float(forward[2]), fwd_xy))
+
+        # ---- Roll: thumb/index side (p5) vs pinky side mean(p13,p17), depth-wise
+        thumb_side = p5
+        pinky_side = np.mean([p13, p17], axis=0)
         side_vec = pinky_side - thumb_side
         side_xy = math.hypot(float(side_vec[0]), float(side_vec[1]))
         if side_xy < 1e-9:
             return (False, {"error": "degenerate palm geometry (zero-width palm side axis)"})
 
-        # Up-palm vector: wrist side -> upper/finger side.
-        up_vec = upper_palm - wrist
-        up_xy = math.hypot(float(up_vec[0]), float(up_vec[1]))
-        if up_xy < 1e-9:
-            return (False, {"error": "degenerate palm geometry (zero-length wrist-to-upper-palm axis)"})
-
-        # Raw side depth: negative means pinky side has smaller z => closer.
-        raw_side_depth_deg = math.degrees(math.atan2(float(side_vec[2]), side_xy))
-
-        # Spec-normalized roll sign. With smaller z = closer:
-        #   Left:  pinky closer -> raw negative -> RL negative.
-        #   Right: thumb closer  -> raw positive -> RL negative, so flip sign.
+        # Researcher's raw roll: dz<0 (pinky closer) -> negative for LEFT hand;
+        # RIGHT hand negates. This is the researcher's own branch.
+        raw_roll_deg = math.degrees(math.atan2(float(side_vec[2]), side_xy))
         hs = str(handedness or "").strip().upper()
         is_right = hs in ("R", "RIGHT")
-        roll = -raw_side_depth_deg if is_right else raw_side_depth_deg
+        # Researcher's exact roll convention (validated on the rig CSV):
+        #   RL reads POSITIVE, RR reads NEGATIVE, consistent across L and R.
+        # _POSE_SIGN is updated to {"RL":+1,"RR":-1} to match. (Option A.)
+        roll = -raw_roll_deg if is_right else raw_roll_deg
 
-        # Raw vertical depth: positive means upper palm has larger z, so wrist is
-        # closer. Spec PU should be negative, hence the leading minus.
-        raw_up_depth_deg = math.degrees(math.atan2(float(up_vec[2]), up_xy))
-        pitch = -raw_up_depth_deg
-
-        # A visual/debug normal only. The grading uses the explicit depth-axis
-        # angles above, not this normal's x/y projection.
+        # Debug-only normal (unchanged contract). Built from the same two axes so
+        # overlays keep drawing something sensible; grading never uses its x/y.
+        up_axis = _unit(forward, "up axis")
         side_axis = _unit(side_vec, "side axis")
-        up_axis = _unit(up_vec, "up axis")
         normal = np.cross(side_axis, up_axis)
         normal = _unit(normal, "debug normal")
 
@@ -157,8 +178,8 @@ def calculate_palm_angles(world_landmarks: Any, *, handedness: Any = None):
             "roll": float(roll),
             "pitch": float(pitch),
             "normal": (float(normal[0]), float(normal[1]), float(normal[2])),
-            "raw_side_depth_deg": float(raw_side_depth_deg),
-            "raw_up_depth_deg": float(raw_up_depth_deg),
+            "raw_side_depth_deg": float(raw_roll_deg),
+            "raw_up_depth_deg": float(-forward[2]),
             "handedness_used": "R" if is_right else "L_or_default",
         })
 
@@ -264,7 +285,13 @@ _POSE_AXIS = {"N": None, "RL": "roll", "RR": "roll", "PU": "pitch", "PD": "pitch
 # depth signs by filename hand: RL=-, RR=+, PU=-, PD=+. If the production rig's
 # z/mirroring convention is shown to invert a pose, override it from config via
 # palm.angle.hand_sign_overrides.
-_POSE_SIGN = {"RL": -1, "RR": +1, "PU": -1, "PD": +1}
+# CALIBRATED 2026-07-09 to the researcher's live-camera method, verified against
+# tmp/palm_pitch_roll_report.csv on real 099 rig images:
+#   RL -> POSITIVE roll, RR -> NEGATIVE roll  (both L and R hands, consistently)
+#   PU -> NEGATIVE pitch, PD -> POSITIVE pitch
+# Roll signs are FLIPPED from the previous world-landmark convention (which was
+# {RL:-1, RR:+1}); pitch is unchanged. [CONFIRM final sign-off: อ.เหมียว]
+_POSE_SIGN = {"RL": +1, "RR": -1, "PU": -1, "PD": +1}
 
 
 def _band_for_pose(
@@ -575,4 +602,3 @@ def calculate_palm_axis_tilts(world_landmarks):
         return (True, {"across_tilt_raw": tilt(side_vec), "up_tilt_raw": tilt(up_vec)})
     except Exception as e:
         return (False, {"error": f"axis tilt failed: {e}"})
-

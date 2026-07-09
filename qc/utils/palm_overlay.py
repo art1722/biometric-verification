@@ -83,6 +83,7 @@ def draw_palm_overlay(
     panel_below: bool = True,
     draw_angle_vectors: bool = True,
     min_strip_width: int = 900,
+    hand_override: Optional[str] = None,
 ):
     """Annotate one image with a HandResult and optionally save it.
 
@@ -101,15 +102,15 @@ def draw_palm_overlay(
             palm. When False, the panel is drawn ON TOP of the image (the old
             behaviour; the runner's --overlay-on-image flag sets this).
         draw_angle_vectors: when True (DEFAULT), draw the angle geometry on
-            every pose including N: the palm "up" axis (wrist -> knuckle
-            midpoint), the "across" axis (index_mcp -> pinky_mcp), orange rings
-            on the FIVE angle-reference landmarks (PLANE_LANDMARK_IDXS: wrist + the
-            four finger MCPs -- exactly the points v3's least-squares palm
-            plane is fitted through), and the palm NORMAL projected into the
-            image as an orange arrow from the plane points' centroid (its 2D
-            length grows with how far the palm is tilted away from the camera;
-            near-zero tilt is drawn as a small circle labelled "normal ->
-            camera"). Roll/pitch from the depth-wise angle check are also added to the
+            every pose including N, mirroring calculate_palm_angles exactly: the
+            "forward" axis (wrist(0) -> middle_mcp(9), the pitch axis) in yellow,
+            the "side" axis (index_mcp(5) -> mean(ring_mcp13, pinky_mcp17), the
+            roll axis) in magenta, orange rings on the FIVE angle-reference
+            landmarks (PLANE_LANDMARK_IDXS: wrist + the four finger MCPs), and the
+            palm NORMAL projected into the image as an orange arrow from the plane
+            points' centroid (its 2D length grows with how far the palm is tilted
+            away from the camera; near-zero tilt is drawn as a small circle
+            labelled "normal -> camera"). Roll/pitch from the depth-wise angle check are also added to the
             header panel.
         min_strip_width: minimum pixel width for the BELOW check strip. A
             portrait/narrow palm photo would otherwise starve the reason column
@@ -134,13 +135,19 @@ def draw_palm_overlay(
     # v3 angle-reference angles: computed here from the WORLD landmarks (when the
     # HandResult carries them) so the overlay reports/draws EXACTLY what
     # check_palm_angle measures -- one source of truth, no re-derivation.
+    # Use NORMALIZED landmarks (wrist-origin z), the SAME space the pipeline CSV
+    # is computed from; world_landmarks give a different (wrong) angle here.
     angle_info = None
-    _world_lms = getattr(result, "world_landmarks", None)
-    if _world_lms is not None:
+    _norm_lms = getattr(result, "landmarks_norm", None)
+    if _norm_lms is not None:
         try:
             from qc.checks.check_palm_angle import calculate_palm_angles
+            # Prefer the FILENAME hand (hand_override, e.g. "L"/"R") so the roll
+            # SIGN matches the pipeline CSV exactly; fall back to MediaPipe's
+            # mirrored handedness label only when no override is given.
+            _hand_for_sign = hand_override or getattr(result, "handedness", None)
             _aok, _ainfo = calculate_palm_angles(
-                _world_lms, handedness=getattr(result, "handedness", None))
+                _norm_lms, handedness=_hand_for_sign)
             if _aok:
                 angle_info = _ainfo
         except Exception:
@@ -183,18 +190,25 @@ def draw_palm_overlay(
     if draw_angle_vectors and landmarks and len(landmarks) > 17:
         try:
             import math as _math
-            wx, wy, _ = landmarks[0]      # wrist
-            ix, iy, _ = landmarks[5]      # index_mcp
-            kx, ky, _ = landmarks[17]     # pinky_mcp
-            mx, my = (ix + kx) // 2, (iy + ky) // 2   # knuckle midpoint
+            # Geometry MUST mirror calculate_palm_angles:
+            #   forward = middle_mcp(9) - wrist(0)          -> pitch axis
+            #   side    = mean(ring_mcp13, pinky_mcp17) - index_mcp(5)  -> roll axis
+            wx, wy, _ = landmarks[0]      # wrist  (forward tail)
+            m9x, m9y, _ = landmarks[9]    # middle_mcp (forward head)
+
+            ix, iy, _ = landmarks[5]      # index_mcp = thumb/index side (side tail)
+            r13x, r13y, _ = landmarks[13]  # ring_mcp
+            p17x, p17y, _ = landmarks[17]  # pinky_mcp
+            # pinky side = mean(ring_mcp, pinky_mcp) -- matches the angle code.
+            px, py = (r13x + p17x) // 2, (r13y + p17y) // 2  # side head
             vec_thick = max(2, bone_thick + 1)
 
             # tipLength in cv2.arrowedLine is a FRACTION OF THE LINE LENGTH, so
-            # a short vector (the "across" knuckle line) would get a tiny,
-            # near-invisible head while a long one (the "up" axis) looks fine.
-            # Fix: target a FIXED arrowhead size in pixels (scaled to the image)
-            # and convert to the per-line fraction = head_px / line_length. This
-            # gives both arrows an equally visible head regardless of length.
+            # a short vector (the "side" line) would get a tiny, near-invisible
+            # head while a long one (the "forward" axis) looks fine. Fix: target
+            # a FIXED arrowhead size in pixels (scaled to the image) and convert
+            # to the per-line fraction = head_px / line_length. This gives both
+            # arrows an equally visible head regardless of length.
             head_px = max(18.0, min(w, h) * 0.025)
 
             def _tip_frac(x0, y0, x1, y1):
@@ -203,18 +217,18 @@ def draw_palm_overlay(
                     return 0.3  # degenerate; let OpenCV draw something
                 return max(0.05, min(0.6, head_px / length))
 
-            # "across" axis (knuckle line, index_mcp -> pinky_mcp) in magenta.
-            cv2.arrowedLine(img, (ix, iy), (kx, ky), (255, 90, 220),
+            # "side" axis (roll): index_mcp(5) -> mean(ring13, pinky17) in magenta.
+            cv2.arrowedLine(img, (ix, iy), (px, py), (255, 90, 220),
                             vec_thick, cv2.LINE_AA,
-                            tipLength=_tip_frac(ix, iy, kx, ky))
-            # "up" axis (wrist -> knuckle midpoint) in yellow.
-            cv2.arrowedLine(img, (wx, wy), (mx, my), (60, 255, 255),
+                            tipLength=_tip_frac(ix, iy, px, py))
+            # "forward" axis (pitch): wrist(0) -> middle_mcp(9) in yellow.
+            cv2.arrowedLine(img, (wx, wy), (m9x, m9y), (60, 255, 255),
                             vec_thick, cv2.LINE_AA,
-                            tipLength=_tip_frac(wx, wy, mx, my))
+                            tipLength=_tip_frac(wx, wy, m9x, m9y))
             # Small labels at the arrow heads.
-            _put(img, "across", (kx + 6, ky), (255, 90, 220),
+            _put(img, "side", (px + 6, py), (255, 90, 220),
                  scale=fs * 0.7, thick=max(1, int(fs)))
-            _put(img, "up", (mx + 6, my), (60, 255, 255),
+            _put(img, "forward", (m9x + 6, m9y), (60, 255, 255),
                  scale=fs * 0.7, thick=max(1, int(fs)))
 
             # --- depth-angle landmarks + projected debug normal ---

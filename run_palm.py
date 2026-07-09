@@ -329,21 +329,27 @@ def main():
                 ov_path = os.path.join(out_dir, f"palm_{vid}_{tag}_overlay.jpg")
                 draw_palm_overlay(path, hand_result,
                                   checks=check_status, out_path=ov_path,
-                                  panel_below=not args.overlay_on_image)
+                                  panel_below=not args.overlay_on_image,
+                                  hand_override=hand)
                 if not args.quiet:
                     print(f"wrote overlay image to {ov_path}")
 
+            # Angle math + this 3D debug now run on NORMALIZED landmarks
+            # (landmarks_norm), matching the pipeline's reported CSV. world_
+            # landmarks are no longer used for the angle.
             has_hand = (getattr(hand_result, "ok", False)
-                        and getattr(hand_result, "world_landmarks", None) is not None)
+                        and getattr(hand_result, "landmarks_norm", None) is not None)
 
             if args.angle_3d:
                 html_path = os.path.join(out_dir, f"palm_{vid}_{tag}_angle3d.html")
                 if has_hand:
                     try:
+                        # Pass filename handedness so the drawn roll SIGN matches
+                        # the CSV exactly; plot the SAME normalized landmarks.
                         aok, ainfo = calculate_palm_angles(
-                            hand_result.world_landmarks, handedness=hand)
+                            hand_result.landmarks_norm, handedness=hand)
                         save_palm_angle_debug_html(
-                            hand_result.world_landmarks,
+                            hand_result.landmarks_norm,
                             html_path,
                             angle_info=ainfo if aok else None,
                             title=f"{fname} — palm angle 3D debug",
@@ -361,10 +367,12 @@ def main():
                 # One tab per hand/pose in a single combined file (written after
                 # the loop). Precompute the angle so a per-hand failure to
                 # measure becomes a note tab rather than aborting the file.
-                aok, ainfo = calculate_palm_angles(hand_result.world_landmarks, handedness=hand)
+                # NORMALIZED landmarks + filename handedness -> matches the CSV.
+                aok, ainfo = calculate_palm_angles(
+                    hand_result.landmarks_norm, handedness=hand)
                 tab_entries.append({
                     "label": tag.replace("_", " / ") or fname,
-                    "world_landmarks": hand_result.world_landmarks,
+                    "world_landmarks": hand_result.landmarks_norm,
                     "angle_info": ainfo if aok else None,
                     "title": f"{fname} — palm angle 3D debug",
                 })

@@ -318,12 +318,16 @@ def run_palm(
             # Here we only (a) emit a deferred SKIP row, and (b) capture the raw
             # measured angle so the batch layer can compute the N-delta. The raw
             # angle is returned via `measured_angle` (None if unmeasurable). ---
-            if hand_result.ok and hand_result.world_landmarks is not None:
+            if hand_result.ok and hand_result.landmarks_norm is not None:
                 from qc.checks.check_palm_angle import calculate_palm_angles
                 # Pass the FILENAME hand (ground truth) so the researcher's
                 # depth-wise method applies the correct L/R roll-sign branch.
+                # NOTE: feed NORMALIZED landmarks (wrist-origin z), NOT
+                # world_landmarks -- the researcher's method was validated on
+                # normalized z (see palm_pitch_roll_report.csv). world_landmarks
+                # gave the wrong angles.
                 aok, ainfo = calculate_palm_angles(
-                    hand_result.world_landmarks,
+                    hand_result.landmarks_norm,
                     handedness=hand,
                 )
                 if aok:

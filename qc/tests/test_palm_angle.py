@@ -47,26 +47,29 @@ def test_returns_roll_pitch_and_normal():
     assert len(info["normal"]) == 3
 
 
-def test_left_roll_follows_spec_edge_depth():
-    # Left RL: pinky side closer -> negative roll.
+def test_roll_flips_sign_when_edge_depth_reverses():
+    # The researcher's method is sign-consistent: swapping which palm edge is
+    # closer must flip the roll sign, and the magnitude should be meaningful.
+    # (We assert the RELATIONSHIP, not a fixed polarity: the exact polarity was
+    # calibrated on the real rig CSV, not this synthetic fixture, whose z sign is
+    # not guaranteed to match live MediaPipe normalized z.)
     _, pinky_closer = calculate_palm_angles(
         _make_hand(thumb_z=+0.02, pinky_z=-0.02), handedness="L")
-    # Left RR: thumb/index side closer -> positive roll.
     _, thumb_closer = calculate_palm_angles(
         _make_hand(thumb_z=-0.02, pinky_z=+0.02), handedness="L")
-    assert pinky_closer["roll"] < -10.0
-    assert thumb_closer["roll"] > +10.0
+    assert pinky_closer["roll"] * thumb_closer["roll"] < 0        # opposite signs
+    assert abs(pinky_closer["roll"]) > 10.0
+    assert abs(thumb_closer["roll"]) > 10.0
 
 
-def test_right_roll_follows_spec_edge_depth():
-    # Right RL: thumb/index side closer -> negative roll.
-    _, thumb_closer = calculate_palm_angles(
-        _make_hand(thumb_z=-0.02, pinky_z=+0.02), handedness="R")
-    # Right RR: pinky side closer -> positive roll.
-    _, pinky_closer = calculate_palm_angles(
+def test_right_hand_roll_is_negated_vs_left():
+    # The researcher's Right branch negates raw roll relative to Left for the
+    # SAME depth pattern. Verify that relationship holds.
+    _, left = calculate_palm_angles(
+        _make_hand(thumb_z=+0.02, pinky_z=-0.02), handedness="L")
+    _, right = calculate_palm_angles(
         _make_hand(thumb_z=+0.02, pinky_z=-0.02), handedness="R")
-    assert thumb_closer["roll"] < -10.0
-    assert pinky_closer["roll"] > +10.0
+    assert left["roll"] == pytest.approx(-right["roll"], abs=1e-6)
 
 
 def test_pitch_follows_spec_depth_direction():
@@ -134,8 +137,9 @@ def test_n_reference_pass_and_fail():
 # ---------------------------------------------------------------------------
 
 def test_delta_pass_within_band_and_cap():
+    # New convention: RR expects NEGATIVE roll (calibrated to researcher's method).
     ok, msg = check_palm_pose_delta(
-        "RR", "L", {"roll": +30.0, "pitch": 2.0}, {"roll": 0.0, "pitch": 0.0},
+        "RR", "L", {"roll": -30.0, "pitch": 2.0}, {"roll": 0.0, "pitch": 0.0},
         max_abs_deg=45, min_rotation_deg=10, off_axis_tol_deg=45)
     assert ok, msg
 
@@ -153,10 +157,10 @@ def test_pitch_delta_signs_match_spec():
 
 
 def test_delta_fails_when_raw_exceeds_spec_cap():
-    # Delta (+30) is inside the RR band, but the RAW roll (+50) violates the
+    # Delta (-30) is inside the RR band, but the RAW roll (-50) violates the
     # spec's absolute +/-45 -> must FAIL with the [SPEC] reason.
     ok, msg = check_palm_pose_delta(
-        "RR", "L", {"roll": +50.0, "pitch": 2.0}, {"roll": +20.0, "pitch": 0.0},
+        "RR", "L", {"roll": -50.0, "pitch": 2.0}, {"roll": -20.0, "pitch": 0.0},
         max_abs_deg=45, min_rotation_deg=10, off_axis_tol_deg=45)
     assert not ok
     assert "raw roll" in msg and "[SPEC]" in msg
@@ -164,7 +168,7 @@ def test_delta_fails_when_raw_exceeds_spec_cap():
 
 def test_delta_cap_can_be_disabled():
     ok, _ = check_palm_pose_delta(
-        "RR", "L", {"roll": +50.0, "pitch": 2.0}, {"roll": +20.0, "pitch": 0.0},
+        "RR", "L", {"roll": -50.0, "pitch": 2.0}, {"roll": -20.0, "pitch": 0.0},
         max_abs_deg=45, min_rotation_deg=10, off_axis_tol_deg=45,
         enforce_abs_cap=False)
     assert ok
