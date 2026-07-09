@@ -175,6 +175,12 @@ def run_palm(
         # Empty until calibrated against known-correct reference images. [CONFIRM]
         sign_overrides = angle_cfg.get("hand_sign_overrides", {}) or None
 
+        # Handedness check: does the detected hand match the filename hand?
+        hd_cfg = palm_cfg.get("handedness", {})
+        handedness_enabled = hd_cfg.get("enabled", True)
+        handedness_relation = hd_cfg.get("expected_relation", "same")
+        handedness_min_conf = hd_cfg.get("min_confidence", 0.0)
+
         models_cfg = config.get("models", {})
         hl_cfg = models_cfg.get("hand_landmarker", {})
         hands_cfg = models_cfg.get("hands", {})
@@ -214,6 +220,34 @@ def run_palm(
                 msg = hand_result.message or "No hand detected"
                 status = multi_policy if msg.startswith("Multiple hands") else "FAIL"
                 add("check_palm_present", status, msg, level="image")
+
+            # --- check_palm_handedness: does the detected hand match the
+            # filename hand (L/R)? Catches wrong-hand submissions. Runs on the
+            # NEUTRAL (N) pose ONLY -- MediaPipe's left/right label is unreliable
+            # on tilted/rotated palm poses (same hand flips label across poses).
+            # A matching label PASSes; a mismatch FAILs only when MediaPipe is
+            # confident (>= min_confidence), else SKIP. ---
+            if not handedness_enabled:
+                add("check_palm_handedness", "SKIP",
+                    "palm.handedness.enabled=false", level="image")
+            elif pose is not None and pose != "N":
+                add("check_palm_handedness", "SKIP",
+                    f"pose={pose} not graded (handedness checked on N only; "
+                    f"MediaPipe label unreliable on tilted poses)", level="image")
+            elif hand_result.ok:
+                from qc.checks.check_palm_handedness import check_palm_handedness
+                result, reason = check_palm_handedness(
+                    hand_result.handedness, hand,
+                    handedness_score=hand_result.handedness_score,
+                    expected_relation=handedness_relation,
+                    min_confidence=handedness_min_conf)
+                # result: True->PASS, False->FAIL, None->SKIP (no label /
+                # unknown filename hand / low-confidence mismatch).
+                status = "SKIP" if result is None else ("PASS" if result else "FAIL")
+                add("check_palm_handedness", status, reason, level="image")
+            else:
+                add("check_palm_handedness", "SKIP",
+                    "no single hand (see check_palm_present)", level="image")
 
             # --- check_palm_size: hand BBOX >= 200x200 (the real spec size).
             # Only meaningful when a single hand was found; otherwise the bbox is
@@ -342,11 +376,11 @@ def run_palm(
             # Model bundle missing -- don't crash the run. The metadata rows
             # already passed; mark the hand checks SKIP so the gap is explicit.
             logger.warning("PALM | hand model unavailable, hand checks skipped: %s", e)
-            for cname in ("check_palm_present", "check_palm_size", "check_palm_brightness", "check_palm_spread", "check_palm_fully", "check_palm_angle"):
+            for cname in ("check_palm_present", "check_palm_handedness", "check_palm_size", "check_palm_brightness", "check_palm_spread", "check_palm_fully", "check_palm_angle"):
                 add(cname, "SKIP", "hand model bundle unavailable", level="image")
         except Exception as e:
             logger.warning("PALM | hand detection error, hand checks skipped: %s", e)
-            for cname in ("check_palm_present", "check_palm_size", "check_palm_brightness", "check_palm_spread", "check_palm_fully", "check_palm_angle"):
+            for cname in ("check_palm_present", "check_palm_handedness", "check_palm_size", "check_palm_brightness", "check_palm_spread", "check_palm_fully", "check_palm_angle"):
                 add(cname, "SKIP", f"hand detection error: {e}", level="image")
 
     # timeline is [] -- a still has no per-frame timeline.

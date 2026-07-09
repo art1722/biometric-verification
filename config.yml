@@ -482,6 +482,24 @@ palm:
     # physical "toward the sensor" relation.
     hand_sign_overrides: {}          # [CONFIRM]
 
+  handedness:
+    # Does the detected hand match the filename hand (L/R)? Catches wrong-hand
+    # submissions (e.g. a right hand saved as ..._palm_L_...).
+    # Runs on the NEUTRAL (N) pose ONLY -- MediaPipe's left/right label is
+    # unreliable on tilted/rotated palm poses (the same physical hand can flip
+    # label between N and a pitch/roll pose).
+    enabled: true                    # [DESIGN]
+    # Relation between the filename hand and MediaPipe's label for a CORRECT file:
+    #   "same"     -> L expects "Left",  R expects "Right"  (099 pipeline; DEFAULT)
+    #   "opposite" -> L expects "Right", R expects "Left"   (if a rig mirrors)
+    # Confirmed 2026-07-09 on 099 N pose (099_palm_L_N -> MediaPipe "Left").
+    expected_relation: "same"        # [CONFIRM per rig]
+    # A MATCHING label always PASSes. A MISMATCH only FAILs when MediaPipe is at
+    # least this confident; a lower-confidence mismatch SKIPs (MediaPipe
+    # handedness is flaky on palm poses, so an unsure disagreement should not
+    # fail a possibly-correct file).
+    min_confidence: 0.7              # [ASSUMPTION] mismatch FAIL threshold; tune on real scores
+
 
 walk:
   extension: ".mp4"                  # [SPEC]
