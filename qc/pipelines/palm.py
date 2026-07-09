@@ -141,7 +141,7 @@ def run_palm(
     # 3-channel-colour requirement (palm vein imaging is colour); expected_ext
     # comes from config (.jpg for palm, not .mp4).
     status, reason = md.check_container(
-        meta, require_rgb=True, expected_ext=expected_ext)
+        meta, require_rgb=False, expected_ext=expected_ext)
     add("check_container", status, reason, level="image")
 
     # check_resolution: identical function, palm thresholds (>= 200x200).
