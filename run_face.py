@@ -35,11 +35,102 @@ from qc.utils.report import (
 from collections import Counter, defaultdict
 
 
+FACE_RGB_RE = re.compile(r"^(?P<vid>\d+)_face_rgb\.mp4$", re.IGNORECASE)
+
+# Recursive search depth cap (see run_palm.py): levels below the given folder to
+# descend, so an accidental run high in the tree can't walk forever.
+MAX_SEARCH_DEPTH = 5
+
+
+def find_face_rgb_files(root, *, vid=None, max_depth=MAX_SEARCH_DEPTH):
+    """Recursively find NNN_face_rgb.mp4 files under `root`, up to max_depth
+    levels. If vid is given, keep only that participant's file.
+
+    Returns a sorted list of matching paths (by basename, case-insensitive).
+    """
+    root = os.path.abspath(root)
+    base_depth = root.rstrip(os.sep).count(os.sep)
+    found = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        depth = dirpath.rstrip(os.sep).count(os.sep) - base_depth
+        if depth >= max_depth:
+            dirnames[:] = []
+        for name in filenames:
+            m = FACE_RGB_RE.match(name)
+            if not m:
+                continue
+            if vid is not None and m.group("vid") != vid:
+                continue
+            key = name.lower()
+            if key not in found:
+                found[key] = os.path.join(dirpath, name)
+    return [found[k] for k in sorted(found)]
+
+
+def resolve_face_video(inputs, explicit_id):
+    """Resolve the positional inputs to ONE face_rgb video path + vid.
+
+    Accepted shapes (folder searches are RECURSIVE, up to MAX_SEARCH_DEPTH):
+      1. `<folder> <id>` -> recursively find <id>_face_rgb.mp4 under <folder>.
+      2. `<folder>`      -> recursively find ALL *_face_rgb.mp4 under <folder>;
+                            exactly one participant expected (else pass --id).
+      3. `<path.mp4>`    -> use the file directly (original behaviour).
+
+    Returns (video_path, vid). Exits with a helpful message on ambiguity/none.
+    """
+    # form 1: <folder> <id>
+    if (len(inputs) == 2 and os.path.isdir(inputs[0])
+            and re.fullmatch(r"\d+", inputs[1])):
+        folder, vid = inputs[0], (explicit_id or inputs[1])
+        matches = find_face_rgb_files(folder, vid=vid)
+        if not matches:
+            sys.exit(f"no {vid}_face_rgb.mp4 found under {folder} "
+                     f"(searched up to {MAX_SEARCH_DEPTH} levels deep)")
+        if len(matches) > 1:
+            sys.exit(f"multiple {vid}_face_rgb.mp4 found under {folder}:\n  "
+                     + "\n  ".join(matches))
+        return matches[0], vid
+
+    # form 2: single folder, no id
+    if len(inputs) == 1 and os.path.isdir(inputs[0]):
+        folder = inputs[0]
+        matches = find_face_rgb_files(folder, vid=explicit_id)
+        if not matches:
+            sys.exit(f"no *_face_rgb.mp4 found under {folder} "
+                     f"(searched up to {MAX_SEARCH_DEPTH} levels deep)")
+        ids = {FACE_RGB_RE.match(os.path.basename(p)).group("vid") for p in matches}
+        if explicit_id:
+            vid = explicit_id
+        elif len(ids) == 1:
+            vid = next(iter(ids))
+        else:
+            sys.exit(
+                f"multiple participant face videos found under {folder}: "
+                f"{sorted(ids)}\nThis runner processes ONE participant. "
+                "Pass `<folder> <id>` or --id.")
+        vid_matches = [p for p in matches
+                       if FACE_RGB_RE.match(os.path.basename(p)).group("vid") == vid]
+        return vid_matches[0], vid
+
+    # form 3: explicit path (original behaviour)
+    if len(inputs) == 1:
+        path = inputs[0]
+        vid = explicit_id or parse_volunteer_id(path)
+        return path, vid
+
+    sys.exit("expected `<folder> <id>`, `<folder>`, or a path to "
+             "NNN_face_rgb.mp4")
+
+
 def parse_args():
     ap = argparse.ArgumentParser(
         description="Parse arguments for running python file run_face.py"
     )
-    ap.add_argument("video", help="path to a NNN_face_rgb.mp4")
+    ap.add_argument("inputs", nargs="+",
+                    help="EITHER `<folder> <id>` (e.g. `data 096`), OR a folder "
+                         "to search (e.g. `data/096`), OR a path to a "
+                         "NNN_face_rgb.mp4. Folder searches are recursive "
+                         f"(up to {MAX_SEARCH_DEPTH} levels).")
     ap.add_argument("--id", default=None, help="volunteer id (else parsed from filename)")
     ap.add_argument("--config", default="config.yml")
     ap.add_argument("--sample-fps", type=float, default=None,
@@ -250,6 +341,12 @@ def print_results(rows, timeline, args_csv=None):
 def main():
     args = parse_args()
 
+    # Resolve `<folder> <id>` / `<folder>` / `<path.mp4>` -> one video + vid.
+    # Recursive folder search (up to MAX_SEARCH_DEPTH) mirrors run_palm.py.
+    args.video, resolved_vid = resolve_face_video(args.inputs, args.id)
+    if args.id is None:
+        args.id = resolved_vid
+
     if not os.path.exists(args.video):
         sys.exit(f"video not found: {args.video}")
     if not os.path.exists(args.config):
@@ -259,6 +356,7 @@ def main():
         config = yaml.safe_load(f)
 
     vid = args.id or parse_volunteer_id(args.video)
+
 
     if vid is None:
         sys.exit(

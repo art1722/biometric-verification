@@ -268,13 +268,14 @@ def check_palm_angle(
 # direction (for RL the palm normal sweeps toward the volunteer's left), so
 # the measured roll sign is expected to be IDENTICAL for L and R hands under
 # one capture geometry; what flips it is IMAGE MIRRORING, not handedness.
-# CALIBRATED 2026-07-07 on a real LEFT-hand, palm-side, MIRRORED front-camera
-# set (see _POSE_SIGN below). Still open before full sign-off (อ.เหมียว):
-#   (a) verify the RIGHT hand reproduces the same signs (prediction: R/RL
-#       should ALSO measure a NEGATIVE d_roll under mirrored capture),
+# CALIBRATED 2026-07-09 to the researcher's method on real 099 rig images (see
+# _POSE_SIGN below). Grading is now ABSOLUTE per-image raw roll/pitch against the
+# pose band (no N baseline, no delta, PASS/FAIL only). Still open before full
+# sign-off (อ.เหมียว):
+#   (a) verify the RIGHT hand reproduces the same signs on more participants,
 #   (b) confirm whether the PRODUCTION rig saves mirrored or unmirrored
-#       images -- if unmirrored, RL/RR signs flip back to {+1, -1},
-#   (c) keep directional FAILs advisory/REVIEW until (a)+(b) are confirmed.
+#       images -- if unmirrored, RL/RR signs may flip (override via config
+#       palm.angle.hand_sign_overrides).
 # [CONFIRM]
 
 # Axis each pose acts on.
@@ -417,161 +418,95 @@ def check_palm_pose(
 
 
 # ---------------------------------------------------------------------------
-# Batch-relative (N-baseline) pose validation: check_palm_pose_delta
+# Absolute raw-angle pose validation: check_palm_pose_absolute
 # ---------------------------------------------------------------------------
-# Absolute per-image angles fail in practice: a real hand's `up`/`across` axes
-# are never perfectly vertical/horizontal, so even a valid NEUTRAL reads a
-# non-zero roll/pitch (observed ~11 deg on PASS images). That offset is a per-
-# person, per-capture BASELINE, not a defect. The fix is to grade each rotated
-# pose RELATIVE TO THAT HAND'S OWN N: the baseline is present in both the N frame
-# and the pose frame, so subtracting it cancels the offset.
+# The angle measurement is now reliable enough (validated against the researcher
+# rig CSV) to grade each image on its OWN raw roll/pitch -- no N baseline, no
+# delta. Agreed with the researcher (2026-07-09):
+#   - grade ONLY the pose's active axis (roll for RL/RR, pitch for PU/PD) against
+#     its directional band [min_rotation, max_abs] with the sign from _POSE_SIGN,
+#   - the OTHER axis is REPORTED but does NOT gate (no off-axis check),
+#   - N is graded by its own neutral tolerance on BOTH axes,
+#   - verdicts are PASS / FAIL only (no REVIEW, no delta, no d_roll/d_pitch).
 #
-#     delta_roll  = pose_roll  - N_roll
-#     delta_pitch = pose_pitch - N_pitch
-#
-# The same directional bands then apply to the DELTA (not the absolute angle):
-#     RL: delta_roll  in [-45, -min_rotation]   RR: delta_roll  in [+min_rotation, +45]
-#     PU: delta_pitch in [-45, -min_rotation]   PD: delta_pitch in [+min_rotation, +45]
-# Only roll and pitch FAIL (spec has no yaw pose). N itself is not graded here --
-# it is the reference (the caller emits SKIP for N).
-#
-# Sign note: deltas cancel the per-person baseline, which makes signs MORE
-# consistent across people, but the direction of a "correct" delta still depends
-# on handedness; hand_sign_overrides applies exactly as in check_palm_pose.
+# Message format (raw values, band shown):
+#   PASS:  "L/RL ok: raw roll=+42.7 within [10,45], pitch=-4.8"
+#   FAIL:  "L/RL fail: raw roll=+6.1 not in [10,45], pitch=-4.8"
 
 
-def check_palm_pose_delta(
+def check_palm_pose_absolute(
     pose: str,
     hand: str,
     pose_angles: dict,
-    n_angles: dict,
     *,
     max_abs_deg: float = 45.0,
     min_rotation_deg: float = 10.0,
-    off_axis_tol_deg: float = 20.0,
+    neutral_tol_deg: float = 10.0,
     hand_sign_overrides: Optional[dict] = None,
-    enforce_abs_cap: bool = True,
 ):
-    """Validate a rotated pose against this hand's OWN N baseline (delta space).
+    """Grade one palm image on its OWN raw roll/pitch (no N baseline, no delta).
 
     Args:
-        pose: "RL" | "RR" | "PU" | "PD" (N should not be passed -- it is the
-            reference and is not graded; caller emits SKIP for N).
-        hand: "L" | "R" -- selects the sign convention.
-        pose_angles: {"roll":..,"pitch":..} measured for THIS pose image.
-        n_angles:    {"roll":..,"pitch":..} measured for this hand's N image.
-        max_abs_deg, min_rotation_deg, off_axis_tol_deg, hand_sign_overrides:
-            same meaning as check_palm_pose, applied to the DELTA.
-        enforce_abs_cap: also FAIL when the RAW |roll| or |pitch| exceeds
-            max_abs_deg (the spec's absolute +/-45 bound), independent of the
-            delta verdict. Default True. [SPEC]
+        pose: "N" | "RL" | "RR" | "PU" | "PD".
+        hand: "L" | "R" (from filename) -- selects the roll sign convention.
+        pose_angles: {"roll":.., "pitch":..} measured for THIS image.
+        max_abs_deg: upper band bound (spec: 45).
+        min_rotation_deg: a rotated pose must reach at least this magnitude.
+        neutral_tol_deg: for N, both axes must be within +/- this.
+        hand_sign_overrides: optional per-(hand,pose) sign flips. See _band_for_pose.
 
     Returns:
-        (success, message). Mirrors the (success, message) contract.
+        (success, message). PASS/FAIL only. A rotated pose's OTHER axis is
+        reported but never gates the verdict.
     """
     pose = (pose or "").upper()
     hand = (hand or "").upper()
 
+    try:
+        roll = float(pose_angles["roll"])
+        pitch = float(pose_angles["pitch"])
+    except (KeyError, TypeError, ValueError) as e:
+        return (False, f"missing angle data: {e}")
+
+    # --- N (neutral): both axes near zero ---
     if pose == "N":
-        return (True, "N is the reference (not graded)")
+        roll_ok = abs(roll) <= neutral_tol_deg
+        pitch_ok = abs(pitch) <= neutral_tol_deg
+        if roll_ok and pitch_ok:
+            return (True,
+                    f"{hand}/N ok: raw roll={roll:+.1f}, pitch={pitch:+.1f} "
+                    f"within +/-{neutral_tol_deg:g}")
+        bad = []
+        if not roll_ok:
+            bad.append(f"roll={roll:+.1f} not within +/-{neutral_tol_deg:g}")
+        if not pitch_ok:
+            bad.append(f"pitch={pitch:+.1f} not within +/-{neutral_tol_deg:g}")
+        return (False, f"{hand}/N fail (not neutral): {', '.join(bad)}")
 
     axis = _POSE_AXIS.get(pose)
     if axis is None:
-        return (False, f"unknown pose '{pose}' (expected RL/RR/PU/PD)")
-
-    try:
-        p_roll = float(pose_angles["roll"])
-        p_pitch = float(pose_angles["pitch"])
-        d_roll = p_roll - float(n_angles["roll"])
-        d_pitch = p_pitch - float(n_angles["pitch"])
-    except (KeyError, TypeError, ValueError) as e:
-        return (False, f"missing angle data for delta: {e}")
-
-    # ABSOLUTE spec cap, independent of the delta: the spec's "+/-45" bounds the
-    # RAW angle of the capture, not only its change vs N. Researchers asked for
-    # the absolute value to be graded and reported too. [SPEC]
-    abs_reasons = []
-    if enforce_abs_cap:
-        if abs(p_roll) > max_abs_deg:
-            abs_reasons.append(
-                f"|raw roll|={abs(p_roll):.1f} > {max_abs_deg:g} [SPEC]")
-        if abs(p_pitch) > max_abs_deg:
-            abs_reasons.append(
-                f"|raw pitch|={abs(p_pitch):.1f} > {max_abs_deg:g} [SPEC]")
+        return (False, f"unknown pose '{pose}' (expected N/RL/RR/PU/PD)")
 
     _, lo, hi = _band_for_pose(
         hand, pose,
         max_abs_deg=max_abs_deg, min_rotation_deg=min_rotation_deg,
-        neutral_tol_deg=0.0, hand_sign_overrides=hand_sign_overrides)
+        neutral_tol_deg=neutral_tol_deg, hand_sign_overrides=hand_sign_overrides)
 
-    active = d_roll if axis == "roll" else d_pitch
-    other = d_pitch if axis == "roll" else d_roll
-    other_name = "d_pitch" if axis == "roll" else "d_roll"
-    active_name = "d_roll" if axis == "roll" else "d_pitch"
+    active = roll if axis == "roll" else pitch
+    active_name = axis                       # "roll" or "pitch"
+    other = pitch if axis == "roll" else roll
+    other_name = "pitch" if axis == "roll" else "roll"
 
     in_band = lo <= active <= hi
-    off_axis_ok = abs(other) <= off_axis_tol_deg
 
-    if in_band and off_axis_ok and not abs_reasons:
+    if in_band:
         return (True,
-                f"{hand}/{pose} ok: {active_name}={active:+.1f} in [{lo:g},{hi:g}]; "
-                f"{other_name}={other:+.1f} within +/-{off_axis_tol_deg:g} "
-                f"(vs N)")
+                f"{hand}/{pose} ok: raw {active_name}={active:+.1f} "
+                f"within [{lo:g},{hi:g}], {other_name}={other:+.1f}")
 
-    reasons = []
-    if not in_band:
-        if (lo < 0 and active > 0) or (lo > 0 and active < 0):
-            reasons.append(f"{active_name}={active:+.1f} WRONG DIRECTION (expected [{lo:g},{hi:g}])")
-        elif abs(active) < min_rotation_deg:
-            reasons.append(f"{active_name}={active:+.1f} not rotated enough vs N (need |delta|>={min_rotation_deg:g})")
-        else:
-            reasons.append(f"{active_name}={active:+.1f} out of [{lo:g},{hi:g}]")
-    if not off_axis_ok:
-        reasons.append(f"{other_name}={other:+.1f} off-axis > +/-{off_axis_tol_deg:g}")
-    reasons.extend(abs_reasons)
-    return (False, f"{hand}/{pose} bad (vs N): {'; '.join(reasons)}")
-
-
-def check_palm_n_reference(
-    n_angles: Optional[dict],
-    *,
-    n_reference_max_deg: float = 15.0,
-):
-    """Grade the N (neutral) image ABSOLUTELY.
-
-    Researchers expect a valid N to read roll ~ 0 AND pitch ~ 0 -- and N is the
-    baseline every rotated pose's delta is judged against, so a tilted N is
-    both a capture defect in its own right (re-capture it) and a bias on every
-    delta for that hand.
-
-    Args:
-        n_angles: {"roll":..,"pitch":..} measured for the N image (or None).
-        n_reference_max_deg: |roll| and |pitch| must both be <= this.
-            config: palm.angle.n_reference_max_deg  [ASSUMPTION -> CONFIRM].
-
-    Returns:
-        (success, message) -- the standard contract.
-    """
-    if not n_angles:
-        return (False, "N reference unmeasurable (no angle)")
-    try:
-        roll = float(n_angles["roll"])
-        pitch = float(n_angles["pitch"])
-    except (KeyError, TypeError, ValueError) as e:
-        return (False, f"N reference missing angle data: {e}")
-
-    roll_ok = abs(roll) <= n_reference_max_deg
-    pitch_ok = abs(pitch) <= n_reference_max_deg
-    if roll_ok and pitch_ok:
-        return (True,
-                f"N ok (reference): roll={roll:+.1f} pitch={pitch:+.1f} "
-                f"within +/-{n_reference_max_deg:g}")
-    bad = []
-    if not roll_ok:
-        bad.append(f"roll={roll:+.1f} > +/-{n_reference_max_deg:g}")
-    if not pitch_ok:
-        bad.append(f"pitch={pitch:+.1f} > +/-{n_reference_max_deg:g}")
-    return (False, "N not neutral (re-capture N): " + ", ".join(bad))
+    return (False,
+            f"{hand}/{pose} fail: raw {active_name}={active:+.1f} "
+            f"not in [{lo:g},{hi:g}], {other_name}={other:+.1f}")
 
 
 def calculate_palm_axis_tilts(world_landmarks):

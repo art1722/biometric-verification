@@ -470,7 +470,7 @@ palm:
     #   raw values are always reported next to the delta verdict.
     max_abs_deg: 45                  # [SPEC] outer magnitude bound (raw AND delta)
     min_rotation_deg: 10             # [ASSUMPTION] a deliberate pose must rotate >= this; calibrate
-    neutral_tol_deg: 10              # [ASSUMPTION] used by the per-image absolute path (check_palm_pose)
+    neutral_tol_deg: 15              # [ASSUMPTION] used by the per-image absolute path (check_palm_pose)
     n_reference_max_deg: 15          # [ASSUMPTION] N must read |roll|,|pitch| <= this to be a trusted baseline; calibrate
     off_axis_tol_deg: 45             # [ASSUMPTION] a rotated pose's OTHER axis must stay within +/- this
     # SIGN CALIBRATION NOTE: this implementation normalizes signs to the spec

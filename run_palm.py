@@ -71,6 +71,44 @@ PALM_RE = re.compile(
 HANDS = ("L", "R")
 POSES = ("N", "RL", "RR", "PU", "PD")
 
+# Recursive search depth cap: how many directory levels below the given folder
+# to descend. Prevents an accidental run at a filesystem root from walking
+# forever. Level 0 = the folder itself; 5 = up to five subdirectory levels deep.
+MAX_SEARCH_DEPTH = 5
+
+
+def find_palm_files(root, *, vid=None, max_depth=MAX_SEARCH_DEPTH):
+    """Recursively find palm image files under `root`, up to `max_depth` levels.
+
+    Args:
+        root: folder to search.
+        vid: if given, keep only files whose filename participant id == vid.
+            If None, keep every palm-named file found.
+        max_depth: directory levels below `root` to descend (0 = root only).
+
+    Returns:
+        sorted list of matching file paths (by basename, case-insensitive).
+    """
+    root = os.path.abspath(root)
+    base_depth = root.rstrip(os.sep).count(os.sep)
+    found = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        depth = dirpath.rstrip(os.sep).count(os.sep) - base_depth
+        if depth >= max_depth:
+            # Stop descending past the cap (still processes files AT this level).
+            dirnames[:] = []
+        for name in filenames:
+            m = PALM_RE.match(name)
+            if not m:
+                continue
+            if vid is not None and m.group("vid") != vid:
+                continue
+            # de-dup by basename (first hit wins, preserves shallowest path)
+            key = name.lower()
+            if key not in found:
+                found[key] = os.path.join(dirpath, name)
+    return [found[k] for k in sorted(found)]
+
 
 def parse_args():
     ap = argparse.ArgumentParser(
@@ -90,13 +128,13 @@ def parse_args():
                          "back-compat. Use --no-overlay to disable.")
     ap.add_argument("--no-overlay", action="store_true",
                     help="do NOT write the per-image overlay images.")
-    ap.add_argument("--angle-3d", action="store_true",
-                    help="write interactive 3D palm-angle HTML debug files to "
-                         "the output folder; requires plotly.")
     ap.add_argument("--angle-3d-tabs", action="store_true",
-                    help="write ONE combined 3D palm-angle HTML per participant "
-                         "with a clickable tab per hand/pose (front-on start "
-                         "view, gradient plane); requires plotly.")
+                    help="(now ON by default) write ONE combined 3D palm-angle "
+                         "HTML per participant with a clickable tab per hand/pose. "
+                         "Kept for back-compat; use --no-angle-3d-tabs to skip it.")
+    ap.add_argument("--no-angle-3d-tabs", action="store_true",
+                    help="do NOT write the combined 3D palm-angle tabs HTML "
+                         "(it is written by default; requires plotly).")
     ap.add_argument("--overlay-on-image", action="store_true",
                     help="draw the check panel ON TOP of the image instead of "
                          "on a separate strip below it (default is below, so "
@@ -112,36 +150,62 @@ def parse_args():
 def resolve_inputs(inputs, explicit_id):
     """Work out (image_paths, vid) from the positional inputs.
 
-    Two accepted shapes:
-      1. `<folder> <id>`  -> glob folder for <id>_palm_*.jpg (the headline UX).
-      2. explicit image path(s) -> use them directly; id from --id or filenames.
+    Accepted shapes (folder searches are RECURSIVE, up to MAX_SEARCH_DEPTH
+    levels, so files nested in subfolders are still found):
+      1. `<folder> <id>`  -> recursively find <id>_palm_*.jpg under <folder>.
+      2. `<folder>`       -> recursively find ALL *_palm_*.jpg under <folder>;
+                             the participant id is derived from the filenames
+                             (one id expected; else pass --id).
+      3. explicit image path(s) -> use them directly; id from --id or filenames.
 
     Returns (image_paths, vid, expected_missing) where expected_missing is the
-    list of the 10 canonical filenames NOT found (folder form only; [] otherwise).
+    list of the canonical filenames NOT found (id-known folder form only; []
+    otherwise).
     """
-    # --- form 1: exactly two args, first is a dir, second looks like an id ---
+    # --- form 1: `<folder> <id>` -- dir + numeric id, recursive by id ---
     if (len(inputs) == 2 and os.path.isdir(inputs[0])
             and re.fullmatch(r"\d+", inputs[1])):
-        folder, vid = inputs[0], inputs[1]
-        vid = explicit_id or vid
-        found = {}
-        for name in sorted(os.listdir(folder)):
-            m = PALM_RE.match(name)
-            if m and m.group("vid") == vid:
-                found[name.lower()] = os.path.join(folder, name)
-        # Determine which of the canonical 10 are missing (for a friendly warn).
+        folder, vid = inputs[0], (explicit_id or inputs[1])
+        paths = find_palm_files(folder, vid=vid)
+        # Order by the canonical 10 and report which are missing.
+        by_name = {os.path.basename(p).lower(): p for p in paths}
         expected = [f"{vid}_palm_{h}_{p}.jpg" for h in HANDS for p in POSES]
-        missing = [e for e in expected if e.lower() not in found]
-        paths = [found[e.lower()] for e in expected if e.lower() in found]
-        return paths, vid, missing
+        missing = [e for e in expected if e.lower() not in by_name]
+        ordered = [by_name[e.lower()] for e in expected if e.lower() in by_name]
+        # Include any extra matches not in the canonical set (unusual, but keep).
+        extras = [p for k, p in sorted(by_name.items())
+                  if k not in {e.lower() for e in expected}]
+        return ordered + extras, vid, missing
 
-    # --- form 2: explicit files (and/or folders) ---
+    # --- form 2: `<folder>` -- single dir, no id -> recursive, ALL palm files ---
+    if len(inputs) == 1 and os.path.isdir(inputs[0]):
+        folder = inputs[0]
+        paths = find_palm_files(folder, vid=explicit_id)  # explicit_id may be None
+        if not paths:
+            return [], explicit_id, []
+        ids = {PALM_RE.match(os.path.basename(p)).group("vid") for p in paths}
+        if explicit_id:
+            vid = explicit_id
+        elif len(ids) == 1:
+            vid = next(iter(ids))
+        else:
+            sys.exit(
+                f"multiple participant ids found under {folder}: {sorted(ids)}\n"
+                "This runner grades ONE participant. Pass `<folder> <id>` or --id.")
+        # Order canonically when possible; keep any extras.
+        by_name = {os.path.basename(p).lower(): p for p in paths}
+        expected = [f"{vid}_palm_{h}_{p}.jpg" for h in HANDS for p in POSES]
+        ordered = [by_name[e.lower()] for e in expected if e.lower() in by_name]
+        extras = [by_name[k] for k in sorted(by_name)
+                  if k not in {e.lower() for e in expected}]
+        missing = [e for e in expected if e.lower() not in by_name]
+        return ordered + extras, vid, missing
+
+    # --- form 3: explicit files (and/or folders) ---
     paths = []
     for item in inputs:
         if os.path.isdir(item):
-            for name in sorted(os.listdir(item)):
-                if PALM_RE.match(name):
-                    paths.append(os.path.join(item, name))
+            paths.extend(find_palm_files(item))  # recursive
         elif os.path.isfile(item):
             if PALM_RE.match(os.path.basename(item)):
                 paths.append(item)
@@ -228,6 +292,11 @@ def write_consolidated_overall(out_dir, vid, rows_by_file, image_order, config, 
 def main():
     args = parse_args()
 
+    # The combined 3D palm-angle tabs HTML is now written BY DEFAULT. The
+    # positional flag --angle-3d-tabs is kept for back-compat (a no-op when
+    # already on); --no-angle-3d-tabs opts out.
+    args.angle_3d_tabs = not args.no_angle_3d_tabs
+
     if not os.path.exists(args.config):
         sys.exit(f"config not found: {args.config}")
     with open(args.config, "r", encoding="utf-8") as f:
@@ -280,26 +349,28 @@ def main():
         out_dir, vid, rows_by_file, image_order, config, args.quiet)
 
     # --- visual debug outputs, one per image ---
-    # Overlay is ON by default. 3D angle HTML is opt-in via --angle-3d because it
-    # adds an optional Plotly dependency and is meant for researcher/debug review,
-    # not normal batch QC.
-    if (not args.no_overlay) or args.angle_3d or args.angle_3d_tabs:
+    # Overlay is ON by default. The combined 3D angle tabs HTML is also written
+    # by default (opt out via --no-angle-3d-tabs); it needs the optional Plotly
+    # dependency and is meant for researcher/debug review.
+    if (not args.no_overlay) or args.angle_3d_tabs:
         from types import SimpleNamespace
         if not args.no_overlay:
             from qc.utils.palm_overlay import draw_palm_overlay
-        if args.angle_3d or args.angle_3d_tabs:
+        if args.angle_3d_tabs:
             try:
                 from qc.debug.visualize_palm_angle import (
-                    save_palm_angle_debug_html,
                     save_palm_angle_debug_tabs_html,
                 )
                 from qc.checks.check_palm_angle import calculate_palm_angles
             except ImportError as e:
-                sys.exit(
-                    "--angle-3d / --angle-3d-tabs requires plotly. Install it with:\n"
-                    "  python -m pip install plotly\n"
-                    f"Original import error: {e}"
-                )
+                # 3D tabs are ON by default, so a missing plotly must NOT abort
+                # the whole QC run -- warn once, disable the HTML, and continue
+                # with CSVs + overlays.
+                if not args.quiet:
+                    print("note: skipping 3D palm-angle HTML (plotly not "
+                          "installed). Install with `python -m pip install "
+                          f"plotly` to enable it. [{e}]")
+                args.angle_3d_tabs = False
         # Collected across the image loop for the combined tabbed file.
         tab_entries = []
 
@@ -334,34 +405,11 @@ def main():
                 if not args.quiet:
                     print(f"wrote overlay image to {ov_path}")
 
-            # Angle math + this 3D debug now run on NORMALIZED landmarks
+            # Angle math + the 3D tabs debug run on NORMALIZED landmarks
             # (landmarks_norm), matching the pipeline's reported CSV. world_
             # landmarks are no longer used for the angle.
             has_hand = (getattr(hand_result, "ok", False)
                         and getattr(hand_result, "landmarks_norm", None) is not None)
-
-            if args.angle_3d:
-                html_path = os.path.join(out_dir, f"palm_{vid}_{tag}_angle3d.html")
-                if has_hand:
-                    try:
-                        # Pass filename handedness so the drawn roll SIGN matches
-                        # the CSV exactly; plot the SAME normalized landmarks.
-                        aok, ainfo = calculate_palm_angles(
-                            hand_result.landmarks_norm, handedness=hand)
-                        save_palm_angle_debug_html(
-                            hand_result.landmarks_norm,
-                            html_path,
-                            angle_info=ainfo if aok else None,
-                            title=f"{fname} — palm angle 3D debug",
-                        )
-                        if not args.quiet:
-                            print(f"wrote 3D angle debug HTML to {html_path}")
-                    except Exception as e:
-                        if not args.quiet:
-                            print(f"skip 3D angle debug for {fname}: {e}")
-                elif not args.quiet:
-                    msg = getattr(hand_result, "message", "no hand result")
-                    print(f"skip 3D angle debug for {fname}: {msg}")
 
             if args.angle_3d_tabs and has_hand:
                 # One tab per hand/pose in a single combined file (written after
