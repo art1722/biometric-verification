@@ -44,6 +44,7 @@ from qc.utils.video import probe_video, iter_sampled_frames
 from qc.checks.pose_landmarker import create_pose_landmarker, detect_pose
 from qc.checks.check_body_height import check_body_height
 from qc.checks.check_brightness import check_brightness_walk
+from qc.checks import check_metadata as md
 from qc.schemas import CheckRow
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,12 @@ def run_walk(
     bri_bright = bri_cfg.get("bright_threshold", 200.0)
     bri_margin = bri_cfg.get("margin", 0.1)
 
+    meta_cfg = walk_cfg.get("metadata", {})
+    min_fps = meta_cfg.get("min_fps", 30)
+    min_dur = meta_cfg.get("min_duration_sec", 15)
+    min_w = meta_cfg.get("min_width_px", 1920)
+    min_h = meta_cfg.get("min_height_px", 1080)
+
     # Per-frame series (brightness per sampled frame) for the detail_header CSV
     # and the dashboard, mirroring the face pipeline's timeline.
     timeline: list[dict] = []
@@ -153,15 +160,49 @@ def run_walk(
         )
         own_detector = True
 
-    # ---- grab the FIRST frame (farthest-from-camera point) ----
-    # probe first so an unreadable/empty video fails cleanly rather than raising
-    # a raw exception out of the frame iterator.
-    meta = probe_video(path, decode_first_frame=False)
+    # ---- probe metadata (once, no pixels beyond the first frame) ----
+    # decode_first_frame=True so probe_video populates channel_count and is_color
+    # from a decoded frame -- check_container needs them to verify RGB. (The old
+    # walk MVP used decode_first_frame=False, which left channel_count=None and
+    # made check_container always FAIL "channel count unknown". Face uses the
+    # default True for exactly this reason.)
+    meta = probe_video(path, decode_first_frame=True)
+
+    # ---- video-level metadata checks (mirror face_rgb; shared functions) ----
+    # These describe the FILE, not any frame: container (.mp4 + RGB), fps>=30,
+    # duration>=15s, resolution>=1920x1080 (walk spec, from config). They run on
+    # the same VideoMetadata probe_video returns. Emitted as level="video" rows
+    # (frame_index empty) exactly like the face pipeline, so they flow through
+    # report.py into detail/result/overall/summary with no report changes.
+    #
+    # An unreadable file cannot be metadata-checked at all -> all four SKIP with
+    # the reason, and (below) the height/brightness/overlay work is skipped too.
+    # A metadata FAIL on a readable file (e.g. fps<30) is RECORDED but does NOT
+    # stop the pipeline: walk writes an overlay by default, and face's own gate
+    # is disabled whenever an overlay is produced (fail_fast=False), so the
+    # faithful mirror is record-and-continue -> the reviewer still gets a full
+    # overlay + per-frame rows on an off-spec clip.
     if not meta.readable:
+        for cname in ("check_container", "check_fps",
+                      "check_duration", "check_resolution"):
+            add(cname, "SKIP", f"video not readable: {meta.reason}",
+                level="video")
         add("check_body_height", "SKIP",
             f"video not readable: {meta.reason}", level="video")
         _maybe_close(detector, own_detector)
         return rows, []
+
+    status, reason = md.check_container(meta, require_rgb=True)
+    add("check_container", status, reason, level="video")
+
+    status, reason = md.check_fps(meta, min_fps=min_fps)
+    add("check_fps", status, reason, level="video")
+
+    status, reason = md.check_duration(meta, min_duration_sec=min_dur)
+    add("check_duration", status, reason, level="video")
+
+    status, reason = md.check_resolution(meta, min_width=min_w, min_height=min_h)
+    add("check_resolution", status, reason, level="video")
 
     first_frame = None
     try:
@@ -253,12 +294,28 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
     if overlay:
         try:
             from qc.utils.walk_overlay import WalkOverlayWriter
-            stem = os.path.splitext(filename)[0]
+            # Output name: walk_<id>_<view>_overlay.mp4 (e.g. walk_002_F_overlay.mp4),
+            # NOT <stem>_overlay. View parsed from the source filename; falls back
+            # to the stem if the pattern is unexpected so we never crash on naming.
+            view = _view_from_filename(filename)
+            if volunteer_id and view:
+                base = f"walk_{volunteer_id}_{view}_overlay.mp4"
+            else:
+                base = f"{os.path.splitext(filename)[0]}_overlay.mp4"
             os.makedirs(out_root, exist_ok=True)
-            out_path = os.path.join(out_root, f"{stem}_overlay.mp4")
+            out_path = os.path.join(out_root, base)
+            # ONE canvas width for the whole clip, decided up front from the
+            # video's own width (meta), clamped to the overlay's band. Passing
+            # it in means every frame is composed at the same width -- a walk
+            # video's frames are all one size, but locking it here also guards
+            # against any per-frame drift and satisfies the constant-size the
+            # VideoWriter needs. None -> the writer falls back to the first
+            # frame's width.
+            canvas_width = getattr(meta, "width", None)
             writer = WalkOverlayWriter(out_path, fps=overlay_fps,
                                        volunteer_id=volunteer_id,
-                                       filename=filename)
+                                       filename=filename,
+                                       canvas_width=canvas_width)
         except Exception as e:  # pragma: no cover - overlay is best-effort
             logger.warning("walk overlay writer init failed for %s: %s",
                            filename, e)
