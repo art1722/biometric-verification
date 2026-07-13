@@ -133,7 +133,7 @@ def parse_args():
                          f"(up to {MAX_SEARCH_DEPTH} levels).")
     ap.add_argument("--id", default=None, help="volunteer id (else parsed from filename)")
     ap.add_argument("--config", default="config.yml")
-    ap.add_argument("--sample-fps", type=float, default=None,
+    ap.add_argument("--sample-fps", type=float, default=5,
                 help="frames sampled per source second. Default: None = "
                      "native fps (every frame), so the overlay is 1:1 with "
                      "the original (same length, same speed).")

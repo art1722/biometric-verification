@@ -314,6 +314,38 @@ def write_detail_header_csv(path, rows, timeline, quiet=False):
         print(f"wrote detail header CSV to {path}")
 
 
+def write_walk_detail_header_csv(path, rows, timeline, quiet=False):
+    """Per-frame walk series CSV: brightness + body-box dims per sampled frame.
+
+    The walk analog of write_detail_header_csv (which is face-specific:
+    yaw/pitch/occlusion columns). Walk's per-frame measured quantity in this MVP
+    is brightness (plus the body box the brightness region came from), so those
+    are the columns. Same one-row-per-timeline-entry shape and utf-8-sig CSV as
+    the face writer, so the dashboard reads it identically.
+    """
+    vid, dtype, fname = _row_identity(rows)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fields = ["volunteer_id", "data_type", "file_name", "frame_index", "time",
+              "brightness", "body_width", "body_height_px"]
+
+    def fmt(v, nd=1):
+        return "" if v is None else f"{v:.{nd}f}"
+
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(fields)
+        for t in timeline:
+            w.writerow([
+                vid, dtype, fname, t["frame_index"],
+                fmt(t.get("timestamp_sec"), 3),
+                fmt(t.get("brightness"), 0),
+                fmt(t.get("body_width"), 0),
+                fmt(t.get("body_height_px"), 0),
+            ])
+    if not quiet:
+        print(f"wrote walk detail header CSV to {path}")
+
+
 def write_detail_csv(path, rows, timeline=None, quiet=False):
     t_by_frame = {}
     if timeline:

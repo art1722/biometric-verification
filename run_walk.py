@@ -29,9 +29,15 @@ import time
 
 import yaml
 
-from qc.pipelines.gait import run_gait
+from qc.pipelines.walk import run_walk
 from qc.checks.pose_landmarker import create_pose_landmarker
-from qc.utils.report import build_overall_record, write_detail_csv, SummaryWriter
+from qc.utils.report import (
+    build_overall_record,
+    write_detail_csv,
+    write_result_csv,
+    write_walk_detail_header_csv,
+    SummaryWriter,
+)
 
 # Strict walk filename: NNN_walk_[F|S].mp4 (mirrors config walk_F/walk_S keys).
 WALK_RE = re.compile(r"^(?P<vid>\d+)_walk_(?P<view>[FS])\.mp4$")
@@ -80,6 +86,12 @@ def parse_args():
         help="EITHER `<folder> <id>` (e.g. `data 001`), OR `<folder>`, OR an "
              "explicit list of walk video paths.")
     ap.add_argument("--config", default="config.yml", help="path to config.yml")
+    ap.add_argument("--sample-fps", type=float, default=5.0,
+                    help="frames sampled per source second for the debug "
+                         "overlay. Default: 5. Pass 0 (or a negative) for "
+                         "native fps (every frame), so the overlay is 1:1 with "
+                         "the original (same length, same speed). Grading is "
+                         "unaffected: the verdict always reads the first frame.")
     ap.add_argument("--id", default=None,
                     help="volunteer id (else from the 2nd positional arg in "
                          "`folder id` form, or parsed from filenames)")
@@ -90,6 +102,12 @@ def parse_args():
                          "(default: <out-root>/walk_summary.csv)")
     ap.add_argument("--quiet", action="store_true",
                     help="suppress per-row stdout and writer prints")
+    ap.add_argument("--overlay", action="store_true",
+                    help="(no-op) debug overlays are ON by default; kept for "
+                         "back-compat/explicitness. Use --no-overlay to disable.")
+    ap.add_argument("--no-overlay", action="store_true",
+                    help="do NOT write the per-video debug overlay .mp4 "
+                         "(skeleton + bbox + height verdict).")
     return ap.parse_args()
 
 
@@ -155,6 +173,16 @@ def main():
     if not videos:
         sys.exit("no walk videos found (expected NNN_walk_[F|S].mp4)")
 
+    # Wire walk.brightness.frame_fail_ratio into the report aggregation so the
+    # per-frame check_brightness rows aggregate to a video FAIL at the WALK
+    # threshold (>=20%), independent of the face/global ratio. summarize_rows_by_check
+    # reads per_check_fail_ratio[check_name]; we set check_brightness to walk's
+    # value here rather than hard-coding it in report.py. [DESIGN]
+    bri_fail_ratio = (config.get("walk", {}).get("brightness", {})
+                      .get("frame_fail_ratio", 0.2))
+    agg = config.setdefault("report", {}).setdefault("aggregation", {})
+    agg.setdefault("per_check_fail_ratio", {})["check_brightness"] = bri_fail_ratio
+
     os.makedirs(args.out_root, exist_ok=True)
     summary_csv = args.summary_csv or os.path.join(args.out_root, "walk_summary.csv")
 
@@ -178,17 +206,49 @@ def main():
         with SummaryWriter(summary_csv, mode="w") as summary:
             for path in videos:
                 vid, view = _identity(path)
-                rows, _timeline = run_gait(
-                    path, vid, config, view=view, detector=detector)
+                stem = os.path.splitext(os.path.basename(path))[0]  # e.g. 002_walk_F
+
+                # Per-participant folder groups BOTH F and S under reports/<id>/,
+                # mirroring run_face's reports/<id>/ layout. The overlay .mp4 is
+                # written INTO this same folder by the pipeline (out_root points
+                # here), so every artifact for one video lives together.
+                out_dir = os.path.join(args.out_root, vid)
+                os.makedirs(out_dir, exist_ok=True)
+
+                # sample_fps: 0 / negative means "native (every frame)", mirroring
+                # run_face's None sentinel; the pipeline writes the overlay at the
+                # SAME rate it samples so the output duration matches the source.
+                sample_fps = args.sample_fps if args.sample_fps and args.sample_fps > 0 else None
+                rows, timeline = run_walk(
+                    path, vid, config, view=view, detector=detector,
+                    overlay=not args.no_overlay, out_root=out_dir,
+                    sample_fps=sample_fps)
 
                 if not args.quiet:
                     for r in rows:
                         print(", ".join(str(x) for x in r.as_tuple()))
 
+                # Per-participant CSVs, same grain and writers as run_face:
+                #   walk_<stem>_detail.csv         one row per (frame, check)
+                #   walk_<stem>_detail_header.csv  one row per frame (brightness series)
+                #   walk_<stem>_result.csv         per-check verdict (PASS/FAIL/SKIP)
+                #   walk_<stem>_overall.csv        one OVERALL row for the video
+                detail_csv = os.path.join(out_dir, f"walk_{stem}_detail.csv")
+                header_csv = os.path.join(out_dir, f"walk_{stem}_detail_header.csv")
+                result_csv = os.path.join(out_dir, f"walk_{stem}_result.csv")
+                overall_csv = os.path.join(out_dir, f"walk_{stem}_overall.csv")
+
+                write_detail_csv(detail_csv, rows, timeline, quiet=args.quiet)
+                write_walk_detail_header_csv(header_csv, rows, timeline,
+                                             quiet=args.quiet)
+                write_result_csv(result_csv, overall_csv, rows, timeline,
+                                 config=config, quiet=args.quiet)
+
                 # One summary row per video, from the SAME aggregation the
                 # face/palm summaries use (build_overall_record -> per-check
-                # verdict -> overall PASS/FAIL/SKIP).
-                overall = build_overall_record(rows, [], config=config)
+                # verdict -> overall PASS/FAIL/SKIP). Pass the timeline so any
+                # timeline-derived summary fields are populated.
+                overall = build_overall_record(rows, timeline, config=config)
                 summary.add(overall)
                 n += 1
     finally:

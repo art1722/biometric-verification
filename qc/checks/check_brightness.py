@@ -42,11 +42,17 @@ working unchanged.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Literal, Optional, Tuple
 
 import cv2
 import numpy as np
 import mediapipe as mp
+
+# Pulls the integer brightness value out of the shared core's message
+# ("brightness=NN; ...") so the walk wrapper can invert the verdict while
+# reusing the core's measurement. Single definition; used by check_brightness_walk.
+_BRIGHTNESS_VALUE_RE = re.compile(r"brightness=(\d+)")
 
 logger = logging.getLogger(__name__)
 
@@ -237,15 +243,67 @@ def check_brightness_palm(
 # WALK wrapper — STUB. Not implemented; raises so it can't be wired silently.
 # ---------------------------------------------------------------------------
 
-def check_brightness_walk(*args, **kwargs) -> Tuple[bool, str]:
-    """Gait/walk brightness — NOT IMPLEMENTED YET.
+def check_brightness_walk(
+    image: Any,
+    body_bbox: Optional[Tuple[int, int, int, int]],
+    dark_threshold: float = 35.0,
+    bright_threshold: float = 200.0,
+    margin: float = 0.1,
+    *,
+    input_color_space: Literal["BGR", "RGB"] = "BGR",
+) -> Tuple[bool, str]:
+    """Walk/gait brightness — INVERTED verdict of the face check.
 
-    Placeholder so the per-modality set is complete and the intended seam is
-    visible. When the gait pipeline gains a person/body bbox (e.g. from a pose
-    detector), this becomes a 3-line wrapper exactly like check_brightness_palm:
-    get the body bbox, call check_brightness(image, body_bbox, ...).
+    Mirrors check_brightness_palm's shape (measure inside the bbox the shared
+    pose detector already produced; no detector call here), but the verdict is
+    the LITERAL INVERSE of the shared core, per the researcher decision
+    (2026-07-13):
+
+        core / face : PASS when dark_threshold <= brightness <= bright_threshold
+        walk        : PASS when brightness <  dark_threshold
+                              OR brightness >  bright_threshold
+
+    So a walk frame is a PASS only when it is very dark or very bright, and a
+    normally-lit frame FAILS. (Flagged for อ.เหมียว in config; implemented as
+    specified.)
+
+    The same numeric cutoffs as face are used by default; walk drives them from
+    config walk.brightness.* so they can diverge without touching face.
+
+    Returns (success, message). "no_body" when body_bbox is None (pose failed
+    upstream; the pipeline reports that separately). The message always contains
+    "brightness=NN" so the timeline extractor pulls the value the same way it
+    does for face.
     """
-    raise NotImplementedError(
-        "check_brightness_walk is not implemented yet; the gait pipeline has no "
-        "body bbox source. Mirror check_brightness_palm once it does."
+    if body_bbox is None:
+        return (False, "no_body")
+
+    # Reuse the shared core purely to MEASURE (it returns the normal-band
+    # verdict + a "brightness=NN" message). We keep its brightness value but
+    # INVERT the pass/fail decision below, so the measurement logic (HSV V-mean,
+    # margin trim, crop clamping) stays single-sourced.
+    normal_ok, core_msg = check_brightness(
+        image, body_bbox, dark_threshold, bright_threshold, margin,
+        input_color_space=input_color_space,
     )
+
+    # A measurement error from the core (invalid image/crop/empty region) has no
+    # brightness value to invert -> propagate it as a FAIL unchanged.
+    m = _BRIGHTNESS_VALUE_RE.search(core_msg)
+    if m is None:
+        return (False, core_msg)
+
+    b = int(m.group(1))
+    lo = int(round(dark_threshold))
+    hi = int(round(bright_threshold))
+
+    # Inverted verdict: PASS iff OUTSIDE the normal band.
+    passed = (b < lo) or (b > hi)
+    if passed:
+        if b < lo:
+            msg = f"brightness={b} < {lo}; walk_pass (dark)"
+        else:
+            msg = f"brightness={b} > {hi}; walk_pass (bright)"
+    else:
+        msg = f"brightness={b}; walk_fail; {lo} <= {b} <= {hi} (normal-lit)"
+    return (passed, msg)

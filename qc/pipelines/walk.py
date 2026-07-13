@@ -18,7 +18,7 @@ Where the height is measured (researcher decision, 2026-07-09)
 On the FIRST frame only -- the point where the walker is farthest from the
 camera and therefore appears smallest. If they clear the half-frame bar at their
 smallest, they clear it throughout. This runs on BOTH camera videos (_F and _S)
-independently; each is one call to run_gait with its own `view`.
+independently; each is one call to run_walk with its own `view`.
 
 Shape / conventions
 -------------------
@@ -30,7 +30,7 @@ Mirrors run_palm (qc/pipelines/palm.py):
     file already maps to). level="video" because a walk file IS a video
     container (unlike palm's "image").
 
-The pose detector is built ONCE by the caller-facing run_gait and consumed by
+The pose detector is built ONCE by the caller-facing run_walk and consumed by
 the check -- the single-detect discipline the face/palm pipelines established.
 """
 
@@ -43,6 +43,7 @@ from typing import Any, Optional
 from qc.utils.video import probe_video, iter_sampled_frames
 from qc.checks.pose_landmarker import create_pose_landmarker, detect_pose
 from qc.checks.check_body_height import check_body_height
+from qc.checks.check_brightness import check_brightness_walk
 from qc.schemas import CheckRow
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,7 @@ def _bool_to_status(ok: bool, *, fail: str = "FAIL") -> str:
     return "PASS" if ok else fail
 
 
-def run_gait(
+def run_walk(
     path: str,
     volunteer_id: str,
     config: dict,
@@ -61,6 +62,9 @@ def run_gait(
     view: Optional[str] = None,
     detector: Any = None,
     progress=None,
+    overlay: bool = True,
+    out_root: str = "reports",
+    sample_fps: Optional[float] = 5.0,
 ):
     """Run the MVP gait pipeline (first-frame body-height only) on one walk video.
 
@@ -78,6 +82,20 @@ def run_gait(
             a batch runner should build ONE and pass it in to avoid reloading
             the .task bundle per video).
         progress: optional callback(row) invoked as each CheckRow is emitted.
+        overlay: write a per-frame debug .mp4 (skeleton + bbox on the frame,
+            the height verdict in a strip below). ON by default; the runner's
+            --no-overlay flag flips it off. The overlay is a REVIEW AID only:
+            it iterates EVERY frame for drawing, but the graded verdict still
+            comes from the first frame exactly as before -- grading is not
+            changed, only a debug video is added.
+        out_root: folder the overlay .mp4 is written under (default "reports").
+            Ignored when overlay=False.
+        sample_fps: frames sampled per source second FOR THE OVERLAY only.
+            Default 5. None (or <=0) means every frame (native). The overlay is
+            written at THIS SAME rate so the output video's duration matches the
+            source exactly (N sampled frames played at sample_fps = original
+            length), mirroring run_face's overlay_fps=sample_fps rule. Grading
+            is unaffected -- the verdict always reads the first frame.
 
     Returns:
         (rows, timeline). timeline is [] in this MVP (no per-frame series yet).
@@ -107,6 +125,15 @@ def run_gait(
     walk_cfg = config.get("walk", {})
     vis_cfg = walk_cfg.get("visibility", {})
     min_ratio = vis_cfg.get("min_person_height_ratio", 0.5)
+
+    bri_cfg = walk_cfg.get("brightness", {})
+    bri_dark = bri_cfg.get("dark_threshold", 35.0)
+    bri_bright = bri_cfg.get("bright_threshold", 200.0)
+    bri_margin = bri_cfg.get("margin", 0.1)
+
+    # Per-frame series (brightness per sampled frame) for the detail_header CSV
+    # and the dashboard, mirroring the face pipeline's timeline.
+    timeline: list[dict] = []
 
     models_cfg = config.get("models", {})
     pose_cfg = models_cfg.get("pose_landmarker", {})
@@ -164,19 +191,141 @@ def run_gait(
         # No usable pose on the farthest frame -> cannot measure height. FAIL
         # (not SKIP): a walk clip whose first frame has no detectable full body
         # is a real defect for this check, not an inapplicable one.
-        add("check_body_height", "FAIL",
-            f"frame={first_frame.frame_index} no pose: {pose.message}",
-            frame_index=first_frame.frame_index, level="video")
-        _maybe_close(detector, own_detector)
-        return rows, []
-
-    ok, msg = check_body_height(pose.landmarks_norm, min_ratio=min_ratio)
-    add("check_body_height", _bool_to_status(ok),
-        f"frame={first_frame.frame_index} {msg}",
+        height_status = "FAIL"
+        height_reason = f"frame={first_frame.frame_index} no pose: {pose.message}"
+    else:
+        ok, msg = check_body_height(pose.landmarks_norm, min_ratio=min_ratio)
+        height_status = _bool_to_status(ok)
+        height_reason = f"frame={first_frame.frame_index} {msg}"
+    add("check_body_height", height_status, height_reason,
         frame_index=first_frame.frame_index, level="video")
 
+    # ---- per-frame pass: brightness (+ timeline) and, if enabled, the overlay ----
+    # ONE detect_pose per sampled frame feeds BOTH the brightness check and the
+    # overlay drawing, so we never detect twice. Brightness emits a frame-level
+    # CheckRow per frame; report.py aggregates them by the config fail-ratio
+    # (walk.brightness.frame_fail_ratio) into the video-level verdict. The
+    # overlay (if on) draws the same frame with the frame's brightness verdict
+    # in the strip. Height stays a first-frame video-level row, untouched above.
+    _run_frame_pass(
+        path, volunteer_id, filename, data_type, detector, add, timeline,
+        overlay=overlay, out_root=out_root, sample_fps=sample_fps, meta=meta,
+        bri_dark=bri_dark, bri_bright=bri_bright, bri_margin=bri_margin,
+        height_status=height_status, height_reason=height_reason,
+    )
+
     _maybe_close(detector, own_detector)
-    return rows, []
+    return rows, timeline
+
+
+def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
+                    timeline, *, overlay, out_root, sample_fps, meta,
+                    bri_dark, bri_bright, bri_margin,
+                    height_status, height_reason):
+    """One pass over the sampled frames: pose once per frame, feeding BOTH the
+    per-frame brightness check and (if enabled) the overlay video.
+
+    Emits one frame-level `check_brightness` CheckRow per sampled frame (which
+    report.py aggregates by walk.brightness.frame_fail_ratio into the video
+    verdict) and appends a timeline entry per frame (brightness value + body
+    box dims) for the detail_header CSV / dashboard.
+
+    Sampling / duration (overlay): frames are sampled at `sample_fps` (default
+    5; None/<=0 = every frame) and the overlay is WRITTEN at that same rate, so
+    its duration matches the source (run_face's overlay_fps=sample_fps rule).
+
+    The overlay strip shows BOTH the video-level height verdict (constant across
+    frames) and THIS frame's brightness verdict, so the debug video and the CSV
+    rows always agree. Height is NOT re-graded here.
+
+    Overlay writing is best-effort: an overlay failure is logged and swallowed so
+    it never breaks the grade. The brightness rows are emitted regardless.
+    """
+    native_fps = meta.fps if getattr(meta, "fps", None) else 30.0
+    if sample_fps is not None and sample_fps > 0:
+        overlay_fps = float(sample_fps)
+        iter_fps = float(sample_fps)
+    else:
+        overlay_fps = native_fps
+        iter_fps = None
+
+    writer = None
+    if overlay:
+        try:
+            from qc.utils.walk_overlay import WalkOverlayWriter
+            stem = os.path.splitext(filename)[0]
+            os.makedirs(out_root, exist_ok=True)
+            out_path = os.path.join(out_root, f"{stem}_overlay.mp4")
+            writer = WalkOverlayWriter(out_path, fps=overlay_fps,
+                                       volunteer_id=volunteer_id,
+                                       filename=filename)
+        except Exception as e:  # pragma: no cover - overlay is best-effort
+            logger.warning("walk overlay writer init failed for %s: %s",
+                           filename, e)
+            writer = None
+
+    try:
+        for sf in iter_sampled_frames(path, sample_fps=iter_fps,
+                                      include_first_frame=True,
+                                      include_last_frame=True,
+                                      max_frames=None):
+            p = detect_pose(sf.image, detector=detector,
+                            input_color_space=sf.color_space)
+
+            # ---- brightness (frame-level, INVERTED verdict inside the check) ----
+            if p.ok:
+                b_ok, b_msg = check_brightness_walk(
+                    sf.image, p.bbox,
+                    dark_threshold=bri_dark, bright_threshold=bri_bright,
+                    margin=bri_margin, input_color_space=sf.color_space)
+                b_status = _bool_to_status(b_ok)
+            else:
+                # No body this frame -> brightness cannot be measured. FAIL the
+                # frame (a walk frame with no detectable body is a real defect),
+                # so a clip that loses the person is not silently rewarded.
+                b_status, b_msg = "FAIL", f"no pose: {p.message}"
+
+            add("check_brightness", b_status, b_msg,
+                frame_index=sf.frame_index, level="frame")
+
+            # ---- timeline entry (brightness value for detail_header / dashboard) ----
+            bval = _brightness_value(b_msg)
+            bw = p.bbox[2] if p.ok and p.bbox else None
+            bh = p.bbox[3] if p.ok and p.bbox else None
+            timeline.append({
+                "frame_index": sf.frame_index,
+                "timestamp_sec": sf.timestamp_sec,
+                "brightness": bval,
+                "body_width": bw,
+                "body_height_px": bh,
+            })
+
+            # ---- overlay frame (both verdicts in the strip) ----
+            if writer is not None:
+                writer.add_frame(
+                    sf.image, sf.color_space, sf.frame_index, sf.timestamp_sec,
+                    pose_detected=p.ok,
+                    landmarks_px=p.landmarks_px if p.ok else None,
+                    bbox=p.bbox if p.ok else None,
+                    checks={
+                        "check_body_height": (height_status, height_reason),
+                        "check_brightness": (b_status, b_msg),
+                    },
+                )
+    except Exception as e:  # pragma: no cover
+        logger.warning("walk frame pass failed for %s: %s", filename, e)
+    finally:
+        if writer is not None:
+            writer.close()
+
+
+def _brightness_value(msg):
+    """Pull the integer brightness out of a check_brightness_walk message, or
+    None if absent (e.g. a 'no pose' frame). Kept local so the pipeline does not
+    depend on the check's regex."""
+    import re
+    m = re.search(r"brightness=(\d+)", msg)
+    return int(m.group(1)) if m else None
 
 
 def _view_from_filename(filename: str) -> Optional[str]:
@@ -190,7 +339,7 @@ def _view_from_filename(filename: str) -> Optional[str]:
 
 
 def _maybe_close(detector: Any, own: bool) -> None:
-    """Close the detector only if run_gait created it (don't close a shared one
+    """Close the detector only if run_walk created it (don't close a shared one
     the caller still needs). PoseLandmarker exposes .close(); guard in case a
     future detector type does not."""
     if own and hasattr(detector, "close"):

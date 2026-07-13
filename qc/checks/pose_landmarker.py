@@ -181,7 +181,7 @@ def create_pose_landmarker(
             f"  mkdir -p {os.path.dirname(model_path) or '.'}\n"
             f"  curl -L -o {model_path} \\\n"
             f"    https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
-            f"pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task"
+            f"pose_landmarker_full/float16/1/pose_landmarker_full.task"
         )
 
     BaseOptions = mp.tasks.BaseOptions

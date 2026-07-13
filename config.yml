@@ -521,6 +521,23 @@ walk:
     require_full_body_visible: true  # [SPEC]
     require_walking_pose_visible_every_frame: true  # [SPEC]
 
+  brightness:
+    # [DESIGN] Same numeric cutoffs as the face check (dark<35, bright>200), but
+    # the walk verdict is INVERTED per the researcher decision (2026-07-13):
+    #   face  : PASS when 35 <= brightness <= 200   (normal-lit)
+    #   walk  : PASS when brightness < 35 OR > 200   (literally inverted)
+    # NOTE for อ.เหมียว: this inversion means a normally-lit walk clip FAILS
+    # brightness and only a very dark / very bright clip passes. That is the
+    # opposite of the spec wording ("not too glaring, not too dark"). Flagged
+    # for confirmation, same discipline as the palm in-plane leak.
+    dark_threshold: 35               # [FACE-ALIGNED]
+    bright_threshold: 200            # [FACE-ALIGNED]
+    margin: 0.1                      # trim each side of the body bbox before measuring
+    # Video-level rule: overall brightness FAILS when >= this fraction of judged
+    # frames fail. Kept SEPARATE from report.aggregation so walk can be tuned
+    # without touching face. Wired via per_check_fail_ratio in run_walk.
+    frame_fail_ratio: 0.2            # [SPEC-DERIVED] overall FAIL if >= 20% frames fail
+
   recording:
     require_indoor_safe_area: true       # [SPEC] no detector -> SKIP
     require_no_obstacle: true            # [SPEC] no detector -> SKIP
