@@ -21,7 +21,7 @@ import os
 STATUS_PRIORITY = {"SKIP": 0, "PASS": 1, "REVIEW": 2, "FAIL": 3}
 LEVEL_ORDER = {"video": 0, "sequence": 1, "frame": 2}
 
-REPORT_CHECK_ORDER = {
+REPORT_CHECK_ORDER_FACE = {
     # 1) Video/file-level checks
     "check_container": 10,
     "check_fps": 20,
@@ -50,15 +50,47 @@ REPORT_CHECK_ORDER = {
     "check_turn_sequence": 350,
 }
 
+REPORT_CHECK_ORDER_WALK = {
+    # 1) Video/file-level checks (same slots as face)
+    "check_container": 10,
+    "check_fps": 20,
+    "check_duration": 30,
+    "check_resolution": 40,
+    "frames_sampled": 50,
+    "frame_checks": 60,
 
-def report_sort_key(check_name, level):
+    # 2) Person evidence / landmark availability
+    "check_person_detected": 100,
+    "check_person_fully": 110,
+
+    # 3) Frame-quality checks (body_height takes the size slot, like check_face_size)
+    "check_body_height": 200,
+    "check_brightness": 230,
+    "check_person_blur": 240,
+
+    # 4) Sequence-level walk-direction verdict
+    "check_pose": 300,
+}
+
+
+def report_sort_key(check_name, level, data_type=None):
     """Stable researcher-facing order for result CSV rows.
 
-    Known checks follow the real QC flow.
-    Unknown checks fall back to level + check name so future checks still show.
+    Each pipeline has its OWN order dict so numbers are only meaningful within a
+    modality (no cross-pipeline collisions on shared names like check_brightness).
+    data_type picks the dict: a "walk*" data_type uses the walk order, everything
+    else uses the face order.
+
+    Known checks follow that pipeline's QC flow. Unknown checks fall back to
+    level + check name so future checks still show.
     """
-    if check_name in REPORT_CHECK_ORDER:
-        return (0, REPORT_CHECK_ORDER[check_name])
+    if data_type and str(data_type).startswith("walk"):
+        order = REPORT_CHECK_ORDER_WALK
+    else:
+        order = REPORT_CHECK_ORDER_FACE
+
+    if check_name in order:
+        return (0, order[check_name])
 
     return (1, LEVEL_ORDER.get(level, 99), check_name)
 
@@ -106,7 +138,8 @@ def summarize_rows_by_check(rows, aggregation_cfg=None):
     def sort_key(item):
         check_name, group = item
         level = getattr(group[0], "level", "frame")
-        return report_sort_key(check_name, level)
+        data_type = getattr(group[0], "data_type", None)
+        return report_sort_key(check_name, level, data_type)
 
     for check_name, group in sorted(grouped.items(), key=sort_key):
         counts = Counter(r.status for r in group)

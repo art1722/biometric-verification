@@ -108,6 +108,13 @@ def parse_args():
     ap.add_argument("--no-overlay", action="store_true",
                     help="do NOT write the per-video debug overlay .mp4 "
                          "(skeleton + bbox + height verdict).")
+    ap.add_argument("--fail-fast", action="store_true",
+                    help="halt a video early on a STRUCTURAL defect (bad "
+                         "metadata, 0 frames, or multiple persons in a frame) "
+                         "so the FAIL is ratio-exempt, mirroring run_face. Only "
+                         "takes effect with --no-overlay (the overlay needs a "
+                         "complete timeline, so an overlay run force-disables "
+                         "fail-fast).")
     return ap.parse_args()
 
 
@@ -173,15 +180,23 @@ def main():
     if not videos:
         sys.exit("no walk videos found (expected NNN_walk_[F|S].mp4)")
 
-    # Wire walk.brightness.frame_fail_ratio into the report aggregation so the
-    # per-frame check_brightness rows aggregate to a video FAIL at the WALK
-    # threshold (>=20%), independent of the face/global ratio. summarize_rows_by_check
-    # reads per_check_fail_ratio[check_name]; we set check_brightness to walk's
-    # value here rather than hard-coding it in report.py. [DESIGN]
-    bri_fail_ratio = (config.get("walk", {}).get("brightness", {})
-                      .get("frame_fail_ratio", 0.2))
+    # Wire each walk frame-check's fail-ratio into the report aggregation so the
+    # per-frame rows aggregate to a video FAIL at the WALK threshold (>=20%),
+    # independent of the face/global ratio. summarize_rows_by_check reads
+    # per_check_fail_ratio[check_name]; we set each here rather than hard-coding
+    # in report.py. [DESIGN]
+    walk_cfg = config.get("walk", {})
     agg = config.setdefault("report", {}).setdefault("aggregation", {})
-    agg.setdefault("per_check_fail_ratio", {})["check_brightness"] = bri_fail_ratio
+    per_check = agg.setdefault("per_check_fail_ratio", {})
+    per_check["check_brightness"] = (walk_cfg.get("brightness", {})
+                                     .get("frame_fail_ratio", 0.2))
+    per_check["check_person_blur"] = (walk_cfg.get("blur", {})
+                                      .get("frame_fail_ratio", 0.2))
+    fc_cfg = walk_cfg.get("frame_checks", {})
+    per_check["check_person_detected"] = fc_cfg.get(
+        "person_detected_fail_ratio", 0.2)
+    per_check["check_person_fully"] = fc_cfg.get(
+        "person_fully_fail_ratio", 0.2)
 
     os.makedirs(args.out_root, exist_ok=True)
     summary_csv = args.summary_csv or os.path.join(args.out_root, "walk_summary.csv")
@@ -219,10 +234,18 @@ def main():
                 # run_face's None sentinel; the pipeline writes the overlay at the
                 # SAME rate it samples so the output duration matches the source.
                 sample_fps = args.sample_fps if args.sample_fps and args.sample_fps > 0 else None
+                # fail-fast mirrors run_face: a structural defect (bad metadata,
+                # 0 frames, multiple persons) halts the file early so the FAIL is
+                # ratio-exempt. But the overlay needs a COMPLETE timeline, so
+                # fail-fast is force-disabled whenever an overlay is written
+                # (overlay is ON by default) -- pass --no-overlay --fail-fast to
+                # actually get the early break. Same tradeoff face documents.
+                overlay_on = not args.no_overlay
                 rows, timeline = run_walk(
                     path, vid, config, view=view, detector=detector,
-                    overlay=not args.no_overlay, out_root=out_dir,
-                    sample_fps=sample_fps)
+                    overlay=overlay_on, out_root=out_dir,
+                    sample_fps=sample_fps,
+                    fail_fast=(args.fail_fast and not overlay_on))
 
                 if not args.quiet:
                     for r in rows:

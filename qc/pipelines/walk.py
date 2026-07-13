@@ -44,6 +44,9 @@ from qc.utils.video import probe_video, iter_sampled_frames
 from qc.checks.pose_landmarker import create_pose_landmarker, detect_pose
 from qc.checks.check_body_height import check_body_height
 from qc.checks.check_brightness import check_brightness_walk
+from qc.checks.check_person_fully import check_person_fully
+from qc.checks.check_face_blur import check_face_blur  # reused for person blur
+from qc.checks.check_walk_direction import check_walk_direction
 from qc.checks import check_metadata as md
 from qc.schemas import CheckRow
 
@@ -66,6 +69,7 @@ def run_walk(
     overlay: bool = True,
     out_root: str = "reports",
     sample_fps: Optional[float] = 5.0,
+    fail_fast: bool = True,
 ):
     """Run the MVP gait pipeline (first-frame body-height only) on one walk video.
 
@@ -138,6 +142,11 @@ def run_walk(
     min_w = meta_cfg.get("min_width_px", 1920)
     min_h = meta_cfg.get("min_height_px", 1080)
 
+    blur_cfg = walk_cfg.get("blur", {})
+    blur_threshold = blur_cfg.get("threshold", 35.0)
+
+    dir_cfg = walk_cfg.get("direction", {})
+
     # Per-frame series (brightness per sampled frame) for the detail_header CSV
     # and the dashboard, mirroring the face pipeline's timeline.
     timeline: list[dict] = []
@@ -204,7 +213,30 @@ def run_walk(
     status, reason = md.check_resolution(meta, min_width=min_w, min_height=min_h)
     add("check_resolution", status, reason, level="video")
 
-    first_frame = None
+    # ---- fail-fast GATE 1: video-level metadata (mirror face_rgb GATE 1) ----
+    # The four checks above describe the FILE, not any frame. If any FAILs the
+    # file is structurally non-conforming and no frame analysis can change the
+    # verdict, so stop before the (expensive, 1,500-scale) frame pass. Skipped
+    # when fail_fast=False (overlay/dashboard runs) so an off-spec file still
+    # gets a full per-frame timeline + overlay.
+    if fail_fast:
+        VIDEO_GATE = ("check_container", "check_fps",
+                      "check_duration", "check_resolution")
+        gate_fail = next(
+            (r for r in rows
+             if r.check_name in VIDEO_GATE and r.status == "FAIL"),
+            None,
+        )
+        if gate_fail is not None:
+            add("frame_checks", "SKIP",
+                f"fail-fast: {gate_fail.check_name} FAILed "
+                f"({gate_fail.reason}); frame checks skipped",
+                level="video")
+            add("check_body_height", "SKIP",
+                f"fail-fast: {gate_fail.check_name} FAILed; height not measured",
+                level="video")
+            _maybe_close(detector, own_detector)
+            return rows, []
     try:
         for sf in iter_sampled_frames(path, sample_fps=None, max_frames=1,
                                       include_first_frame=True,
@@ -248,12 +280,50 @@ def run_walk(
     # (walk.brightness.frame_fail_ratio) into the video-level verdict. The
     # overlay (if on) draws the same frame with the frame's brightness verdict
     # in the strip. Height stays a first-frame video-level row, untouched above.
-    _run_frame_pass(
+    aborted, frames_seen = _run_frame_pass(
         path, volunteer_id, filename, data_type, detector, add, timeline,
         overlay=overlay, out_root=out_root, sample_fps=sample_fps, meta=meta,
         bri_dark=bri_dark, bri_bright=bri_bright, bri_margin=bri_margin,
+        blur_threshold=blur_threshold,
         height_status=height_status, height_reason=height_reason,
+        fail_fast=fail_fast,
     )
+
+    # ---- fail-fast GATE 2: zero frames (mirror face_rgb GATE 2) ----
+    # The file opened and metadata passed, but the frame pass yielded nothing
+    # (corrupt/empty stream). That is a structural FAIL and there is no timeline
+    # to run check_pose over, so record it and stop. Unlike face this runs
+    # regardless of fail_fast: zero frames is never a valid sample.
+    if frames_seen == 0:
+        add("frames_sampled", "FAIL",
+            "video opened but yielded 0 frames (corrupt/empty stream)",
+            level="video")
+        _maybe_close(detector, own_detector)
+        return rows, timeline
+    add("frames_sampled", "PASS", f"sampled {frames_seen} frames", level="video")
+
+    # If a fail-fast gate broke the loop early, the timeline is intentionally
+    # incomplete and the file already carries a FAIL (multiple-persons). The
+    # walk-direction check reasons over the WHOLE timeline, so running it on a
+    # truncated one would be meaningless. Skip it -- the structural FAIL already
+    # decides the file. Mirrors face_rgb skipping turn-sequence on abort.
+    if aborted:
+        _maybe_close(detector, own_detector)
+        return rows, timeline
+
+    # ---- check_pose: sequence-level walk-direction verdict ----
+    # Reasons over the whole timeline (F: toward+away via body_scale; S:
+    # left+right via centroid_x). One row per video, level="sequence", mirroring
+    # face's check_turn_sequence. Reported as "check_pose" per the reviewer.
+    view = view or _view_from_filename(filename)
+    dir_ok, dir_msg = check_walk_direction(
+        timeline, view,
+        smooth_window=dir_cfg.get("smooth_window", 5),
+        min_run=dir_cfg.get("min_run", 3),
+        eps=dir_cfg.get("eps", 0.002),
+        min_frames=dir_cfg.get("min_frames", 8),
+    )
+    add("check_pose", _bool_to_status(dir_ok), dir_msg, level="sequence")
 
     _maybe_close(detector, own_detector)
     return rows, timeline
@@ -261,10 +331,17 @@ def run_walk(
 
 def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                     timeline, *, overlay, out_root, sample_fps, meta,
-                    bri_dark, bri_bright, bri_margin,
-                    height_status, height_reason):
+                    bri_dark, bri_bright, bri_margin, blur_threshold,
+                    height_status, height_reason, fail_fast=True):
     """One pass over the sampled frames: pose once per frame, feeding BOTH the
     per-frame brightness check and (if enabled) the overlay video.
+
+    Returns (aborted, frames_seen):
+      aborted     True if a fail-fast structural gate (multiple persons in a
+                  frame) broke the loop early. The caller then skips the
+                  sequence-level check_pose (the timeline is truncated), exactly
+                  as face_rgb skips its turn-sequence check on an aborted file.
+      frames_seen number of frames actually processed (for the 0-frame gate).
 
     Emits one frame-level `check_brightness` CheckRow per sampled frame (which
     report.py aggregates by walk.brightness.frame_fail_ratio into the video
@@ -321,13 +398,78 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                            filename, e)
             writer = None
 
+    aborted = False
+    frames_seen = 0
     try:
         for sf in iter_sampled_frames(path, sample_fps=iter_fps,
                                       include_first_frame=True,
                                       include_last_frame=True,
                                       max_frames=None):
+            frames_seen += 1
             p = detect_pose(sf.image, detector=detector,
                             input_color_space=sf.color_space)
+            frame_h, frame_w = sf.image.shape[:2]
+
+            # detect_pose returns ok=False for BOTH "No poses detected" and
+            # "Multiple poses detected: N". These are DIFFERENT cases (mirror
+            # face_rgb, which splits "No faces" from "Multiple faces detected"):
+            #   no person   -> routine per-frame FAIL (person walked off / not
+            #                  yet in view); ratio-judged, does NOT break.
+            #   multiple    -> STRUCTURAL defect (a second person in frame). The
+            #                  gait protocol films ONE walker, so this fails the
+            #                  whole video and, under fail_fast, breaks the loop
+            #                  (the 100% denominator then makes it ratio-exempt,
+            #                  same mechanism as face's multiple-faces gate).
+            multiple_persons = (not p.ok) and \
+                str(p.message).startswith("Multiple poses detected")
+
+            # Each per-frame check captures its (status, reason) into a local so
+            # the SAME verdict feeds both the report row (add) and the overlay
+            # strip -- the two can never disagree. Reason strings carry the
+            # `frame=N` prefix so the overlay reads identically to the CSV row.
+
+            # ---- check_person_detected (frame-level; mirror check_face_detected) ----
+            # Did the pose detector find EXACTLY ONE person this frame? PASS if
+            # yes, FAIL otherwise (no person, or multiple). This is the gate the
+            # other per-frame person checks depend on.
+            if p.ok:
+                pd_status = "PASS"
+                pd_reason = f"frame={sf.frame_index} person detected"
+            else:
+                pd_status = "FAIL"
+                pd_reason = f"frame={sf.frame_index} no person: {p.message}"
+            add("check_person_detected", pd_status, pd_reason,
+                frame_index=sf.frame_index, level="frame")
+
+            # ---- check_person_fully (frame-level; 8 key landmarks in frame) ----
+            if p.ok:
+                pf_ok, pf_msg = check_person_fully(
+                    p.landmarks_px, frame_w, frame_h)
+                pf_status = _bool_to_status(pf_ok)
+                pf_reason = f"frame={sf.frame_index} {pf_msg}"
+            else:
+                pf_status = "FAIL"
+                pf_reason = f"frame={sf.frame_index} no person: {p.message}"
+            add("check_person_fully", pf_status, pf_reason,
+                frame_index=sf.frame_index, level="frame")
+
+            # ---- check_person_blur (frame-level; REUSES check_face_blur on the
+            # body bbox -- the scorer is region-agnostic). None -> SKIP (too
+            # dark / too low contrast to judge), same mapping face uses. ----
+            if p.ok and p.bbox is not None:
+                blur_res, blur_msg = check_face_blur(
+                    sf.image, threshold=blur_threshold, bbox=p.bbox,
+                    input_color_space=sf.color_space)
+                if blur_res is None:
+                    blur_status = "SKIP"
+                else:
+                    blur_status = _bool_to_status(blur_res)
+                blur_reason = f"frame={sf.frame_index} {blur_msg}"
+            else:
+                blur_status = "FAIL"
+                blur_reason = f"frame={sf.frame_index} no person: {p.message}"
+            add("check_person_blur", blur_status, blur_reason,
+                frame_index=sf.frame_index, level="frame")
 
             # ---- brightness (frame-level, INVERTED verdict inside the check) ----
             if p.ok:
@@ -345,19 +487,32 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
             add("check_brightness", b_status, b_msg,
                 frame_index=sf.frame_index, level="frame")
 
-            # ---- timeline entry (brightness value for detail_header / dashboard) ----
+            # ---- timeline entry (brightness + direction signals) ----
             bval = _brightness_value(b_msg)
             bw = p.bbox[2] if p.ok and p.bbox else None
             bh = p.bbox[3] if p.ok and p.bbox else None
+            # Direction signals (normalized so they are resolution-independent):
+            #   body_scale = bbox height / frame height  (grows toward camera) -> F
+            #   centroid_x = bbox center x / frame width  (traverses L<->R)     -> S
+            body_scale = (bh / frame_h) if bh else None
+            centroid_x = ((p.bbox[0] + p.bbox[2] / 2.0) / frame_w
+                          if p.ok and p.bbox else None)
             timeline.append({
                 "frame_index": sf.frame_index,
                 "timestamp_sec": sf.timestamp_sec,
                 "brightness": bval,
                 "body_width": bw,
                 "body_height_px": bh,
+                "body_scale": body_scale,
+                "centroid_x": centroid_x,
             })
 
-            # ---- overlay frame (both verdicts in the strip) ----
+            # ---- overlay frame (all per-frame verdicts in the strip) ----
+            # Pass every check so the strip mirrors the report. check_body_height
+            # is the video-level first-frame verdict (constant across frames);
+            # the rest are this frame's. The overlay orders them by the shared
+            # the walk order (REPORT_CHECK_ORDER_WALK), so the strip reads in the
+            # same order as the CSV.
             if writer is not None:
                 writer.add_frame(
                     sf.image, sf.color_space, sf.frame_index, sf.timestamp_sec,
@@ -366,14 +521,30 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                     bbox=p.bbox if p.ok else None,
                     checks={
                         "check_body_height": (height_status, height_reason),
+                        "check_person_detected": (pd_status, pd_reason),
+                        "check_person_fully": (pf_status, pf_reason),
                         "check_brightness": (b_status, b_msg),
+                        "check_person_blur": (blur_status, blur_reason),
                     },
                 )
+
+            # ---- fail-fast GATE 3: multiple persons (mirror face_rgb GATE 3) ----
+            # A second person is a structural defect, not a ratio-judged
+            # transient. The FAIL row + overlay frame for THIS frame are already
+            # emitted above; break so we don't spend model time on a doomed file.
+            # The caller skips check_pose on an aborted (truncated) timeline. Only
+            # under fail_fast: with the overlay on (fail_fast=False) we keep going
+            # so the reviewer still gets the full overlay (same tradeoff as face).
+            if multiple_persons and fail_fast:
+                aborted = True
+                break
     except Exception as e:  # pragma: no cover
         logger.warning("walk frame pass failed for %s: %s", filename, e)
     finally:
         if writer is not None:
             writer.close()
+
+    return aborted, frames_seen
 
 
 def _brightness_value(msg):

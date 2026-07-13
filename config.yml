@@ -538,6 +538,26 @@ walk:
     # without touching face. Wired via per_check_fail_ratio in run_walk.
     frame_fail_ratio: 0.2            # [SPEC-DERIVED] overall FAIL if >= 20% frames fail
 
+  blur:
+    # Person-blur reuses check_face_blur (region-agnostic Tenengrad scorer) on
+    # the body bbox. Same default threshold as face; tune on real walk footage.
+    threshold: 35.0                  # [FACE-ALIGNED]
+    frame_fail_ratio: 0.2            # overall FAIL if >= 20% frames fail
+
+  direction:
+    # check_pose (sequence-level): F=toward+away via body scale, S=left+right via
+    # centroid-x. [DESIGN] defaults pending validation on real _F/_S footage.
+    smooth_window: 5                 # moving-average window over the frame series
+    min_run: 3                       # consecutive frames of one polarity = a phase
+    eps: 0.002                       # |delta| below this per step is treated as flat
+    min_frames: 8                    # fewer usable frames -> SKIP (too short)
+
+  # Per-frame fail-ratio for the other person checks (detected / fully). Same
+  # 20% rule; kept here so all walk frame checks share one tunable place.
+  frame_checks:
+    person_detected_fail_ratio: 0.2
+    person_fully_fail_ratio: 0.2
+
   recording:
     require_indoor_safe_area: true       # [SPEC] no detector -> SKIP
     require_no_obstacle: true            # [SPEC] no detector -> SKIP

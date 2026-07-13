@@ -33,6 +33,7 @@ from qc.utils.overlay import (
     _put, _STATUS_COLOR,
     _GREEN, _RED, _AMBER, _GREY, _WHITE, _BLACK, _PANEL, _FONT,
 )
+from qc.utils.report import report_sort_key
 
 logger = logging.getLogger(__name__)
 
@@ -274,7 +275,10 @@ class WalkOverlayWriter:
         pad = int(16 * s)
         gap = int(30 * s)
 
-        names = sorted(checks.keys())
+        # Order the strip by the SAME report order the CSV uses (not alphabetical)
+        # so the overlay and the report agree row-for-row.
+        names = sorted(checks.keys(),
+                       key=lambda nm: report_sort_key(nm, "frame", "walk"))
         items = []
         for nm in names:
             v = checks[nm]
