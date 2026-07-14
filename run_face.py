@@ -4,7 +4,7 @@ Usage (from the project root — the folder containing qc/):
 
     python run_face.py 001_face_rgb.mp4
     python run_face.py path/to/video.mp4 --id 042 --sample-fps 1
-    python run_face.py 001_face_rgb.mp4 --csv reports/face_001.csv
+    python run_face.py 001_face_rgb.mp4 --out-root reports
 
 Requires: pip install mediapipe opencv-python pyyaml numpy
 """
@@ -137,21 +137,12 @@ def parse_args():
                 help="frames sampled per source second. Default: None = "
                      "native fps (every frame), so the overlay is 1:1 with "
                      "the original (same length, same speed).")
-    ap.add_argument("--csv", default=None, help="optional: also write rows to this CSV")
-    ap.add_argument("--detail-header-csv", default=None,
-                    help="optional: per-frame pose/geometry CSV")
-    ap.add_argument("--summary", default=None,
-                    help="optional: also write the summary (tally + angle range) to this text file")
-    ap.add_argument("--result-csv", default=None,
-                    help="optional: write final aggregated result CSV")
-    ap.add_argument("--overall-csv", default=None,
-                    help="optional: write OVERALL row to a separate CSV")
     ap.add_argument("--overlay", default=None,
                     help="optional: write a debug overlay video (bbox + landmarks "
                          "+ pose + per-check status drawn on each sampled frame) "
                          "to this .mp4 path")
     ap.add_argument(
-        "--out-dir",
+        "--out-root",
         default=None,
         help="output folder; default: reports/<volunteer_id>",
     )
@@ -201,25 +192,20 @@ def apply_default_output_paths(args, vid):
         reports/405/face_405_summary.txt
         reports/405/face_405_overlay.mp4
     """
-    out_dir = args.out_dir or os.path.join("reports", vid)
+    out_dir = args.out_root or os.path.join("reports", vid)
     stem = f"face_{vid}"
 
     os.makedirs(out_dir, exist_ok=True)
 
-    if args.csv is None:
-        args.csv = os.path.join(out_dir, f"{stem}_detail.csv")
-
-    if args.detail_header_csv is None:
-        args.detail_header_csv = os.path.join(out_dir, f"{stem}_detail_header.csv")
-
-    if args.result_csv is None:
-        args.result_csv = os.path.join(out_dir, f"{stem}_result.csv")
-    
-    if args.overall_csv is None:
-        args.overall_csv = os.path.join(out_dir, f"{stem}_overall.csv")
-
-    if args.summary is None:
-        args.summary = os.path.join(out_dir, f"{stem}_summary.txt")
+    # These output paths are no longer user-facing flags (removed for a simpler,
+    # consistent CLI: the out-root already determines where everything lands).
+    # They are set here as fixed, conventional filenames under out-root and
+    # consumed by the writers below exactly as before.
+    args.csv = os.path.join(out_dir, f"{stem}_detail.csv")
+    args.detail_header_csv = os.path.join(out_dir, f"{stem}_detail_header.csv")
+    args.result_csv = os.path.join(out_dir, f"{stem}_result.csv")
+    args.overall_csv = os.path.join(out_dir, f"{stem}_overall.csv")
+    args.summary = os.path.join(out_dir, f"{stem}_summary.txt")
 
     if args.overlay is None and not args.no_overlay:
         args.overlay = os.path.join(out_dir, f"{stem}_overlay.mp4")

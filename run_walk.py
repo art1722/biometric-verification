@@ -97,9 +97,6 @@ def parse_args():
                          "`folder id` form, or parsed from filenames)")
     ap.add_argument("--out-root", default="reports",
                     help="output folder for walk_summary.csv (default: reports)")
-    ap.add_argument("--summary-csv", default=None,
-                    help="walk summary CSV path "
-                         "(default: <out-root>/walk_summary.csv)")
     ap.add_argument("--quiet", action="store_true",
                     help="suppress per-row stdout and writer prints")
     ap.add_argument("--overlay", action="store_true",
@@ -115,7 +112,35 @@ def parse_args():
                          "takes effect with --no-overlay (the overlay needs a "
                          "complete timeline, so an overlay run force-disables "
                          "fail-fast).")
+    ap.add_argument("--no-progress", action="store_true",
+                    help="hide the live per-check progress stream (each CheckRow "
+                         "is printed as it is emitted; pass this to silence it).")
     return ap.parse_args()
+
+
+def _short_reason(reason, max_len=120):
+    """Trim a long reason string for one-line progress output."""
+    if not reason:
+        return ""
+    reason = str(reason).replace("\n", " ")
+    return reason if len(reason) <= max_len else reason[: max_len - 1] + "\u2026"
+
+
+def make_progress_printer():
+    """Return a callback(row) that prints one line per CheckRow as the walk
+    pipeline emits it, so a console user sees progress in real time (mirrors
+    run_face's printer)."""
+    def progress(row):
+        level = getattr(row, "level", "frame")
+        reason = _short_reason(row.reason)
+        if level == "frame":
+            frame_text = "" if row.frame_index is None else f"frame={row.frame_index}"
+            print(f"[frame] {frame_text:>12} | "
+                  f"{row.check_name:<22} {row.status:<6} | {reason}", flush=True)
+        else:
+            print(f"[{level}] {'':>12} | "
+                  f"{row.check_name:<22} {row.status:<6} | {reason}", flush=True)
+    return progress
 
 
 def resolve_inputs(inputs, explicit_id):
@@ -201,7 +226,7 @@ def main():
         "person_fully_fail_ratio", 0.2)
 
     os.makedirs(args.out_root, exist_ok=True)
-    summary_csv = args.summary_csv or os.path.join(args.out_root, "walk_summary.csv")
+    summary_csv = os.path.join(args.out_root, "walk_summary.csv")
 
     # Build ONE pose detector and reuse it for every video.
     pose_cfg = config.get("models", {}).get("pose_landmarker", {})
@@ -230,6 +255,10 @@ def main():
 
     t0 = time.time()
     n = 0
+    # Live per-check progress stream (real time), unless silenced. --quiet
+    # already suppresses per-row output, so it implies no progress too.
+    progress_printer = (None if (args.no_progress or args.quiet)
+                        else make_progress_printer())
     try:
         with SummaryWriter(summary_csv, mode="w") as summary:
             for path in videos:
@@ -259,9 +288,13 @@ def main():
                     yolo_detector=yolo_detector,
                     overlay=overlay_on, out_root=out_dir,
                     sample_fps=sample_fps,
-                    fail_fast=(args.fail_fast and not overlay_on))
+                    fail_fast=(args.fail_fast and not overlay_on),
+                    progress=progress_printer)
 
-                if not args.quiet:
+                # Post-hoc row dump ONLY when live progress was off (else it
+                # double-prints what the progress stream already showed). With
+                # --no-progress but not --quiet, this is how rows still surface.
+                if not args.quiet and progress_printer is None:
                     for r in rows:
                         print(", ".join(str(x) for x in r.as_tuple()))
 

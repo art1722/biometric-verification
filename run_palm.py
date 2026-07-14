@@ -121,11 +121,12 @@ def parse_args():
     ap.add_argument("--id", default=None,
                     help="volunteer id (else taken from the 2nd positional arg "
                          "in `folder id` form, or parsed from filenames)")
-    ap.add_argument("--out-dir", default=None,
+    ap.add_argument("--out-root", default=None,
                     help="output folder; default: reports/<volunteer_id>")
     ap.add_argument("--overlay", action="store_true",
-                    help="(no-op) overlays are ON by default; kept for "
-                         "back-compat. Use --no-overlay to disable.")
+                    help="(default ON) write per-image overlay images with the "
+                         "check panel on a strip below the palm. Kept for "
+                         "explicitness/back-compat; use --no-overlay to disable.")
     ap.add_argument("--no-overlay", action="store_true",
                     help="do NOT write the per-image overlay images.")
     ap.add_argument("--angle-3d-tabs", action="store_true",
@@ -135,10 +136,6 @@ def parse_args():
     ap.add_argument("--no-angle-3d-tabs", action="store_true",
                     help="do NOT write the combined 3D palm-angle tabs HTML "
                          "(it is written by default; requires plotly).")
-    ap.add_argument("--overlay-on-image", action="store_true",
-                    help="draw the check panel ON TOP of the image instead of "
-                         "on a separate strip below it (default is below, so "
-                         "the panel never covers the palm).")
     ap.add_argument("--no-detect", action="store_true",
                     help="metadata-only: skip hand detection (no present/size/"
                          "brightness/spread/angle rows). Detection runs by "
@@ -309,7 +306,7 @@ def main():
     if vid is None:
         sys.exit("could not determine participant id; pass `<folder> <id>` or --id.")
 
-    out_dir = args.out_dir or os.path.join("reports", vid)
+    out_dir = args.out_root or os.path.join("reports", vid)
     os.makedirs(out_dir, exist_ok=True)
 
     print(f"Participant: {vid}")
@@ -398,9 +395,12 @@ def main():
 
             if not args.no_overlay:
                 ov_path = os.path.join(out_dir, f"palm_{vid}_{tag}_overlay.jpg")
+                # Panel always on a strip BELOW the palm: on real data the panel
+                # over the image makes the palm unreadable, so the on-image
+                # option was removed and this is fixed.
                 draw_palm_overlay(path, hand_result,
                                   checks=check_status, out_path=ov_path,
-                                  panel_below=not args.overlay_on_image,
+                                  panel_below=True,
                                   hand_override=hand)
                 if not args.quiet:
                     print(f"wrote overlay image to {ov_path}")

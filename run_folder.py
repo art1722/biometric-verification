@@ -23,9 +23,12 @@ Design choices (confirmed with the team):
     SummaryWriter / AllSummaryWriter classes live there so the future palm and
     walk runners emit IDENTICALLY-shaped output by calling the same classes.
   - all_summary is APPENDED to by default, so palm/walk runs add to the same
-    files after face. Pass --fresh-all to start a new cross-modal roll-up.
-  - Overlay is OFF by default (writing overlay video for 1,500 files takes
-    hours/days). Enable per-run with --overlay.
+    files after face within a single run. Overwritten each run by default;
+    pass --append to add to an existing cross-modal roll-up.
+  - Overlay is ON by default so a console user can eyeball results without
+    reading the CSVs. Pass --no-overlay for faster runs (no video writing);
+    NOTE that with overlays on, fail-fast is disabled (a full 1:1 timeline is
+    needed to draw the overlay). At 1,500-file scale, prefer --no-overlay.
   - Default sampling is --sample-fps 1 (fast). Pass --sample-fps 0 / a value
     to change; None (native, every frame) is intentionally NOT the batch
     default because it is far too slow at scale.
@@ -35,11 +38,11 @@ Design choices (confirmed with the team):
 
 Usage:
     python run_folder.py data
-    python run_folder.py data --out-root reports --summary-csv reports/face_summary.csv
+    python run_folder.py data --out-root reports --face-summary-csv reports/face_summary.csv
     python run_folder.py data --sample-fps 2
-    python run_folder.py data --overlay        # also write overlay videos (slow)
+    python run_folder.py data --no-overlay     # faster: skip overlay videos
     python run_folder.py data --limit 10       # process only first 10 (smoke test)
-    python run_folder.py data --fresh-all      # start a new all_summary roll-up
+    python run_folder.py data --append         # add to an existing all_summary roll-up
 """
 import argparse
 import csv
@@ -56,6 +59,9 @@ except ImportError:
 
 from qc.pipelines.face_rgb import run_face_rgb
 from qc.pipelines.palm import run_palm_participant
+from qc.pipelines.walk import run_walk
+from qc.checks.pose_landmarker import create_pose_landmarker
+from run_walk import find_walk_files, _identity as _walk_identity
 from qc.utils.report import (
     build_overall_record,
     write_result_csv,
@@ -91,47 +97,87 @@ PALM_LOOSE_RE = re.compile(
 def parse_args():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("input_dir", help="folder to scan for *_face_rgb.mp4")
+    ap.add_argument("input_dir",
+                    help="folder to scan (recursively) for face_rgb, palm, and "
+                         "walk files; all three run by default")
     ap.add_argument("--config", default="config.yml")
     ap.add_argument("--out-root", default="reports",
                     help="root for per-volunteer report folders (default: reports)")
-    ap.add_argument("--summary-csv", default=None,
-                    help="this modality's per-check summary CSV "
+    ap.add_argument("--face-summary-csv", default=None,
+                    help="face per-check summary CSV "
                          "(default: <out-root>/face_summary.csv)")
     ap.add_argument("--all-summary", default=None,
                     help="cross-modal FAIL/ERROR roll-up, written as both .csv "
                          "and .json, shared by all modalities "
-                         "(default stem: <out-root>/all_summary). Appended to, "
-                         "so palm/walk runs add to the same files; pass "
-                         "--fresh-all to truncate first.")
-    ap.add_argument("--fresh-all", action="store_true",
-                    help="truncate the all_summary files before writing (start "
-                         "a new cross-modal roll-up instead of appending).")
+                         "(default stem: <out-root>/all_summary). Overwritten "
+                         "each run by default; pass --append to add to an "
+                         "existing roll-up instead.")
+    ap.add_argument("--append", action="store_true",
+                    help="append to the existing all_summary files instead of "
+                         "overwriting them (default is to overwrite / start "
+                         "fresh each run).")
     ap.add_argument("--sample-fps", type=float, default=1.0,
                     help="frames sampled per source second (batch default: 1). "
                          "Native/every-frame is intentionally not offered here.")
-    ap.add_argument("--overlay", action="store_true",
-                    help="also write overlay videos (SLOW; off by default)")
+    ap.add_argument("--no-overlay", action="store_true",
+                    help="do NOT write overlay videos. Overlays are ON by default "
+                         "so a console user can eyeball results without digging "
+                         "through CSVs; pass this for faster runs (no video "
+                         "writing). NOTE: with overlays on, fail-fast is disabled "
+                         "(the overlay needs a complete 1:1 timeline).")
     ap.add_argument("--fail-fast", action="store_true",
                     help="stop processing a file early on a structural defect "
                          "(bad metadata / zero frames / multiple faces). Off by "
                          "default: every frame is processed so the report has a "
-                         "full timeline. Ignored when --overlay is set (the "
+                         "full timeline. Ignored unless --no-overlay is set (the "
                          "overlay always needs a complete 1:1 timeline).")
     ap.add_argument("--limit", type=int, default=None,
-                    help="process only the first N videos (smoke test)")
+                    help="process only the first N participants (by volunteer id) "
+                         "across all modalities; e.g. --limit 3 -> ids 001,002,004 "
+                         "and all their face/palm/walk files (F/S pairs kept together)")
     ap.add_argument("--no-detail", action="store_true",
                     help="skip the big per-frame detail CSV (keep result/overall only)")
-    ap.add_argument("--palm", action="store_true",
-                    help="also run the palm image batch (per-participant grading; "
-                         "one summary row per palm image). Writes palm_summary.csv "
-                         "and appends FAIL/ERROR rows to the shared all_summary.")
+    ap.add_argument("--no-palm", action="store_true",
+                    help="skip the palm image batch (palm runs by default)")
     ap.add_argument("--palm-summary-csv", default=None,
                     help="palm per-check summary CSV "
                          "(default: <out-root>/palm_summary.csv)")
+    ap.add_argument("--no-walk", action="store_true",
+                    help="skip the walk/gait video batch (walk runs by default)")
+    ap.add_argument("--walk-summary-csv", default=None,
+                    help="walk per-check summary CSV "
+                         "(default: <out-root>/walk_summary.csv)")
     ap.add_argument("--no-face", action="store_true",
-                    help="skip the face batch (e.g. run palm only with --palm --no-face)")
+                    help="skip the face batch (e.g. run palm+walk only with --no-face)")
     return ap.parse_args()
+
+
+def compute_allowed_ids(matched, input_dir, limit):
+    """The first `limit` participant ids across ALL modalities (face+palm+walk).
+
+    --limit is BY PARTICIPANT: `--limit 3` means the first 3 volunteer ids that
+    exist anywhere in the dataset (e.g. 001, 002, 004), and every file those 3
+    own -- across face, palm, and walk -- is processed, with F/S walk pairs kept
+    together. Ids are sorted numerically when they are all digits (so 4 < 004 <
+    56789 order is 001,002,004,005,...), else lexicographically.
+
+    Returns None when limit is None (no cap -> every modality runs unfiltered).
+    Otherwise returns a set of the allowed id strings; each batch intersects its
+    own discovered ids with this set, so all three run on the SAME participants.
+    """
+    if limit is None:
+        return None
+
+    ids = set()
+    ids.update(vid for vid, _ in matched)                      # face
+    ids.update(find_palm_images(input_dir)[0].keys())          # palm
+    for p in find_walk_files(input_dir):                       # walk
+        ids.add(_walk_identity(p)[0])
+
+    def _key(v):
+        return (0, int(v)) if v.isdigit() else (1, v)
+
+    return set(sorted(ids, key=_key)[:limit])
 
 
 def find_face_rgb_videos(input_dir):
@@ -185,7 +231,7 @@ def process_one(path, vid, config, args):
     detail_header_path = os.path.join(out_dir, f"{stem}_detail_header.csv")
     result_path = os.path.join(out_dir, f"{stem}_result.csv")
     overall_path = os.path.join(out_dir, f"{stem}_overall.csv")
-    overlay_path = os.path.join(out_dir, f"{stem}_overlay.mp4") if args.overlay else None
+    overlay_path = os.path.join(out_dir, f"{stem}_overlay.mp4") if not args.no_overlay else None
 
     start = time.perf_counter()
 
@@ -298,9 +344,17 @@ def _image_record(file_rows, config):
         for s in summaries
         if s["final_status"] == "FAIL"
     ]
+    # data_type carries the specific hand+pose (e.g. palm_L_N, palm_R_PU) so the
+    # summary CSV distinguishes the 10 palm images per participant, instead of a
+    # bare "palm". Parsed from the image filename (002_palm_L_N.jpg); falls back
+    # to whatever the row carried, then to "palm", if the name is unexpected.
+    palm_type = None
+    m = PALM_RE.match(os.path.basename(r0.filename or ""))
+    if m:
+        palm_type = f"palm_{m.group('hand')}_{m.group('pose')}"
     return {
         "volunteer_id": r0.volunteer_id,
-        "data_type": r0.data_type or "palm",
+        "data_type": palm_type or r0.data_type or "palm",
         "filename": r0.filename,
         "final_status": overall["final_status"],
         "failed_checks": [d["check_name"] for d in failed_detail],
@@ -354,17 +408,19 @@ def process_palm_participant(vid, files, config, args):
     return records, counts_delta
 
 
-def run_palm_batch(input_dir, config, args, all_summary, counts):
+def run_palm_batch(input_dir, config, args, all_summary, counts, allowed_ids=None):
     """Discover palm images, grade each participant, feed the shared writers.
 
     Uses a SEPARATE palm_summary.csv (opened here) but the SAME all_summary
     writer passed in, so palm FAIL/ERROR rows append to the cross-modal roll-up
     after face. Mutates `counts` in place with palm image verdicts.
+
+    allowed_ids: if given (from --limit), only participants whose id is in this
+    set are graded, so palm runs on the SAME volunteers as face/walk.
     """
     by_vid, wrong_case = find_palm_images(input_dir)
-    if args.limit is not None:
-        keep = dict(sorted(by_vid.items())[: args.limit])
-        by_vid = keep
+    if allowed_ids is not None:
+        by_vid = {vid: files for vid, files in by_vid.items() if vid in allowed_ids}
 
     if not by_vid:
         return 0, wrong_case
@@ -421,6 +477,148 @@ def run_palm_batch(input_dir, config, args, all_summary, counts):
     return n_images, wrong_case
 
 
+def run_walk_batch(input_dir, config, args, all_summary, counts, allowed_ids=None):
+    """Discover walk videos, grade each (per video, F and S independent), feed
+    the shared writers.
+
+    Mirrors run_walk.py's main(): it (1) wires each walk frame-check's fail-ratio
+    into report aggregation, (2) builds ONE pose detector and ONE YOLO detector
+    for the whole batch (weights load once, not per video), and (3) loops the
+    videos calling qc.pipelines.walk.run_walk with those shared detectors.
+
+    Walk grades PER VIDEO (each _F/_S file is its own row), so this loop is
+    shaped like the face loop, not palm's per-participant grouping. Uses a
+    SEPARATE walk_summary.csv but the SAME all_summary writer passed in, so walk
+    FAIL/ERROR rows append to the cross-modal roll-up after face and palm.
+    Mutates `counts` in place.
+
+    allowed_ids: if given (from --limit), only videos whose participant id is in
+    this set are graded (BOTH F and S of each kept participant), so walk runs on
+    the SAME volunteers as face/palm.
+    """
+    paths = find_walk_files(input_dir)
+    if allowed_ids is not None:
+        paths = [p for p in paths if _walk_identity(p)[0] in allowed_ids]
+
+    if not paths:
+        return 0, []
+
+    # (1) Wire walk per-check fail-ratios into report aggregation, EXACTLY as
+    # run_walk.py main() does, so per-frame walk rows aggregate to a video FAIL
+    # at the walk thresholds, independent of the face/global ratio.
+    walk_cfg = config.get("walk", {})
+    agg = config.setdefault("report", {}).setdefault("aggregation", {})
+    per_check = agg.setdefault("per_check_fail_ratio", {})
+    per_check["check_brightness"] = (walk_cfg.get("brightness", {})
+                                     .get("frame_fail_ratio", 0.2))
+    per_check["check_person_blur"] = (walk_cfg.get("blur", {})
+                                      .get("frame_fail_ratio", 0.2))
+    per_check["check_occlusion"] = (walk_cfg.get("occlusion", {})
+                                    .get("frame_fail_ratio", 0.2))
+    fc_cfg = walk_cfg.get("frame_checks", {})
+    per_check["check_person_detected"] = fc_cfg.get(
+        "person_detected_fail_ratio", 0.2)
+    per_check["check_person_fully"] = fc_cfg.get(
+        "person_fully_fail_ratio", 0.2)
+
+    walk_summary_csv = args.walk_summary_csv or os.path.join(
+        args.out_root, "walk_summary.csv"
+    )
+    os.makedirs(os.path.dirname(walk_summary_csv) or ".", exist_ok=True)
+
+    # (2) Build ONE pose detector + ONE YOLO detector for the whole batch, so the
+    # bundles load once. Both are passed into every run_walk call. YOLO disabled
+    # in config or ultralytics missing -> stays None; the pipeline then emits
+    # SKIP occlusion rows instead of crashing.
+    pose_cfg = config.get("models", {}).get("pose_landmarker", {})
+    model_path = pose_cfg.get("model_path", "models/pose_landmarker.task")
+    detector = create_pose_landmarker(
+        model_path,
+        min_pose_detection_confidence=pose_cfg.get("min_pose_detection_confidence", 0.5),
+        min_pose_presence_confidence=pose_cfg.get("min_pose_presence_confidence", 0.5),
+        min_tracking_confidence=pose_cfg.get("min_tracking_confidence", 0.5),
+    )
+    yolo_detector = None
+    if walk_cfg.get("occlusion", {}).get("enabled", True):
+        try:
+            from qc.checks.yolo_detector import create_yolo_detector
+            yolo_detector = create_yolo_detector(config)
+        except ImportError as exc:
+            print(f"  [warn] occlusion check disabled: {exc}")
+
+    # sample_fps: 0 / negative -> native (every frame), mirroring run_walk.
+    sample_fps = args.sample_fps if args.sample_fps and args.sample_fps > 0 else None
+    # Overlay ON by default in batch (run_folder's --no-overlay opts out); when
+    # on, the pipeline force-disables fail-fast so the overlay gets a full
+    # timeline.
+    overlay_on = not args.no_overlay
+
+    total_w = len(paths)
+    n_videos = 0
+    print(f"\n=== walk batch: {total_w} video(s) ===")
+    try:
+        with SummaryWriter(walk_summary_csv, mode="w") as walk_summary:
+            for i, path in enumerate(paths, start=1):
+                vid, view = _walk_identity(path)
+                out_dir = os.path.join(args.out_root, vid)
+                os.makedirs(out_dir, exist_ok=True)
+                stem = f"walk_{vid}_{view}"
+                t0 = time.perf_counter()
+                try:
+                    rows, timeline = run_walk(
+                        path, vid, config, view=view, detector=detector,
+                        yolo_detector=yolo_detector,
+                        overlay=overlay_on, out_root=out_dir,
+                        sample_fps=sample_fps,
+                        # Fail-fast OFF by default (full timeline); --overlay
+                        # force-disables it so the overlay is a complete 1:1 copy.
+                        fail_fast=(args.fail_fast and not overlay_on),
+                    )
+                    # Per-volunteer files, same as face (quiet so the batch
+                    # console stays clean). One set per F/S video (stem differs).
+                    if not args.no_detail:
+                        write_detail_csv(
+                            os.path.join(out_dir, f"{stem}_detail.csv"),
+                            rows, timeline, quiet=True)
+                    write_detail_header_csv(
+                        os.path.join(out_dir, f"{stem}_detail_header.csv"),
+                        rows, timeline, quiet=True)
+                    write_result_csv(
+                        os.path.join(out_dir, f"{stem}_result.csv"),
+                        os.path.join(out_dir, f"{stem}_overall.csv"),
+                        rows, timeline, config=config, quiet=True)
+
+                    rec = build_overall_record(rows, timeline, config=config)
+                    elapsed = time.perf_counter() - t0
+                    rec["volunteer_id"] = rec.get("volunteer_id") or vid
+                    rec["filename"] = rec.get("filename") or os.path.basename(path)
+                    rec["data_type"] = rec.get("data_type") or f"walk_{view}"
+                    rec["error"] = ""
+                    rec["processing_time_sec"] = f"{elapsed:.1f}"
+                except Exception as exc:  # noqa: BLE001 — one bad file must not kill the batch
+                    elapsed = time.perf_counter() - t0
+                    rec = error_row(path, vid, exc, elapsed)
+                    print(f"[{i}/{total_w}] {vid:>5}  ERROR  {rec['error']}", flush=True)
+                    traceback.print_exc()
+                else:
+                    print(f"[{i}/{total_w}] {vid:>5}_{view}  "
+                          f"{rec['final_status']:<6} ({elapsed:.1f}s)", flush=True)
+
+                walk_summary.add(rec)
+                all_summary.add(rec)
+                counts[rec["final_status"]] = counts.get(rec["final_status"], 0) + 1
+                n_videos += 1
+    finally:
+        if hasattr(detector, "close"):
+            try:
+                detector.close()
+            except Exception:  # pragma: no cover
+                pass
+
+    print(f"  walk summary: {walk_summary_csv}  ({n_videos} video row(s))")
+    return n_videos, []
+
+
 def main():
     args = parse_args()
 
@@ -432,7 +630,7 @@ def main():
     with open(args.config, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
-    summary_csv = args.summary_csv or os.path.join(args.out_root, "face_summary.csv")
+    summary_csv = args.face_summary_csv or os.path.join(args.out_root, "face_summary.csv")
     os.makedirs(os.path.dirname(summary_csv) or ".", exist_ok=True)
 
     # all_summary is a STEM: the writer makes <stem>.csv and <stem>.json.
@@ -440,11 +638,16 @@ def main():
     os.makedirs(os.path.dirname(all_stem) or ".", exist_ok=True)
 
     matched, skipped, wrong_case = find_face_rgb_videos(args.input_dir)
-    if args.limit is not None:
-        matched = matched[: args.limit]
+    allowed_ids = compute_allowed_ids(matched, args.input_dir, args.limit)
+    if allowed_ids is not None:
+        matched = [(vid, path) for vid, path in matched if vid in allowed_ids]
 
     run_face = not args.no_face
-    run_palm = args.palm
+    run_palm = not args.no_palm
+    run_walk_flag = not args.no_walk
+    # Overlays ON by default (console debugging); --no-overlay opts out. The API
+    # layer (wired later) will force this OFF for server jobs regardless of CLI.
+    overlay_enabled = not args.no_overlay
 
     if run_face and not matched:
         print(f"No *_face_rgb.mp4 found under {args.input_dir}")
@@ -454,8 +657,8 @@ def main():
                 print(f"  - {p}")
         if skipped:
             print(f"({len(skipped)} other .mp4 files were ignored)")
-        # With no face videos, only continue if palm was explicitly requested.
-        if not run_palm:
+        # With no face videos, only continue if palm or walk still run.
+        if not run_palm and not run_walk_flag:
             return 1
         run_face = False
 
@@ -464,9 +667,11 @@ def main():
     print(f"input     : {args.input_dir}")
     if run_face:
         print(f"videos    : {total} face_rgb files  (sample_fps={args.sample_fps}, "
-              f"overlay={'on' if args.overlay else 'off'})")
+              f"overlay={'on' if overlay_enabled else 'off'})")
     if run_palm:
         print(f"palm      : ON  (per-participant grading, one row per image)")
+    if run_walk_flag:
+        print(f"walk      : ON  (per-video grading, one row per F/S video)")
     print(f"out root  : {args.out_root}")
     print(f"summary   : {summary_csv}  (per-check, all videos)")
     print(f"all       : {all_stem}.csv / .json  (FAIL/ERROR only, cross-modal)\n")
@@ -474,6 +679,7 @@ def main():
     counts = {"PASS": 0, "FAIL": 0, "SKIP": 0, "ERROR": 0}
     palm_wrong_case = []
     n_palm_images = 0
+    n_walk_videos = 0
     run_start = time.perf_counter()
 
     # Two writers, opened together so both flush per video and a crash mid-run
@@ -483,7 +689,7 @@ def main():
     # Both expand the SAME overall record, so face/palm/walk stay identical.
     # The all_summary writer stays open across BOTH the face loop and the palm
     # batch so palm rows append to the same cross-modal roll-up in one process.
-    all_mode = "w" if args.fresh_all else "a"
+    all_mode = "a" if args.append else "w"
     with AllSummaryWriter(all_stem, mode=all_mode) as all_summary:
 
         if run_face:
@@ -512,7 +718,12 @@ def main():
 
         if run_palm:
             n_palm_images, palm_wrong_case = run_palm_batch(
-                args.input_dir, config, args, all_summary, counts
+                args.input_dir, config, args, all_summary, counts, allowed_ids
+            )
+
+        if run_walk_flag:
+            n_walk_videos, _walk_wrong = run_walk_batch(
+                args.input_dir, config, args, all_summary, counts, allowed_ids
             )
 
     all_kept = all_summary.kept
@@ -523,12 +734,14 @@ def main():
         print(f"  face: {total} video(s)")
     if run_palm:
         print(f"  palm: {n_palm_images} image row(s)")
+    if run_walk_flag:
+        print(f"  walk: {n_walk_videos} video row(s)")
     print(f"  PASS={counts.get('PASS',0)}  FAIL={counts.get('FAIL',0)}  "
           f"SKIP={counts.get('SKIP',0)}  ERROR={counts.get('ERROR',0)}")
     if run_face:
         print(f"  summary: {summary_csv}")
     print(f"  all    : {all_stem}.csv / .json  ({all_kept} FAIL/ERROR video(s) "
-          f"{'written' if args.fresh_all else 'appended'})")
+          f"{'appended' if args.append else 'written'})")
     if wrong_case:
         print(f"\n  WARNING: {len(wrong_case)} wrong-case face_rgb file(s) were "
               f"NOT processed (strict naming). Fix the casing to '_face_rgb.mp4':")
