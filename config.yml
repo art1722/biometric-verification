@@ -105,7 +105,7 @@ models:
     # verify_env.py should check it is present. A bare name auto-downloads if
     # ultralytics can reach the network.
     model_path: models/yolov8n.pt    # [DESIGN] n=nano (fastest); s/m/l/x trade speed for accuracy
-    conf: 0.35                       # [DESIGN] default confidence gate; walk.occlusion.conf overrides per-run
+    conf: 0.5                       # [DESIGN] default confidence gate; walk.occlusion.conf overrides per-run
 
 
 face:
@@ -535,7 +535,7 @@ walk:
     # the walk verdict is INVERTED per the researcher decision (2026-07-13):
     #   face  : PASS when 35 <= brightness <= 200   (normal-lit)
     #   walk  : PASS when brightness < 35 OR > 200   (literally inverted)
-    # NOTE for อ.เหมียว: this inversion means a normally-lit walk clip FAILS
+    # NOTE: this inversion means a normally-lit walk clip FAILS
     # brightness and only a very dark / very bright clip passes. That is the
     # opposite of the spec wording ("not too glaring, not too dark"). Flagged
     # for confirmation, same discipline as the palm in-plane leak.
@@ -559,8 +559,14 @@ walk:
     # This IMPLEMENTS recording.require_no_obstacle (previously "no detector ->
     # SKIP"): with YOLO we can actually judge it per frame.
     enabled: true                    # [DESIGN] set false to skip the 2nd model
-    conf: 0.35                       # [DESIGN] min confidence for a foreign object to count; confirm with อ.เหมียว
+    conf: 0.5                       # [DESIGN] min confidence for a foreign object to count
     frame_fail_ratio: 0.2            # overall FAIL if >= 20% frames fail (same as brightness/blur)
+    # Which non-person YOLO boxes to DRAW on the overlay (does NOT change the
+    # PASS/FAIL logic, only the visualization):
+    #   "all"        -> every non-person object (incl. off-to-the-side ones that
+    #                   do NOT fail the frame), so you can see what YOLO saw.
+    #   "overlap"    -> only objects overlapping the person (the ones that FAIL).
+    overlay_draw: all                # [DESIGN] "all" | "overlap"
 
   direction:
     # check_pose (sequence-level): F=toward+away via body scale, S=left+right via

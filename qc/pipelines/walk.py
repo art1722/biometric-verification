@@ -50,7 +50,7 @@ from qc.checks.check_walk_direction import check_walk_direction
 from qc.checks.yolo_detector import (
     create_yolo_detector, detect_objects, close_yolo_detector, PERSON_CLASS_ID,
 )
-from qc.checks.check_occlusion_yolo import check_occlusion_yolo
+from qc.checks.check_occlusion_yolo import check_occlusion_yolo, _boxes_overlap
 from qc.checks import check_metadata as md
 from qc.schemas import CheckRow
 
@@ -153,6 +153,7 @@ def run_walk(
     occ_cfg = walk_cfg.get("occlusion", {})
     occ_enabled = occ_cfg.get("enabled", True)
     occ_conf = occ_cfg.get("conf", 0.35)
+    occ_overlay_draw = occ_cfg.get("overlay_draw", "all")  # "all" | "overlap"
 
     dir_cfg = walk_cfg.get("direction", {})
 
@@ -320,6 +321,7 @@ def run_walk(
         height_status=height_status, height_reason=height_reason,
         fail_fast=fail_fast,
         yolo_detector=yolo_detector, occ_active=occ_active, occ_conf=occ_conf,
+        occ_overlay_draw=occ_overlay_draw,
     )
 
     # ---- fail-fast GATE 2: zero frames (mirror face_rgb GATE 2) ----
@@ -366,7 +368,8 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                     timeline, *, overlay, out_root, sample_fps, meta,
                     bri_dark, bri_bright, bri_margin, blur_threshold,
                     height_status, height_reason, fail_fast=True,
-                    yolo_detector=None, occ_active=False, occ_conf=0.35):
+                    yolo_detector=None, occ_active=False, occ_conf=0.35,
+                    occ_overlay_draw="all"):
     """One pass over the sampled frames: pose once per frame, feeding BOTH the
     per-frame brightness check and (if enabled) the overlay video.
 
@@ -545,9 +548,21 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                     dets, conf=occ_conf, person_bbox=person_bbox)
                 occ_status = _bool_to_status(occ_ok)
                 occ_reason = f"frame={sf.frame_index} {occ_msg}"
+
+                # Build the object boxes to DRAW on the overlay (visualization
+                # only; does not affect PASS/FAIL). "all" = every non-person
+                # object at/above conf; "overlap" = only those overlapping the
+                # person box. Each entry: (label, conf, bbox).
+                foreign = [d for d in dets
+                           if d.conf >= occ_conf and d.cls_id != PERSON_CLASS_ID]
+                if occ_overlay_draw == "overlap" and person_bbox is not None:
+                    foreign = [d for d in foreign
+                               if _boxes_overlap(d.bbox, person_bbox)]
+                object_boxes = [(d.cls_name, d.conf, d.bbox) for d in foreign]
             else:
                 occ_status = "SKIP"
                 occ_reason = f"frame={sf.frame_index} occlusion detector inactive"
+                object_boxes = []
             add("check_occlusion", occ_status, occ_reason,
                 frame_index=sf.frame_index, level="frame")
 
@@ -591,6 +606,7 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                         "check_person_blur": (blur_status, blur_reason),
                         "check_occlusion": (occ_status, occ_reason),
                     },
+                    object_boxes=object_boxes,
                 )
 
             # ---- fail-fast GATE 3: multiple persons (mirror face_rgb GATE 3) ----

@@ -130,8 +130,10 @@ class WalkOverlayWriter:
         return image
 
     def add_frame(self, image, color_space, frame_index, timestamp_sec, *,
-                  pose_detected, landmarks_px=None, bbox=None, checks=None):
+                  pose_detected, landmarks_px=None, bbox=None, checks=None,
+                  object_boxes=None):
         checks = checks or {}
+        object_boxes = object_boxes or []
         frame = self._to_bgr(image, color_space)
         h, w = frame.shape[:2]
 
@@ -148,13 +150,15 @@ class WalkOverlayWriter:
         # ---- fit the source frame into canvas_w (uniform scale, no distortion) ----
         # Scale the frame so its WIDTH == canvas_w (up for narrow clips, down for
         # huge ones). Aspect ratio preserved: the height changes proportionally.
-        # bbox/landmarks are scaled by the same factor so they stay aligned.
+        # bbox/landmarks/object boxes are scaled by the same factor so they stay
+        # aligned with the frame.
         fit = canvas_w / float(w)
         if fit != 1.0:
             frame = cv2.resize(frame, (canvas_w, int(round(h * fit))),
                                interpolation=cv2.INTER_LINEAR)
             h, w = frame.shape[:2]
             bbox, landmarks_px = self._scale_coords(bbox, landmarks_px, fit)
+            object_boxes = self._scale_object_boxes(object_boxes, fit)
 
         # Font scale from the CANVAS width (constant across frames since canvas_w
         # is fixed), clamped so text stays legible without becoming oversized.
@@ -163,7 +167,9 @@ class WalkOverlayWriter:
         # ---- draw skeleton + bbox + header ON the frame ----
         vid = frame.copy()
         color = self._frame_color(pose_detected, checks)
-        self._draw_pose(vid, landmarks_px, bbox, color, w, h)
+        # Draw object boxes BEFORE the skeleton so the person overlay stays on top.
+        self._draw_object_boxes(vid, object_boxes, s)
+        self._draw_pose(vid, landmarks_px, bbox, color, w, h, s)
         self._draw_header(vid, frame_index, timestamp_sec, pose_detected,
                           label_dims, color, s)
 
@@ -184,17 +190,39 @@ class WalkOverlayWriter:
         self._frames_written += 1
 
     @staticmethod
-    def _scale_coords(bbox, landmarks_px, factor):
-        if factor == 1.0:
-            return bbox, landmarks_px
-        if bbox is not None:
-            bx, by, bw, bh = bbox
-            bbox = (int(round(bx * factor)), int(round(by * factor)),
-                    int(round(bw * factor)), int(round(bh * factor)))
-        if landmarks_px:
-            landmarks_px = [(int(round(px * factor)), int(round(py * factor)), z)
-                            for (px, py, z) in landmarks_px]
-        return bbox, landmarks_px
+    def _scale_object_boxes(object_boxes, factor):
+        """Scale (label, conf, bbox) object entries by the same fit factor used
+        for the frame, so the drawn boxes stay aligned with the resized video."""
+        if factor == 1.0 or not object_boxes:
+            return object_boxes
+        scaled = []
+        for label, conf, (ox, oy, ow, oh) in object_boxes:
+            scaled.append((label, conf, (
+                int(round(ox * factor)), int(round(oy * factor)),
+                int(round(ow * factor)), int(round(oh * factor)))))
+        return scaled
+
+    def _draw_object_boxes(self, vid, object_boxes, s):
+        """Draw each non-person YOLO detection as an amber box with a
+        'label conf' tag. Amber keeps them visually distinct from the person's
+        red/green box. Purely informational; PASS/FAIL is decided in the check."""
+        if not object_boxes:
+            return
+        vh, vw = vid.shape[:2]
+        box_thick = max(1, int(round(2 * s)))
+        fs = max(0.45, 0.6 * s)
+        txt_thick = max(1, int(round(1.5 * s)))
+        for label, conf, (ox, oy, ow, oh) in object_boxes:
+            x1, y1 = int(ox), int(oy)
+            x2, y2 = int(ox + ow), int(oy + oh)
+            cv2.rectangle(vid, (x1, y1), (x2, y2), _AMBER, box_thick)
+            # Label sits just above the box, or just below if it would clip off
+            # the top edge, so it is never cut off the frame.
+            tag = f"{label} {conf:.2f}"
+            ty = y1 - int(6 * s)
+            if ty < int(16 * s):
+                ty = y2 + int(20 * s)
+            _put(vid, tag, (x1, ty), _AMBER, fs, txt_thick)
 
     def _frame_color(self, pose_detected, checks):
         statuses = [s_ for (s_, _r) in checks.values()]
@@ -204,10 +232,14 @@ class WalkOverlayWriter:
             return _RED
         return _GREEN
 
-    def _draw_pose(self, vid, landmarks_px, bbox, color, w, h):
-        body_dim = max(bbox[2], bbox[3]) if bbox is not None else h // 2
-        limb_thick = max(1, min(5, int(round(body_dim * 0.004))))
-        joint_r = max(1, min(6, int(round(body_dim * 0.005))))
+    def _draw_pose(self, vid, landmarks_px, bbox, color, w, h, s):
+        # Thickness is FIXED from the canvas scale s (constant for the whole
+        # video), exactly like the YOLO object boxes -- box AND limbs share the
+        # same value, so nothing pulses as the walker moves toward/away. Body
+        # size is intentionally ignored for line weight. Joints get a slightly
+        # larger radius than the line is thick, so dots read as dots.
+        line_thick = max(1, int(round(2 * s)))
+        joint_r = max(2, int(round(3 * s)))
 
         if landmarks_px:
             n = len(landmarks_px)
@@ -215,7 +247,7 @@ class WalkOverlayWriter:
                 if a < n and b < n:
                     ax, ay = landmarks_px[a][0], landmarks_px[a][1]
                     bx, by = landmarks_px[b][0], landmarks_px[b][1]
-                    cv2.line(vid, (ax, ay), (bx, by), color, limb_thick,
+                    cv2.line(vid, (ax, ay), (bx, by), color, line_thick,
                              cv2.LINE_AA)
             for (px, py, _z) in landmarks_px:
                 if 0 <= px < w and 0 <= py < h:
@@ -223,8 +255,19 @@ class WalkOverlayWriter:
 
         if bbox is not None:
             bx, by, bw, bh = bbox
-            box_thick = max(1, min(4, int(round(body_dim * 0.003))))
-            cv2.rectangle(vid, (bx, by), (bx + bw, by + bh), color, box_thick)
+            # SAME thickness as the limbs and the YOLO boxes.
+            cv2.rectangle(vid, (bx, by), (bx + bw, by + bh), color, line_thick)
+
+            # Person label OUTSIDE the box (like the YOLO object boxes), not
+            # inside like the face overlay. Text: "person WxH". Placed just above
+            # the box, or just below if that would clip off the top edge.
+            tag = f"person {bw}x{bh}"
+            fs = max(0.45, 0.6 * s)
+            txt_thick = max(1, int(round(1.5 * s)))
+            ty = by - int(6 * s)
+            if ty < int(16 * s):
+                ty = by + bh + int(20 * s)
+            _put(vid, tag, (bx, ty), color, fs, txt_thick)
 
     def _draw_header(self, vid, frame_index, timestamp_sec, pose_detected,
                      label_dims, color, s):
