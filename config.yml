@@ -105,7 +105,7 @@ models:
     # verify_env.py should check it is present. A bare name auto-downloads if
     # ultralytics can reach the network.
     model_path: models/yolov8n.pt    # [DESIGN] n=nano (fastest); s/m/l/x trade speed for accuracy
-    conf: 0.5                       # [DESIGN] default confidence gate; walk.occlusion.conf overrides per-run
+    conf: 0.6                       # [DESIGN] default confidence gate; walk.occlusion.conf overrides per-run
 
 
 face:
@@ -531,6 +531,11 @@ walk:
     require_walking_pose_visible_every_frame: true  # [SPEC]
 
   brightness:
+    # [RESEARCHER 2026-07-14] Brightness checking is OFF for walk. Set true to
+    # re-enable; the check code below is kept intact so flipping this back on
+    # needs no code change. When false, walk.py emits NO check_brightness rows
+    # (the check has no effect on any file's verdict).
+    enabled: false
     # [DESIGN] Same numeric cutoffs as the face check (dark<35, bright>200), but
     # the walk verdict is INVERTED per the researcher decision (2026-07-13):
     #   face  : PASS when 35 <= brightness <= 200   (normal-lit)
@@ -559,7 +564,7 @@ walk:
     # This IMPLEMENTS recording.require_no_obstacle (previously "no detector ->
     # SKIP"): with YOLO we can actually judge it per frame.
     enabled: true                    # [DESIGN] set false to skip the 2nd model
-    conf: 0.5                       # [DESIGN] min confidence for a foreign object to count
+    conf: 0.6                       # [DESIGN] min confidence for a foreign object to count
     frame_fail_ratio: 0.2            # overall FAIL if >= 20% frames fail (same as brightness/blur)
     # Which non-person YOLO boxes to DRAW on the overlay (does NOT change the
     # PASS/FAIL logic, only the visualization):

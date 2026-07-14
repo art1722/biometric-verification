@@ -136,10 +136,11 @@ def run_walk(
     vis_cfg = walk_cfg.get("visibility", {})
     min_ratio = vis_cfg.get("min_person_height_ratio", 0.5)
 
-    bri_cfg = walk_cfg.get("brightness", {})
-    bri_dark = bri_cfg.get("dark_threshold", 35.0)
-    bri_bright = bri_cfg.get("bright_threshold", 200.0)
-    bri_margin = bri_cfg.get("margin", 0.1)
+    brightness_cfg = walk_cfg.get("brightness", {})
+    brightness_enabled = brightness_cfg.get("enabled", True)
+    brightness_dark = brightness_cfg.get("dark_threshold", 35.0)
+    brightness_bright = brightness_cfg.get("bright_threshold", 200.0)
+    brightness_margin = brightness_cfg.get("margin", 0.1)
 
     meta_cfg = walk_cfg.get("metadata", {})
     min_fps = meta_cfg.get("min_fps", 30)
@@ -150,10 +151,10 @@ def run_walk(
     blur_cfg = walk_cfg.get("blur", {})
     blur_threshold = blur_cfg.get("threshold", 35.0)
 
-    occ_cfg = walk_cfg.get("occlusion", {})
-    occ_enabled = occ_cfg.get("enabled", True)
-    occ_conf = occ_cfg.get("conf", 0.35)
-    occ_overlay_draw = occ_cfg.get("overlay_draw", "all")  # "all" | "overlap"
+    occlusion_cfg = walk_cfg.get("occlusion", {})
+    occlusion_enabled = occlusion_cfg.get("enabled", True)
+    occlusion_conf = occlusion_cfg.get("conf", 0.35)
+    occlusion_overlay_draw = occlusion_cfg.get("overlay_draw", "all")  # "all" | "overlap"
 
     dir_cfg = walk_cfg.get("direction", {})
 
@@ -185,14 +186,14 @@ def run_walk(
     # ultralytics is not installed, we do NOT crash the run: occlusion rows become
     # SKIP (see _run_frame_pass), so the rest of the walk QC still completes.
     own_yolo = False
-    occ_active = bool(occ_enabled)
-    if occ_active and yolo_detector is None:
+    occlusion_active = bool(occlusion_enabled)
+    if occlusion_active and yolo_detector is None:
         try:
             yolo_detector = create_yolo_detector(config)
             own_yolo = True
         except ImportError as e:
             logger.warning("occlusion check disabled: %s", e)
-            occ_active = False
+            occlusion_active = False
 
     def _cleanup():
         # Close BOTH detectors we own, in one place, so every return path frees
@@ -316,12 +317,13 @@ def run_walk(
     aborted, frames_seen = _run_frame_pass(
         path, volunteer_id, filename, data_type, detector, add, timeline,
         overlay=overlay, out_root=out_root, sample_fps=sample_fps, meta=meta,
-        bri_dark=bri_dark, bri_bright=bri_bright, bri_margin=bri_margin,
+        brightness_enabled=brightness_enabled,
+        brightness_dark=brightness_dark, brightness_bright=brightness_bright, brightness_margin=brightness_margin,
         blur_threshold=blur_threshold,
         height_status=height_status, height_reason=height_reason,
         fail_fast=fail_fast,
-        yolo_detector=yolo_detector, occ_active=occ_active, occ_conf=occ_conf,
-        occ_overlay_draw=occ_overlay_draw,
+        yolo_detector=yolo_detector, occlusion_active=occlusion_active, occlusion_conf=occlusion_conf,
+        occlusion_overlay_draw=occlusion_overlay_draw,
     )
 
     # ---- fail-fast GATE 2: zero frames (mirror face_rgb GATE 2) ----
@@ -366,10 +368,10 @@ def run_walk(
 
 def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                     timeline, *, overlay, out_root, sample_fps, meta,
-                    bri_dark, bri_bright, bri_margin, blur_threshold,
+                    brightness_dark, brightness_bright, brightness_margin, blur_threshold,
                     height_status, height_reason, fail_fast=True,
-                    yolo_detector=None, occ_active=False, occ_conf=0.35,
-                    occ_overlay_draw="all"):
+                    yolo_detector=None, occlusion_active=False, occlusion_conf=0.35,
+                    occlusion_overlay_draw="all", brightness_enabled=True):
     """One pass over the sampled frames: pose once per frame, feeding BOTH the
     per-frame brightness check and (if enabled) the overlay video.
 
@@ -509,11 +511,16 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                 frame_index=sf.frame_index, level="frame")
 
             # ---- brightness (frame-level, INVERTED verdict inside the check) ----
-            if p.ok:
+            # Skipped entirely when disabled in config (walk.brightness.enabled:
+            # false): no measurement, no row, no effect on the file's verdict.
+            # b_status/b_msg stay None so the timeline and overlay omit brightness.
+            if not brightness_enabled:
+                b_status, b_msg = None, None
+            elif p.ok:
                 b_ok, b_msg = check_brightness_walk(
                     sf.image, p.bbox,
-                    dark_threshold=bri_dark, bright_threshold=bri_bright,
-                    margin=bri_margin, input_color_space=sf.color_space)
+                    dark_threshold=brightness_dark, bright_threshold=brightness_bright,
+                    margin=brightness_margin, input_color_space=sf.color_space)
                 b_status = _bool_to_status(b_ok)
             else:
                 # No body this frame -> brightness cannot be measured. FAIL the
@@ -521,8 +528,9 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                 # so a clip that loses the person is not silently rewarded.
                 b_status, b_msg = "FAIL", f"no pose: {p.message}"
 
-            add("check_brightness", b_status, b_msg,
-                frame_index=sf.frame_index, level="frame")
+            if b_status is not None:
+                add("check_brightness", b_status, b_msg,
+                    frame_index=sf.frame_index, level="frame")
 
             # ---- check_occlusion (frame-level; COCO YOLO obstruction gate) ----
             # Spec ("ไม่มีสิ่งกีดขวาง"): a foreign object fails the frame only if
@@ -532,8 +540,8 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
             # NEITHER finds a person, person_bbox stays None and the check FAILs
             # any foreign object (can't clear it). If YOLO is inactive the row is
             # SKIP so the CSV/overlay still shows the check.
-            if occ_active and yolo_detector is not None:
-                dets = detect_objects(yolo_detector, sf.image, conf=occ_conf)
+            if occlusion_active and yolo_detector is not None:
+                dets = detect_objects(yolo_detector, sf.image, conf=occlusion_conf)
 
                 # person box: MediaPipe first, else the most confident YOLO person
                 person_bbox = p.bbox if p.ok and p.bbox is not None else None
@@ -544,26 +552,26 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                         person_bbox = max(
                             yolo_persons, key=lambda d: d.conf).bbox
 
-                occ_ok, occ_msg = check_occlusion_yolo(
-                    dets, conf=occ_conf, person_bbox=person_bbox)
-                occ_status = _bool_to_status(occ_ok)
-                occ_reason = f"frame={sf.frame_index} {occ_msg}"
+                occlusion_ok, occlusion_msg = check_occlusion_yolo(
+                    dets, conf=occlusion_conf, person_bbox=person_bbox)
+                occlusion_status = _bool_to_status(occlusion_ok)
+                occlusion_reason = f"frame={sf.frame_index} {occlusion_msg}"
 
                 # Build the object boxes to DRAW on the overlay (visualization
                 # only; does not affect PASS/FAIL). "all" = every non-person
                 # object at/above conf; "overlap" = only those overlapping the
                 # person box. Each entry: (label, conf, bbox).
                 foreign = [d for d in dets
-                           if d.conf >= occ_conf and d.cls_id != PERSON_CLASS_ID]
-                if occ_overlay_draw == "overlap" and person_bbox is not None:
+                           if d.conf >= occlusion_conf and d.cls_id != PERSON_CLASS_ID]
+                if occlusion_overlay_draw == "overlap" and person_bbox is not None:
                     foreign = [d for d in foreign
                                if _boxes_overlap(d.bbox, person_bbox)]
                 object_boxes = [(d.cls_name, d.conf, d.bbox) for d in foreign]
             else:
-                occ_status = "SKIP"
-                occ_reason = f"frame={sf.frame_index} occlusion detector inactive"
+                occlusion_status = "SKIP"
+                occlusion_reason = f"frame={sf.frame_index} occlusion detector inactive"
                 object_boxes = []
-            add("check_occlusion", occ_status, occ_reason,
+            add("check_occlusion", occlusion_status, occlusion_reason,
                 frame_index=sf.frame_index, level="frame")
 
             # ---- timeline entry (brightness + direction signals) ----
@@ -593,19 +601,23 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
             # the walk order (REPORT_CHECK_ORDER_WALK), so the strip reads in the
             # same order as the CSV.
             if writer is not None:
+                overlay_checks = {
+                    "check_body_height": (height_status, height_reason),
+                    "check_person_detected": (pd_status, pd_reason),
+                    "check_person_fully": (pf_status, pf_reason),
+                    "check_person_blur": (blur_status, blur_reason),
+                    "check_occlusion": (occlusion_status, occlusion_reason),
+                }
+                # Only show brightness in the strip when it was actually judged
+                # (b_status is None when walk.brightness.enabled is false).
+                if b_status is not None:
+                    overlay_checks["check_brightness"] = (b_status, b_msg)
                 writer.add_frame(
                     sf.image, sf.color_space, sf.frame_index, sf.timestamp_sec,
                     pose_detected=p.ok,
                     landmarks_px=p.landmarks_px if p.ok else None,
                     bbox=p.bbox if p.ok else None,
-                    checks={
-                        "check_body_height": (height_status, height_reason),
-                        "check_person_detected": (pd_status, pd_reason),
-                        "check_person_fully": (pf_status, pf_reason),
-                        "check_brightness": (b_status, b_msg),
-                        "check_person_blur": (blur_status, blur_reason),
-                        "check_occlusion": (occ_status, occ_reason),
-                    },
+                    checks=overlay_checks,
                     object_boxes=object_boxes,
                 )
 
@@ -630,9 +642,11 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
 
 def _brightness_value(msg):
     """Pull the integer brightness out of a check_brightness_walk message, or
-    None if absent (e.g. a 'no pose' frame). Kept local so the pipeline does not
-    depend on the check's regex."""
+    None if absent (e.g. a 'no pose' frame, or brightness disabled -> msg is
+    None). Kept local so the pipeline does not depend on the check's regex."""
     import re
+    if not msg:
+        return None
     m = re.search(r"brightness=(\d+)", msg)
     return int(m.group(1)) if m else None
 
