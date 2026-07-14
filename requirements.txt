@@ -17,6 +17,14 @@ opencv-python==4.11.0.86
 numpy==1.26.4
 protobuf==4.25.8          # pinned: mediapipe 0.10.21 needs protobuf >=4.25.3,<5
 
+# --- object detection (YOLO/COCO occlusion check for walk + face) ---
+# ultralytics provides the pretrained COCO YOLO model used by check_occlusion.
+# It pulls in torch/torchvision (CPU wheels by default), which are large; the
+# occlusion check degrades to SKIP if this is absent, but production runs need
+# it. Weights (yolov8n.pt) are NOT installed by pip; vendor them in models/ and
+# mount like the .task bundles (see Dockerfile / .dockerignore).
+ultralytics==8.3.0
+
 # --- config / data ---
 PyYAML==6.0.2
 

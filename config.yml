@@ -98,6 +98,15 @@ models:
     min_detection_confidence: 0.5    # [DESIGN]
     min_tracking_confidence: 0.5     # [DESIGN]
 
+  yolo:
+    # COCO object detector for the occlusion / foreign-object check. Pretrained
+    # weights (knows all 80 COCO classes); we only read back predicted class ids.
+    # Vendor the .pt next to the other model bundles for offline batch runs;
+    # verify_env.py should check it is present. A bare name auto-downloads if
+    # ultralytics can reach the network.
+    model_path: models/yolov8n.pt    # [DESIGN] n=nano (fastest); s/m/l/x trade speed for accuracy
+    conf: 0.35                       # [DESIGN] default confidence gate; walk.occlusion.conf overrides per-run
+
 
 face:
   extension: ".mp4"                  # [SPEC]
@@ -543,6 +552,15 @@ walk:
     # the body bbox. Same default threshold as face; tune on real walk footage.
     threshold: 35.0                  # [FACE-ALIGNED]
     frame_fail_ratio: 0.2            # overall FAIL if >= 20% frames fail
+
+  occlusion:
+    # Foreign-object occlusion via a COCO YOLO detector. Only class 0=person is
+    # allowed; any of the other 79 COCO classes in a frame FAILs that frame.
+    # This IMPLEMENTS recording.require_no_obstacle (previously "no detector ->
+    # SKIP"): with YOLO we can actually judge it per frame.
+    enabled: true                    # [DESIGN] set false to skip the 2nd model
+    conf: 0.35                       # [DESIGN] min confidence for a foreign object to count; confirm with อ.เหมียว
+    frame_fail_ratio: 0.2            # overall FAIL if >= 20% frames fail (same as brightness/blur)
 
   direction:
     # check_pose (sequence-level): F=toward+away via body scale, S=left+right via

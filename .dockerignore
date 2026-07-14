@@ -30,9 +30,13 @@ reports/
 reports_old/
 reports_old2/
 
-# Model bundles — large .task files. Download once on the host and mount:
+# Model bundles — large .task / .pt files. Download once on the host and mount:
 #   -v /path/on/host/models:/app/models
 models/
+
+# Ultralytics generated state (settings.json, cache). Redirected here to keep it
+# in-project, but it is generated at run time so never copy it into the image.
+.ultralytics/
 
 # Large media in case any sit outside data/
 *.mp4

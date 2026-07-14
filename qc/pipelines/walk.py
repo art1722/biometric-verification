@@ -47,6 +47,10 @@ from qc.checks.check_brightness import check_brightness_walk
 from qc.checks.check_person_fully import check_person_fully
 from qc.checks.check_face_blur import check_face_blur  # reused for person blur
 from qc.checks.check_walk_direction import check_walk_direction
+from qc.checks.yolo_detector import (
+    create_yolo_detector, detect_objects, close_yolo_detector, PERSON_CLASS_ID,
+)
+from qc.checks.check_occlusion_yolo import check_occlusion_yolo
 from qc.checks import check_metadata as md
 from qc.schemas import CheckRow
 
@@ -65,6 +69,7 @@ def run_walk(
     *,
     view: Optional[str] = None,
     detector: Any = None,
+    yolo_detector: Any = None,
     progress=None,
     overlay: bool = True,
     out_root: str = "reports",
@@ -145,6 +150,10 @@ def run_walk(
     blur_cfg = walk_cfg.get("blur", {})
     blur_threshold = blur_cfg.get("threshold", 35.0)
 
+    occ_cfg = walk_cfg.get("occlusion", {})
+    occ_enabled = occ_cfg.get("enabled", True)
+    occ_conf = occ_cfg.get("conf", 0.35)
+
     dir_cfg = walk_cfg.get("direction", {})
 
     # Per-frame series (brightness per sampled frame) for the detail_header CSV
@@ -168,6 +177,29 @@ def run_walk(
                 "min_tracking_confidence", 0.5),
         )
         own_detector = True
+
+    # ---- build the YOLO (COCO) detector once, for the occlusion check ----
+    # Separate model from the pose detector, so it is built and closed on its own
+    # handle, mirroring the pose lifecycle. If occlusion is disabled in config, or
+    # ultralytics is not installed, we do NOT crash the run: occlusion rows become
+    # SKIP (see _run_frame_pass), so the rest of the walk QC still completes.
+    own_yolo = False
+    occ_active = bool(occ_enabled)
+    if occ_active and yolo_detector is None:
+        try:
+            yolo_detector = create_yolo_detector(config)
+            own_yolo = True
+        except ImportError as e:
+            logger.warning("occlusion check disabled: %s", e)
+            occ_active = False
+
+    def _cleanup():
+        # Close BOTH detectors we own, in one place, so every return path frees
+        # the pose model and (if we built it) the YOLO model. A caller-injected
+        # detector is left open (own_* is False) since the caller still needs it.
+        _maybe_close(detector, own_detector)
+        if own_yolo:
+            close_yolo_detector(yolo_detector)
 
     # ---- probe metadata (once, no pixels beyond the first frame) ----
     # decode_first_frame=True so probe_video populates channel_count and is_color
@@ -198,7 +230,7 @@ def run_walk(
                 level="video")
         add("check_body_height", "SKIP",
             f"video not readable: {meta.reason}", level="video")
-        _maybe_close(detector, own_detector)
+        _cleanup()
         return rows, []
 
     status, reason = md.check_container(meta, require_rgb=True)
@@ -235,7 +267,7 @@ def run_walk(
             add("check_body_height", "SKIP",
                 f"fail-fast: {gate_fail.check_name} FAILed; height not measured",
                 level="video")
-            _maybe_close(detector, own_detector)
+            _cleanup()
             return rows, []
     try:
         for sf in iter_sampled_frames(path, sample_fps=None, max_frames=1,
@@ -246,12 +278,12 @@ def run_walk(
     except Exception as e:  # keep the no-crash contract
         add("check_body_height", "SKIP",
             f"could not read first frame: {e}", level="video")
-        _maybe_close(detector, own_detector)
+        _cleanup()
         return rows, []
 
     if first_frame is None:
         add("check_body_height", "SKIP", "no frames decoded", level="video")
-        _maybe_close(detector, own_detector)
+        _cleanup()
         return rows, []
 
     # ---- pose on that one frame, then the height check ----
@@ -287,6 +319,7 @@ def run_walk(
         blur_threshold=blur_threshold,
         height_status=height_status, height_reason=height_reason,
         fail_fast=fail_fast,
+        yolo_detector=yolo_detector, occ_active=occ_active, occ_conf=occ_conf,
     )
 
     # ---- fail-fast GATE 2: zero frames (mirror face_rgb GATE 2) ----
@@ -298,7 +331,7 @@ def run_walk(
         add("frames_sampled", "FAIL",
             "video opened but yielded 0 frames (corrupt/empty stream)",
             level="video")
-        _maybe_close(detector, own_detector)
+        _cleanup()
         return rows, timeline
     add("frames_sampled", "PASS", f"sampled {frames_seen} frames", level="video")
 
@@ -308,7 +341,7 @@ def run_walk(
     # truncated one would be meaningless. Skip it -- the structural FAIL already
     # decides the file. Mirrors face_rgb skipping turn-sequence on abort.
     if aborted:
-        _maybe_close(detector, own_detector)
+        _cleanup()
         return rows, timeline
 
     # ---- check_pose: sequence-level walk-direction verdict ----
@@ -325,14 +358,15 @@ def run_walk(
     )
     add("check_pose", _bool_to_status(dir_ok), dir_msg, level="sequence")
 
-    _maybe_close(detector, own_detector)
+    _cleanup()
     return rows, timeline
 
 
 def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                     timeline, *, overlay, out_root, sample_fps, meta,
                     bri_dark, bri_bright, bri_margin, blur_threshold,
-                    height_status, height_reason, fail_fast=True):
+                    height_status, height_reason, fail_fast=True,
+                    yolo_detector=None, occ_active=False, occ_conf=0.35):
     """One pass over the sampled frames: pose once per frame, feeding BOTH the
     per-frame brightness check and (if enabled) the overlay video.
 
@@ -487,6 +521,36 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
             add("check_brightness", b_status, b_msg,
                 frame_index=sf.frame_index, level="frame")
 
+            # ---- check_occlusion (frame-level; COCO YOLO obstruction gate) ----
+            # Spec ("ไม่มีสิ่งกีดขวาง"): a foreign object fails the frame only if
+            # it OBSTRUCTS the walker, approximated by overlapping the person box.
+            # Person box: prefer the MediaPipe pose bbox (p.bbox); if pose failed
+            # this frame, fall back to YOLO's own person detection (class 0). If
+            # NEITHER finds a person, person_bbox stays None and the check FAILs
+            # any foreign object (can't clear it). If YOLO is inactive the row is
+            # SKIP so the CSV/overlay still shows the check.
+            if occ_active and yolo_detector is not None:
+                dets = detect_objects(yolo_detector, sf.image, conf=occ_conf)
+
+                # person box: MediaPipe first, else the most confident YOLO person
+                person_bbox = p.bbox if p.ok and p.bbox is not None else None
+                if person_bbox is None:
+                    yolo_persons = [d for d in dets
+                                    if d.cls_id == PERSON_CLASS_ID]
+                    if yolo_persons:
+                        person_bbox = max(
+                            yolo_persons, key=lambda d: d.conf).bbox
+
+                occ_ok, occ_msg = check_occlusion_yolo(
+                    dets, conf=occ_conf, person_bbox=person_bbox)
+                occ_status = _bool_to_status(occ_ok)
+                occ_reason = f"frame={sf.frame_index} {occ_msg}"
+            else:
+                occ_status = "SKIP"
+                occ_reason = f"frame={sf.frame_index} occlusion detector inactive"
+            add("check_occlusion", occ_status, occ_reason,
+                frame_index=sf.frame_index, level="frame")
+
             # ---- timeline entry (brightness + direction signals) ----
             bval = _brightness_value(b_msg)
             bw = p.bbox[2] if p.ok and p.bbox else None
@@ -525,6 +589,7 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                         "check_person_fully": (pf_status, pf_reason),
                         "check_brightness": (b_status, b_msg),
                         "check_person_blur": (blur_status, blur_reason),
+                        "check_occlusion": (occ_status, occ_reason),
                     },
                 )
 

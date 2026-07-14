@@ -26,6 +26,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 3. WORKDIR — every command after this runs inside /app in the container.
 WORKDIR /app
 
+# 3b. ULTRALYTICS (YOLO) — keep ALL its state INSIDE the project, not in the
+#     user home (~/.config/Ultralytics), so the container is self-contained and
+#     reproducible on any machine. YOLO_CONFIG_DIR redirects its settings.json /
+#     cache here; YOLO_OFFLINE + no telemetry stop it from phoning home or trying
+#     to auto-download at runtime (weights are vendored in models/, see below).
+ENV YOLO_CONFIG_DIR=/app/.ultralytics \
+    YOLO_OFFLINE=1 \
+    ULTRALYTICS_ANALYTICS=False
+RUN mkdir -p /app/.ultralytics
+
 # 4. INSTALL DEPENDENCIES FIRST (before copying the rest of the code).
 #    WHY separately: Docker caches each step. As long as requirements.txt does
 #    not change, Docker reuses the cached "pip install" layer and your rebuilds
@@ -38,10 +48,12 @@ RUN pip install --no-cache-dir --upgrade pip \
 #    .dockerignore controls what is skipped (data/, reports/, __pycache__, ...).
 COPY . .
 
-# 6. MODELS FOLDER — your config points at models/face_landmarker.task and
-#    models/hand_landmarker.task. They are large .task bundles you download once.
-#    They are NOT baked into the image (see .dockerignore). At run time you mount
-#    them in (see the README block below). We just ensure the folder exists.
+# 6. MODELS FOLDER — your config points at models/face_landmarker.task,
+#    models/hand_landmarker.task, models/pose_landmarker.task, and
+#    models/yolov8n.pt (the COCO YOLO weights for the occlusion check). They are
+#    large bundles you download once. They are NOT baked into the image (see
+#    .dockerignore). At run time you mount them in (see the README block below).
+#    We just ensure the folder exists.
 RUN mkdir -p models reports data
 
 # 7. NETWORK PORT — document that the app listens on 8000. This does not open

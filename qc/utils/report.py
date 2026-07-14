@@ -67,6 +67,7 @@ REPORT_CHECK_ORDER_WALK = {
     "check_body_height": 200,
     "check_brightness": 230,
     "check_person_blur": 240,
+    "check_occlusion": 250,
 
     # 4) Sequence-level walk-direction verdict
     "check_pose": 300,

@@ -192,6 +192,8 @@ def main():
                                      .get("frame_fail_ratio", 0.2))
     per_check["check_person_blur"] = (walk_cfg.get("blur", {})
                                       .get("frame_fail_ratio", 0.2))
+    per_check["check_occlusion"] = (walk_cfg.get("occlusion", {})
+                                    .get("frame_fail_ratio", 0.2))
     fc_cfg = walk_cfg.get("frame_checks", {})
     per_check["check_person_detected"] = fc_cfg.get(
         "person_detected_fail_ratio", 0.2)
@@ -210,6 +212,17 @@ def main():
         min_pose_presence_confidence=pose_cfg.get("min_pose_presence_confidence", 0.5),
         min_tracking_confidence=pose_cfg.get("min_tracking_confidence", 0.5),
     )
+
+    # Build ONE YOLO detector for the whole batch too (occlusion check), so the
+    # weights load once, not per video. Disabled in config or ultralytics missing
+    # -> yolo_detector stays None and the pipeline emits SKIP occlusion rows.
+    yolo_detector = None
+    if config.get("walk", {}).get("occlusion", {}).get("enabled", True):
+        try:
+            from qc.checks.yolo_detector import create_yolo_detector
+            yolo_detector = create_yolo_detector(config)
+        except ImportError as e:
+            print(f"[warn] occlusion check disabled: {e}")
 
     print(f"walk videos ({len(videos)}): "
           + ", ".join(os.path.basename(p) for p in videos))
@@ -243,6 +256,7 @@ def main():
                 overlay_on = not args.no_overlay
                 rows, timeline = run_walk(
                     path, vid, config, view=view, detector=detector,
+                    yolo_detector=yolo_detector,
                     overlay=overlay_on, out_root=out_dir,
                     sample_fps=sample_fps,
                     fail_fast=(args.fail_fast and not overlay_on))
