@@ -113,7 +113,7 @@ def parse_args():
                     help="append to the existing all_summary files instead of "
                          "overwriting them (default is to overwrite / start "
                          "fresh each run).")
-    ap.add_argument("--sample-fps", type=float, default=1.0,
+    ap.add_argument("--sample-fps", type=float, default=5.0,
                     help="frames sampled per source second (batch default: 1). "
                          "Native/every-frame is intentionally not offered here.")
     ap.add_argument("--no-overlay", action="store_true",

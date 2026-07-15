@@ -166,6 +166,12 @@ def run_walk(
     pose_cfg = models_cfg.get("pose_landmarker", {})
     model_path = pose_cfg.get("model_path", "models/pose_landmarker.task")
 
+    # Real-person gate thresholds (config-tunable) used to tell a genuine second
+    # walker from a phantom skeleton on clutter. Read once, passed to every
+    # detect_pose call below. See pose_landmarker._is_real_person.
+    min_real_vis = pose_cfg.get("min_real_visibility", 0.5)
+    min_real_lms = pose_cfg.get("min_real_landmarks", 8)
+
     # ---- build the detector once if the caller did not supply one ----
     own_detector = False
     if detector is None:
@@ -302,7 +308,9 @@ def run_walk(
     # SampledFrame.image is BGR by default (color_space says so); pass that
     # through to detect_pose which converts to RGB internally.
     pose = detect_pose(first_frame.image, detector=detector,
-                       input_color_space=first_frame.color_space)
+                       input_color_space=first_frame.color_space,
+                       min_real_visibility=min_real_vis,
+                       min_real_landmarks=min_real_lms)
 
     if not pose.ok:
         # No usable pose on the farthest frame -> cannot measure height. FAIL
@@ -334,12 +342,13 @@ def run_walk(
         fail_fast=fail_fast,
         yolo_detector=yolo_detector, occlusion_active=occlusion_active, occlusion_conf=occlusion_conf,
         occlusion_overlay_draw=occlusion_overlay_draw,
+        min_real_vis=min_real_vis, min_real_lms=min_real_lms,
     )
 
     # ---- fail-fast GATE 2: zero frames (mirror face_rgb GATE 2) ----
     # The file opened and metadata passed, but the frame pass yielded nothing
     # (corrupt/empty stream). That is a structural FAIL and there is no timeline
-    # to run check_pose over, so record it and stop. Unlike face this runs
+    # to run check_walk_direction over, so record it and stop. Unlike face this runs
     # regardless of fail_fast: zero frames is never a valid sample.
     if frames_seen == 0:
         add("frames_sampled", "FAIL",
@@ -358,10 +367,10 @@ def run_walk(
         _cleanup()
         return rows, timeline
 
-    # ---- check_pose: sequence-level walk-direction verdict ----
+    # ---- check_walk_direction: sequence-level walk-direction verdict ----
     # Reasons over the whole timeline (F: toward+away via body_scale; S:
     # left+right via centroid_x). One row per video, level="sequence", mirroring
-    # face's check_turn_sequence. Reported as "check_pose" per the reviewer.
+    # face's check_turn_sequence.
     view = view or _view_from_filename(filename)
     dir_ok, dir_msg = check_walk_direction(
         timeline, view,
@@ -370,7 +379,7 @@ def run_walk(
         eps=dir_cfg.get("eps", 0.002),
         min_frames=dir_cfg.get("min_frames", 8),
     )
-    add("check_pose", _bool_to_status(dir_ok), dir_msg, level="sequence")
+    add("check_walk_direction", _bool_to_status(dir_ok), dir_msg, level="sequence")
 
     _cleanup()
     return rows, timeline
@@ -381,14 +390,15 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                     brightness_dark, brightness_bright, brightness_margin, blur_threshold,
                     height_status, height_reason, fail_fast=True,
                     yolo_detector=None, occlusion_active=False, occlusion_conf=0.35,
-                    occlusion_overlay_draw="all", brightness_enabled=True):
+                    occlusion_overlay_draw="all", brightness_enabled=True,
+                    min_real_vis=0.5, min_real_lms=8):
     """One pass over the sampled frames: pose once per frame, feeding BOTH the
     per-frame brightness check and (if enabled) the overlay video.
 
     Returns (aborted, frames_seen):
       aborted     True if a fail-fast structural gate (multiple persons in a
                   frame) broke the loop early. The caller then skips the
-                  sequence-level check_pose (the timeline is truncated), exactly
+                  sequence-level check_walk_direction (the timeline is truncated), exactly
                   as face_rgb skips its turn-sequence check on an aborted file.
       frames_seen number of frames actually processed (for the 0-frame gate).
 
@@ -459,11 +469,13 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                                       max_frames=None):
             frames_seen += 1
             p = detect_pose(sf.image, detector=detector,
-                            input_color_space=sf.color_space)
+                            input_color_space=sf.color_space,
+                            min_real_visibility=min_real_vis,
+                            min_real_landmarks=min_real_lms)
             frame_h, frame_w = sf.image.shape[:2]
 
             # detect_pose returns ok=False for BOTH "No poses detected" and
-            # "Multiple poses detected: N". These are DIFFERENT cases (mirror
+            # "Multiple persons detected: N". These are DIFFERENT cases (mirror
             # face_rgb, which splits "No faces" from "Multiple faces detected"):
             #   no person   -> routine per-frame FAIL (person walked off / not
             #                  yet in view); ratio-judged, does NOT break.
@@ -473,7 +485,7 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
             #                  (the 100% denominator then makes it ratio-exempt,
             #                  same mechanism as face's multiple-faces gate).
             multiple_persons = (not p.ok) and \
-                str(p.message).startswith("Multiple poses detected")
+                str(p.message).startswith("Multiple persons detected")
 
             # Each per-frame check captures its (status, reason) into a local so
             # the SAME verdict feeds both the report row (add) and the overlay
@@ -496,12 +508,15 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
             #                  check_single_person below (a video-level FAIL graded
             #                  at 0.0), so it does not get averaged into the 20%
             #                  no-person ratio and cannot be masked on a long clip.
+            # p.message is now self-describing: "Multiple persons detected: N"
+            # or "No poses detected". Carry it verbatim rather than hardcoding a
+            # "no person:" prefix that was wrong for the multiple-person case.
             if p.ok:
                 pd_status = "PASS"
                 pd_reason = f"frame={sf.frame_index} person detected"
             else:
                 pd_status = "FAIL"
-                pd_reason = f"frame={sf.frame_index} no person: {p.message}"
+                pd_reason = f"frame={sf.frame_index} {p.message}"
             add("check_person_detected", pd_status, pd_reason,
                 frame_index=sf.frame_index, level="frame")
 
@@ -529,7 +544,7 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                 pf_reason = f"frame={sf.frame_index} {pf_msg}"
             else:
                 pf_status = "FAIL"
-                pf_reason = f"frame={sf.frame_index} no person: {p.message}"
+                pf_reason = f"frame={sf.frame_index} {p.message}"
             add("check_person_fully", pf_status, pf_reason,
                 frame_index=sf.frame_index, level="frame")
 
@@ -547,7 +562,7 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                 blur_reason = f"frame={sf.frame_index} {blur_msg}"
             else:
                 blur_status = "FAIL"
-                blur_reason = f"frame={sf.frame_index} no person: {p.message}"
+                blur_reason = f"frame={sf.frame_index} {p.message}"
             add("check_person_blur", blur_status, blur_reason,
                 frame_index=sf.frame_index, level="frame")
 
@@ -667,7 +682,7 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
             # transient. The ratio-exempt check_single_person video-level FAIL +
             # the per-frame FAIL row + overlay frame are already emitted above, so
             # the video verdict is guaranteed EITHER WAY; this break just stops us
-            # spending model time on a doomed file. The caller skips check_pose on
+            # spending model time on a doomed file. The caller skips check_walk_direction on
             # an aborted (truncated) timeline. Only under fail_fast: with the
             # overlay on (fail_fast=False) we keep going so the reviewer still gets
             # the full overlay -- and, unlike before, the video still FAILs because

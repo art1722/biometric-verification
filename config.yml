@@ -105,10 +105,16 @@ models:
   # to consolidate these two blocks -- flagged, not silently merged.
   pose_landmarker:
     # >1 so MediaPipe returns a SECOND person when present, letting detect_pose
-    # report "Multiple poses detected" -> check_single_person -> whole-video
+    # report "Multiple persons detected" -> check_single_person -> whole-video
     # FAIL (mirrors face's multiple-faces rule). With num_poses=1 a two-person
     # frame degrades to "No poses detected" and is mis-graded as no-person.
     num_poses: 10                     # [DESIGN] headroom over the one expected walker
+    # A returned pose counts as a REAL person only if >= min_real_landmarks of
+    # its landmarks clear min_real_visibility. This separates a genuine second
+    # walker (many confident landmarks -> video FAIL) from a phantom skeleton on
+    # a bench/foliage (few confident landmarks -> ignored, no false FAIL).
+    min_real_visibility: 0.5          # [DESIGN] MediaPipe's own confidence floor
+    min_real_landmarks: 8             # [DESIGN] whole-person floor; tune on real footage
 
   yolo:
     # COCO object detector for the occlusion / foreign-object check. Pretrained
@@ -586,7 +592,7 @@ walk:
     overlay_draw: all                # [DESIGN] "all" | "overlap"
 
   direction:
-    # check_pose (sequence-level): F=toward+away via body scale, S=left+right via
+    # check_walk_direction (sequence-level): F=toward+away via body scale, S=left+right via
     # centroid-x. [DESIGN] defaults pending validation on real _F/_S footage.
     smooth_window: 5                 # moving-average window over the frame series
     min_run: 3                       # consecutive frames of one polarity = a phase

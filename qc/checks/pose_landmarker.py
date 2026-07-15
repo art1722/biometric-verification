@@ -88,6 +88,47 @@ logger = logging.getLogger(__name__)
 # extent + 10% padding).
 _BBOX_MARGIN_RATIO = 0.1
 
+# --- "real person" gate for multi-pose disambiguation --------------------
+# MediaPipe Pose can return a spurious second skeleton on person-shaped clutter
+# (a slatted bench, dense foliage). Such a phantom pose has FEW landmarks that
+# clear MediaPipe's own confidence floor -- the model is unsure, so per-landmark
+# .visibility is weak across the skeleton. A genuine second walker, by contrast,
+# produces MANY high-visibility landmarks (a coherent body).
+#
+# So we count a pose as a REAL PERSON only if at least _MIN_REAL_LANDMARKS of its
+# landmarks clear _MIN_REAL_VISIBILITY. This lets detect_pose tell the two cases
+# apart instead of failing on any len(poses) > 1:
+#   >= 2 real poses  -> genuine multiple people -> the video FAILs (spec).
+#   1 real + phantoms -> use the real one; phantom ignored (no false video FAIL).
+#   0 real           -> no usable person this frame (routine, ratio-judged).
+#
+# 0.5 mirrors check_body_height's floor (MediaPipe's own default). 8 is higher
+# than body_height's 4 because here we assert a WHOLE person exists, not just a
+# measurable span. [DESIGN] both are unvalidated on real footage -- tune via
+# config models.pose_landmarker.{min_real_visibility,min_real_landmarks} and get
+# อ.เหมียว's sign-off before trusting the multi-person FAIL on real data.
+_MIN_REAL_VISIBILITY = 0.5
+_MIN_REAL_LANDMARKS = 8
+
+
+def _is_real_person(pose, min_visibility, min_landmarks):
+    """True if `pose` has >= min_landmarks landmarks at >= min_visibility.
+
+    `pose` is a list of NormalizedLandmark (.x/.y/.z/.visibility). A landmark
+    with no visibility attribute counts as NOT visible (conservative: a pose
+    lacking visibility data cannot prove it is a real person). This is the single
+    signal that separates a genuine walker from a phantom skeleton on clutter.
+    """
+    n = 0
+    for lm in pose:
+        v = getattr(lm, "visibility", None)
+        if v is not None and v >= min_visibility:
+            n += 1
+            if n >= min_landmarks:
+                return True
+    return False
+
+
 # Default model location, relative to the project root (where config.yml and
 # run_face.py live). Overridable via config models.pose_landmarker.model_path.
 DEFAULT_MODEL_PATH = os.path.join("models", "pose_landmarker.task")
@@ -217,6 +258,8 @@ def detect_pose(
     detector,
     input_color_space: Literal["BGR", "RGB"] = "BGR",
     require_single_pose: bool = True,
+    min_real_visibility: float = _MIN_REAL_VISIBILITY,
+    min_real_landmarks: int = _MIN_REAL_LANDMARKS,
 ) -> PoseResult:
     """Run the shared PoseLandmarker once on one image.
 
@@ -268,11 +311,29 @@ def detect_pose(
     if not poses:
         return PoseResult(False, "No poses detected")
 
-    if require_single_pose and len(poses) > 1:
-        return PoseResult(False, f"Multiple poses detected: {len(poses)}")
+    # Disambiguate phantom poses (on benches/foliage) from real people BEFORE
+    # deciding the single/multiple/none verdict. Only poses that clear the
+    # visibility gate count as real; a spurious low-visibility skeleton neither
+    # fails the video nor masks the real walker.
+    real_poses = [
+        p for p in poses
+        if _is_real_person(p, min_real_visibility, min_real_landmarks)
+    ]
 
-    # --- first pose -> the representations downstream needs ---
-    norm_landmarks = poses[0]   # list of NormalizedLandmark (.x/.y/.z/.visibility)
+    if require_single_pose and len(real_poses) > 1:
+        # Two or more CONFIDENT bodies -> genuinely multiple people. Spec: a
+        # second walker in even one frame fails the whole video.
+        return PoseResult(
+            False, f"Multiple persons detected: {len(real_poses)}")
+
+    if not real_poses:
+        # Poses existed but none was confident enough to be a person (all
+        # phantoms, or the walker is too occluded/low-visibility this frame).
+        # Same downstream handling as "no person": routine, ratio-judged.
+        return PoseResult(False, "No poses detected")
+
+    # Exactly one real person -> proceed with it (ignore any phantom extras).
+    norm_landmarks = real_poses[0]   # list of NormalizedLandmark (.x/.y/.z/.visibility)
 
     landmarks_px = [
         (int(lm.x * width), int(lm.y * height), lm.z) for lm in norm_landmarks
