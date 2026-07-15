@@ -61,6 +61,7 @@ REPORT_CHECK_ORDER_WALK = {
 
     # 2) Person evidence / landmark availability
     "check_person_detected": 100,
+    "check_single_person": 105,  # multiple-person -> whole-video FAIL (ratio-exempt)
     "check_person_fully": 110,
 
     # 3) Frame-quality checks (body_height takes the size slot, like check_face_size)

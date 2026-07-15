@@ -171,6 +171,16 @@ def run_walk(
     if detector is None:
         detector = create_pose_landmarker(
             model_path,
+            # Ask the detector for >1 pose so a SECOND person is actually
+            # returned (len(poses) > 1) and detect_pose can report "Multiple
+            # poses detected" -> check_single_person -> whole-video FAIL. With
+            # num_poses=1 (the old default) MediaPipe only ever returns one
+            # pose, so a two-person frame degrades to "No poses detected" (an
+            # ambiguous wide scene the single slot can't lock) and is mis-routed
+            # as a no-person FAIL. Mirrors face's num_faces=10. Config-driven so
+            # the researcher can tune it without code changes; default 5 is a
+            # safe headroom over the one expected walker.
+            num_poses=pose_cfg.get("num_poses", 10),
             min_pose_detection_confidence=pose_cfg.get(
                 "min_pose_detection_confidence", 0.5),
             min_pose_presence_confidence=pose_cfg.get(
@@ -439,6 +449,9 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
 
     aborted = False
     frames_seen = 0
+    # Emit the ratio-exempt check_single_person video-level FAIL only ONCE, the
+    # first frame a second person appears (further frames would just repeat it).
+    multiple_person_seen = False
     try:
         for sf in iter_sampled_frames(path, sample_fps=iter_fps,
                                       include_first_frame=True,
@@ -471,6 +484,18 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
             # Did the pose detector find EXACTLY ONE person this frame? PASS if
             # yes, FAIL otherwise (no person, or multiple). This is the gate the
             # other per-frame person checks depend on.
+            #
+            # IMPORTANT: no-person and multiple-person are graded DIFFERENTLY per
+            # spec, so they are NOT both left to this one ratio-judged row:
+            #   no person   -> FAIL this frame here; report.py aggregates
+            #                  check_person_detected by walk's 20% fail-ratio, so
+            #                  a walker briefly out of view fails the VIDEO only if
+            #                  too many frames lose them.
+            #   multiple    -> a SECOND person even in ONE frame fails the WHOLE
+            #                  video, ratio-exempt. That is emitted SEPARATELY as
+            #                  check_single_person below (a video-level FAIL graded
+            #                  at 0.0), so it does not get averaged into the 20%
+            #                  no-person ratio and cannot be masked on a long clip.
             if p.ok:
                 pd_status = "PASS"
                 pd_reason = f"frame={sf.frame_index} person detected"
@@ -479,6 +504,22 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                 pd_reason = f"frame={sf.frame_index} no person: {p.message}"
             add("check_person_detected", pd_status, pd_reason,
                 frame_index=sf.frame_index, level="frame")
+
+            # ---- check_single_person (frame-triggered, VIDEO-level; ratio-exempt) ----
+            # The gait protocol films ONE walker. A second person in ANY single
+            # frame is a structural defect that fails the whole video, exactly like
+            # face's multiple-faces rule. We emit ONE video-level FAIL row the first
+            # time it happens (level="video" so report.py takes the worst status,
+            # not a ratio), and it is wired at fail-ratio 0.0 in config as a belt-
+            # and-braces backstop. This fires REGARDLESS of fail_fast, so the
+            # dashboard/overlay path (fail_fast=False, loop does NOT break) can no
+            # longer let a multiple-person clip through on the 20% average.
+            if multiple_persons and not multiple_person_seen:
+                multiple_person_seen = True
+                add("check_single_person", "FAIL",
+                    f"frame={sf.frame_index} multiple persons in frame: "
+                    f"{p.message}; gait films one walker -> video FAIL",
+                    frame_index=sf.frame_index, level="video")
 
             # ---- check_person_fully (frame-level; 8 key landmarks in frame) ----
             if p.ok:
@@ -623,11 +664,15 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
 
             # ---- fail-fast GATE 3: multiple persons (mirror face_rgb GATE 3) ----
             # A second person is a structural defect, not a ratio-judged
-            # transient. The FAIL row + overlay frame for THIS frame are already
-            # emitted above; break so we don't spend model time on a doomed file.
-            # The caller skips check_pose on an aborted (truncated) timeline. Only
-            # under fail_fast: with the overlay on (fail_fast=False) we keep going
-            # so the reviewer still gets the full overlay (same tradeoff as face).
+            # transient. The ratio-exempt check_single_person video-level FAIL +
+            # the per-frame FAIL row + overlay frame are already emitted above, so
+            # the video verdict is guaranteed EITHER WAY; this break just stops us
+            # spending model time on a doomed file. The caller skips check_pose on
+            # an aborted (truncated) timeline. Only under fail_fast: with the
+            # overlay on (fail_fast=False) we keep going so the reviewer still gets
+            # the full overlay -- and, unlike before, the video still FAILs because
+            # check_single_person does not depend on this break (same tradeoff as
+            # face, now with the same backstop face has via check_face_detected=0).
             if multiple_persons and fail_fast:
                 aborted = True
                 break

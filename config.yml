@@ -98,6 +98,18 @@ models:
     min_detection_confidence: 0.5    # [DESIGN]
     min_tracking_confidence: 0.5     # [DESIGN]
 
+  # NOTE: the walk pipeline + runners read models.pose_landmarker.* (below), NOT
+  # models.pose.* above. The `pose:` block's keys (min_detection_confidence) do
+  # not match the code's expected keys (min_pose_detection_confidence), so those
+  # values are currently ignored and the code defaults apply. [CONFIRM] whether
+  # to consolidate these two blocks -- flagged, not silently merged.
+  pose_landmarker:
+    # >1 so MediaPipe returns a SECOND person when present, letting detect_pose
+    # report "Multiple poses detected" -> check_single_person -> whole-video
+    # FAIL (mirrors face's multiple-faces rule). With num_poses=1 a two-person
+    # frame degrades to "No poses detected" and is mis-graded as no-person.
+    num_poses: 10                     # [DESIGN] headroom over the one expected walker
+
   yolo:
     # COCO object detector for the occlusion / foreign-object check. Pretrained
     # weights (knows all 80 COCO classes); we only read back predicted class ids.
@@ -610,6 +622,14 @@ report:
     frame_review_ratio: 0.2
     per_check_fail_ratio:
       check_face_detected: 0.0
+      # Walk: a SECOND person in any single frame fails the whole video, exactly
+      # like face's multiple-faces rule. check_single_person is emitted as a
+      # level="video" row (worst-status, already ratio-exempt), so this 0.0 is a
+      # documented backstop that also holds if the check is ever re-leveled to
+      # "frame". The no-person case is graded separately on check_person_detected
+      # at the normal 20% fail-ratio, so a walker briefly out of view is NOT
+      # sunk by one frame.
+      check_single_person: 0.0
   columns:
     - "volunteer_id"
     - "data_type"

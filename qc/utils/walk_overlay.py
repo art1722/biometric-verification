@@ -190,6 +190,38 @@ class WalkOverlayWriter:
         self._frames_written += 1
 
     @staticmethod
+    def _scale_coords(bbox, landmarks_px, factor):
+        """Scale a pose bbox and its pixel landmarks by the same `factor` used to
+        resize the frame, so the drawn skeleton and box stay aligned with the
+        fitted video. Mirrors _scale_object_boxes (same guard, same int rounding).
+
+        Shapes are preserved exactly so _draw_pose consumes them unchanged:
+          bbox         : (x, y, w, h) ints, or None -> returned as-is.
+          landmarks_px : list of (px, py, z); px/py are scaled and rounded to
+                         int (cv2 needs int pixels), z is passed through untouched
+                         (it is a depth value, not a pixel coordinate). None/empty
+                         -> returned as-is.
+        Returns (bbox, landmarks_px) in the same order the caller unpacks them.
+        """
+        if factor == 1.0:
+            return bbox, landmarks_px
+
+        if bbox is not None:
+            bx, by, bw, bh = bbox
+            bbox = (int(round(bx * factor)), int(round(by * factor)),
+                    int(round(bw * factor)), int(round(bh * factor)))
+
+        if landmarks_px:
+            scaled_lms = []
+            for lm in landmarks_px:
+                px, py, z = lm[0], lm[1], lm[2]
+                scaled_lms.append(
+                    (int(round(px * factor)), int(round(py * factor)), z))
+            landmarks_px = scaled_lms
+
+        return bbox, landmarks_px
+
+    @staticmethod
     def _scale_object_boxes(object_boxes, factor):
         """Scale (label, conf, bbox) object entries by the same fit factor used
         for the frame, so the drawn boxes stay aligned with the resized video."""

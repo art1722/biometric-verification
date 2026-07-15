@@ -534,6 +534,10 @@ def run_walk_batch(input_dir, config, args, all_summary, counts, allowed_ids=Non
     model_path = pose_cfg.get("model_path", "models/pose_landmarker.task")
     detector = create_pose_landmarker(
         model_path,
+        # >1 so a second person is returned and detect_pose reports "Multiple
+        # poses detected" (-> check_single_person -> video FAIL). Mirrors face's
+        # num_faces; see qc/pipelines/walk.py for the full rationale.
+        num_poses=pose_cfg.get("num_poses", 10),
         min_pose_detection_confidence=pose_cfg.get("min_pose_detection_confidence", 0.5),
         min_pose_presence_confidence=pose_cfg.get("min_pose_presence_confidence", 0.5),
         min_tracking_confidence=pose_cfg.get("min_tracking_confidence", 0.5),
