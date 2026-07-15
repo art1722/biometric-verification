@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# docker-compose.yml — one-command build + run for the biometric QC API.
+#
+# Instead of remembering the long docker build / docker run flags, use:
+#
+#     docker compose up -d --build      # build (if needed) + start in background
+#     docker compose logs -f            # follow the logs
+#     docker compose down               # stop + remove the container
+#     docker compose up -d --build      # re-run after a code change (rebuilds)
+#
+# Everything the old long commands encoded (image name, container name, port
+# mapping, volume mounts) lives HERE now, so the day-to-day command is short.
+#
+# Open the API docs once it is up:  http://localhost:8001/docs
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  biometric-qc-api:
+    # BUILD: same as `docker build -t biometric-qc .`
+    build: .
+    image: biometric-qc
+
+    # NAME: same as `--name biometric-qc-api`
+    container_name: biometric-qc-api
+
+    # PORT: same as `-p 8001:8000` (host 8001 -> container 8000).
+    # Browse http://localhost:8001/docs
+    ports:
+      - "8001:8000"
+
+    # VOLUMES: mount host folders into the container so the app reads your data,
+    # persists reports back to the host, and uses your vendored model bundles.
+    #   - models : the .task / .pt files (NOT baked into the image)
+    #   - data   : input videos/images to QC (read)
+    #   - reports: output CSVs/JSON/overlays (written back to your host)
+    # ./ is the folder this compose file sits in, so it works on Windows, macOS,
+    # and Linux WITHOUT the %cd% trick the raw `docker run` needed.
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+      - ./reports:/app/reports
+
+    # Ultralytics offline / self-contained state, matching the Dockerfile ENV.
+    # Harmless to repeat here; makes the runtime behaviour explicit in one place.
+    environment:
+      - YOLO_CONFIG_DIR=/app/.ultralytics
+      - YOLO_OFFLINE=1
+      - ULTRALYTICS_ANALYTICS=False
+
+    # Restart if it crashes or the host reboots, but not if you stopped it
+    # yourself (`docker compose down`).
+    restart: unless-stopped

@@ -237,7 +237,7 @@ def process_one(path, vid, config, args):
 
     overlay = None
     if overlay_path:
-        from qc.utils.overlay import OverlayWriter
+        from qc.utils.face_overlay import OverlayWriter
         overlay = OverlayWriter(
             overlay_path, fps=float(args.sample_fps) if args.sample_fps else 30.0,
             volunteer_id=vid, filename=os.path.basename(path))
