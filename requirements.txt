@@ -23,7 +23,7 @@ protobuf==4.25.8          # pinned: mediapipe 0.10.21 needs protobuf >=4.25.3,<5
 # occlusion check degrades to SKIP if this is absent, but production runs need
 # it. Weights (yolov8n.pt) are NOT installed by pip; vendor them in models/ and
 # mount like the .task bundles (see Dockerfile / .dockerignore).
-ultralytics==8.3.0
+ultralytics==8.4.95
 
 # --- config / data ---
 PyYAML==6.0.2
