@@ -2,12 +2,12 @@
 
 Design
 ------
-POST /jobs must return immediately, but run_folder.py over ~1,500 volunteers
-takes a long time. So we DON'T run it inside the request. Instead:
+POST /checks/batch must return immediately, but run_folder.py over ~1,500
+volunteers takes a long time. So we DON'T run it inside the request. Instead:
 
     1. launch run_folder.py as a separate OS process (subprocess.Popen),
     2. return a job_id straight away,
-    3. let the frontend poll GET /jobs/{id} for status + progress.
+    3. let the frontend poll GET /checks/batch/{id} for status + progress.
 
 Why a subprocess (not a thread): QC is CPU-heavy (MediaPipe/OpenCV). A separate
 process is scheduled independently by the OS, so the API stays responsive while
@@ -83,15 +83,34 @@ def _count_palm_images(data_dir: str) -> int:
     return n
 
 
-def _count_expected(data_dir: str, want_face: bool, want_palm: bool) -> int:
-    """Total UNITS the run will process = face videos (if face is on) + palm
-    images (if --palm is set). Both denominators and the 'done' numerator use
-    the same unit (one file), so progress stays in [0, 1]."""
+def _count_walk_videos(data_dir: str) -> int:
+    """How many strict walk video files run_folder will process. Walk grades PER
+    VIDEO (each _F/_S file is its own summary row), so the progress unit is the
+    video — matching the walk_summary.csv grain. Mirrors run_folder's walk match
+    without importing it."""
+    import re
+
+    walk = re.compile(r"^(\d+)_walk_[FS]\.mp4$")
+    n = 0
+    if os.path.isdir(data_dir):
+        for _, _, files in os.walk(data_dir):
+            n += sum(1 for name in files if walk.match(name))
+    return n
+
+
+def _count_expected(data_dir: str, want_face: bool, want_palm: bool,
+                    want_walk: bool) -> int:
+    """Total UNITS the run will process = face videos + palm images + walk
+    videos, for whichever modalities are enabled. Every modality's unit is one
+    file, and 'done' counts distinct finished filenames the same way, so
+    progress stays in [0, 1]."""
     total = 0
     if want_face:
         total += _count_face_videos(data_dir)
     if want_palm:
         total += _count_palm_images(data_dir)
+    if want_walk:
+        total += _count_walk_videos(data_dir)
     return total
 
 
@@ -177,16 +196,23 @@ def _watch(job_id: str, proc: subprocess.Popen) -> None:
 
 
 def start_job(extra_args: Optional[list[str]] = None, *,
-              run_palm: bool = False, run_face: bool = True,
+              run_face: bool = True, run_palm: bool = True,
+              run_walk: bool = True,
+              sample_fps: Optional[float] = None,
               data_dir: Optional[str] = None,
               reports_dir: Optional[str] = None,
-              fresh_all: bool = False) -> dict:
+              append: bool = False) -> dict:
     """Launch a batch QC run. Returns the new job's public record immediately.
 
-    run_face / run_palm decide which modalities the batch processes AND which
-    summary CSVs the progress counter watches, so 'total' and 'done' agree on
-    the unit set. When run_palm is True, '--palm' is added to the subprocess
-    args; run_face=False adds '--no-face'.
+    run_face / run_palm / run_walk decide which modalities the batch processes
+    AND which summary CSVs the progress counter watches, so 'total' and 'done'
+    agree on the unit set. All three run by DEFAULT (matching run_folder, where
+    every modality is on unless a --no-* flag is passed). A False value adds the
+    matching --no-face / --no-palm / --no-walk flag to the subprocess.
+
+    sample_fps, when given, is forwarded as --sample-fps so a caller (the API)
+    can tune sampling. None -> omit the flag and let run_folder use its own
+    default (1.0).
 
     data_dir / reports_dir override where the batch READS input and WRITES
     output. Both default to the shared server dirs (store.data_dir() /
@@ -194,26 +220,35 @@ def start_job(extra_args: Optional[list[str]] = None, *,
     its own temp dirs here so each upload is isolated from the shared data/ and
     from other uploads.
 
-    fresh_all truncates the all_summary roll-up before writing (adds
-    --fresh-all) instead of appending. An upload run sets this True so its
-    all_summary reflects ONLY that upload — otherwise uploads would pile onto
-    the shared cross-modal roll-up. The normal batch leaves it False (append),
-    preserving the face-then-palm accumulation behaviour.
+    append controls the all_summary roll-up. run_folder OVERWRITES all_summary
+    each run by default (fresh); pass append=True to add to an existing roll-up
+    instead (adds --append). An upload run leaves append False so its all_summary
+    reflects ONLY that upload. NOTE: this replaces the old fresh_all flag — the
+    default is now fresh, so isolation is the default and accumulation is opt-in.
     """
     job_id = uuid.uuid4().hex[:12]
     data = data_dir if data_dir is not None else store.data_dir()
     reports = reports_dir if reports_dir is not None else store.reports_dir()
     config = store.config_path()
 
+    # Flags mirror run_folder's opt-OUT model: every modality is on by default,
+    # a --no-* flag turns one off. (The old --palm / --fresh-all flags no longer
+    # exist on run_folder; passing them would make argparse error the subprocess
+    # out, so this build MUST stay in sync with run_folder.parse_args.)
     args = list(extra_args or [])
-    if run_palm and "--palm" not in args:
-        args.append("--palm")
     if not run_face and "--no-face" not in args:
         args.append("--no-face")
-    if fresh_all and "--fresh-all" not in args:
-        args.append("--fresh-all")
+    if not run_palm and "--no-palm" not in args:
+        args.append("--no-palm")
+    if not run_walk and "--no-walk" not in args:
+        args.append("--no-walk")
+    if append and "--append" not in args:
+        args.append("--append")
+    if sample_fps is not None and "--sample-fps" not in args:
+        args += ["--sample-fps", str(sample_fps)]
 
-    total = _count_expected(data, want_face=run_face, want_palm=run_palm)
+    total = _count_expected(data, want_face=run_face, want_palm=run_palm,
+                            want_walk=run_walk)
 
     # Which summary CSVs to sum 'done' from — must match the modalities run AND
     # the reports dir this job writes to (an upload writes to its own reports
@@ -223,6 +258,8 @@ def start_job(extra_args: Optional[list[str]] = None, *,
         summary_paths.append(os.path.join(reports, "face_summary.csv"))
     if run_palm:
         summary_paths.append(os.path.join(reports, "palm_summary.csv"))
+    if run_walk:
+        summary_paths.append(os.path.join(reports, "walk_summary.csv"))
 
     proc = _launch(data, reports, config, args)
 

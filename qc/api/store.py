@@ -18,20 +18,28 @@ all_summary.json. Per the project meeting, the API's /results endpoints read
 all_summary.json, so face + palm (+ future walk) all surface through ONE
 modality-agnostic source with no per-modality branching here.
 
-IMPORTANT — this roll-up is FAIL/ERROR ONLY by design: files that PASS every
-check are NOT written to all_summary. So /results shows the problem set (the
-reviewer's worklist), not every processed file. If PASS files are needed later,
-change how all_summary is WRITTEN (qc.utils.report.AllSummaryWriter) — the API
-here stays the same.
+IMPORTANT — this roll-up records EVERY processed file, one object per file, with
+overall_status PASS or FAIL (media-level verdict is PASS/FAIL only). So /results
+returns the full set by default; callers narrow to the problem set with
+?status=FAIL (or ?status=PASS). Filtering is an API/frontend concern, done in
+read_batch_summary / the endpoints below — the file on disk always holds all
+statuses.
 
-all_summary.json shape (one object per problem FILE):
+A file that CRASHED mid-grading (corrupt media, a library fault, a bug) is
+recorded as FAIL too, with the exception text surfaced as a synthetic
+"processing_error" check inside failures[] — so a crash reads like any other
+failure, no separate status to special-case. (A legacy "ERROR" status existed
+for crashes; the read paths below still tolerate it defensively, but nothing
+writes it anymore.)
+
+all_summary.json shape (one object per PROCESSED file):
     {
       "data_type": "face_rgb" | "palm" | "walk_*",
       "volunteer_id": "001",
       "filename": "001_face_rgb.mp4",
-      "overall_status": "FAIL" | "ERROR",
-      "failures": [ {"check_name": "...", "reason": "..."}, ... ],  # [] on ERROR
-      "error": "..."                                                # "" on FAIL
+      "overall_status": "PASS" | "FAIL",
+      "failures": [ {"check_name": "...", "reason": "..."}, ... ],  # [] on PASS
+      "error": ""   # legacy field, empty now (crash text lives in failures[])
     }
 
 Per-volunteer detail CSVs (face_<id>_*.csv, palm_<id>_*.csv) still exist on disk

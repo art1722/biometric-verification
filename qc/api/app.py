@@ -28,13 +28,6 @@ long for one request, so it returns 202 + a job_id immediately and the caller
 POLLs GET /checks/batch/{id}. The returned object still carries job_id/status/
 progress — it is conceptually a "job", only the URL changed.
 
-Backwards compatibility
------------------------
-The previous paths (POST/GET /jobs, /jobs/{id}, POST /checks) are kept as
-DEPRECATED aliases that forward to the same handlers, so an existing client
-(e.g. พี่ยอ's frontend) does not break. They can be removed once every caller
-has moved to /checks/*.
-
 Run (from repo root):  uvicorn main:app --reload   ->  http://localhost:8000/docs
 """
 
@@ -77,15 +70,17 @@ def health():
 # Checks — batch (async)
 # ---------------------------------------------------------------------------
 
-def _start_batch(run_palm: bool = True, run_face: bool = True):
+def _start_batch(run_face: bool = True, run_palm: bool = True,
+                 run_walk: bool = True, sample_fps: float | None = None):
     """Shared handler: launch a batch run and return 202 + Location.
 
-    Defaults to BOTH modalities. run_palm/run_face select which the batch
-    processes. Behavior is otherwise unchanged from the old POST /jobs — it runs
-    run_folder over the server's local data/ dir. (Zip upload is a later step;
-    this does not change what the batch reads.)
+    Defaults to ALL THREE modalities (face + palm + walk), matching run_folder
+    where everything runs unless turned off. The run_* flags select which the
+    batch processes; sample_fps optionally overrides the sampling rate. It runs
+    run_folder over the server's local data/ dir.
     """
-    job = jobs.start_job(run_palm=run_palm, run_face=run_face)
+    job = jobs.start_job(run_face=run_face, run_palm=run_palm,
+                         run_walk=run_walk, sample_fps=sample_fps)
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,
         content=job,
@@ -111,20 +106,26 @@ def _get_batch(job_id: str):
 @app.post("/checks/batch", status_code=status.HTTP_202_ACCEPTED, tags=["Checks"])
 def create_batch(
     run_face: bool = Query(default=True,
-                           description="run the face video batch "
-                                       "(set false to run palm only)"),
+                           description="run the face video batch"),
     run_palm: bool = Query(default=True,
-                           description="run the palm image batch "
-                                       "(set false to run face only)"),
+                           description="run the palm image batch"),
+    run_walk: bool = Query(default=True,
+                           description="run the walk/gait video batch"),
+    sample_fps: float | None = Query(
+        default=None,
+        description="frames sampled per source second. Omit to use the batch "
+                    "default (1.0). 0 or negative = native (every frame)."),
 ):
     """Start a batch QC run over the local data/ folder.
 
-    By default runs BOTH modalities (face videos + palm images) — the researcher
-    uploads everything, so everything is checked. Narrow with run_face=false or
-    run_palm=false. Returns 202 Accepted with a job_id immediately; poll
-    GET /checks/batch/{job_id} for progress.
+    By default runs ALL THREE modalities (face videos + palm images + walk
+    videos) — the researcher uploads everything, so everything is checked. Turn
+    any off with run_face=false / run_palm=false / run_walk=false. sample_fps
+    optionally overrides the frame-sampling rate. Returns 202 Accepted with a
+    job_id immediately; poll GET /checks/batch/{job_id} for progress.
     """
-    return _start_batch(run_palm=run_palm, run_face=run_face)
+    return _start_batch(run_face=run_face, run_palm=run_palm,
+                        run_walk=run_walk, sample_fps=sample_fps)
 
 
 @app.get("/checks/batch", tags=["Checks"])
@@ -153,18 +154,30 @@ async def create_uploads_batch(
                            description="run the face video batch"),
     run_palm: bool = Query(default=True,
                            description="run the palm image batch"),
+    run_walk: bool = Query(default=True,
+                           description="run the walk/gait video batch"),
+    sample_fps: float | None = Query(
+        default=None,
+        description="frames sampled per source second. Omit to use the batch "
+                    "default (1.0). 0 or negative = native (every frame)."),
 ):
     """Upload a whole data set and QC it in one shot.
+
+    This is POST /checks/batch with an upload layer on top: instead of running
+    over the server's standing data/ dir, it unpacks the upload into an isolated
+    temp dir and runs the SAME batch over that. Every batch option (run_face /
+    run_palm / run_walk / sample_fps) applies identically.
 
     Accepts the folder in whichever shape the client sends it:
       - ONE .zip                -> unpacked server-side
       - MANY files (folder pick) -> written into a temp tree, subpaths preserved
 
     The upload is unpacked into its OWN isolated temp dir (never the shared
-    data/), then the existing batch runs over it and writes to that upload's own
-    reports dir with a FRESH all_summary (this upload only). Returns 202 + a
-    job_id immediately; poll GET /checks/batch/{job_id}, then read the results
-    from GET /results (the job's reports_dir is also returned for reference).
+    data/), then the batch runs over it and writes to that upload's own reports
+    dir with a FRESH all_summary (this upload only — the default now, since the
+    batch overwrites all_summary unless --append). Returns 202 + a job_id
+    immediately; poll GET /checks/batch/{job_id}, then read the results from
+    GET /results (the job's reports_dir is also returned for reference).
 
     Errors:
       - empty upload / corrupt zip / unsafe path -> 422
@@ -186,9 +199,13 @@ async def create_uploads_batch(
     # is isolated from the shared reports/ and from other uploads.
     reports_dir = data_dir.rstrip("/\\") + "_reports"
 
+    # No append= here: the batch overwrites all_summary by default, so each
+    # upload's roll-up is naturally isolated to that upload (was fresh_all=True
+    # under the old flag model).
     job = jobs.start_job(
-        run_face=run_face, run_palm=run_palm,
-        data_dir=data_dir, reports_dir=reports_dir, fresh_all=True,
+        run_face=run_face, run_palm=run_palm, run_walk=run_walk,
+        sample_fps=sample_fps,
+        data_dir=data_dir, reports_dir=reports_dir,
     )
     job["uploaded_files"] = n_files
     # Tell the caller exactly where to poll and where to fetch all_summary once
@@ -327,39 +344,3 @@ def volunteers(job_id: str | None = Query(
     reports = _reports_for_job(job_id)
     ids = store.list_volunteer_ids(reports=reports)
     return {"count": len(ids), "volunteer_ids": ids}
-
-
-# ---------------------------------------------------------------------------
-# Deprecated aliases (old paths) — forward to the same handlers.
-# Remove once all callers have migrated to /checks/*.
-# ---------------------------------------------------------------------------
-
-@app.post("/jobs", status_code=status.HTTP_202_ACCEPTED,
-          tags=["Deprecated"], deprecated=True)
-def create_job_deprecated():
-    """DEPRECATED — use POST /checks/batch.
-
-    Pinned to the ORIGINAL face-only behavior so existing callers don't suddenly
-    start running palm. New callers should use POST /checks/batch (both by
-    default).
-    """
-    return _start_batch(run_face=True, run_palm=False)
-
-
-@app.get("/jobs", tags=["Deprecated"], deprecated=True)
-def get_jobs_deprecated(status_filter: str | None = Query(
-        default=None, alias="status")):
-    """DEPRECATED — use GET /checks/batch."""
-    return _list_batches(status_filter)
-
-
-@app.get("/jobs/{job_id}", tags=["Deprecated"], deprecated=True)
-def get_job_deprecated(job_id: str):
-    """DEPRECATED — use GET /checks/batch/{job_id}."""
-    return _get_batch(job_id)
-
-
-@app.post("/checks", tags=["Deprecated"], deprecated=True)
-async def create_check_deprecated(file: UploadFile = File(...)):
-    """DEPRECATED — use POST /checks/file."""
-    return await _check_one_file(file)

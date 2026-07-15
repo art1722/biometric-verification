@@ -1,6 +1,6 @@
 """router.py — decide which pipeline a file belongs to, from its NAME.
 
-This is the dispatch brain for POST /checks. It does NOT run QC itself; it
+This is the dispatch brain for POST /checks/file. It does NOT run QC itself; it
 parses the filename against the project's naming convention and says either
 "this is face_rgb, run it" or "this is palm_L_N, not built yet" or "this name
 matches nothing, reject it".
@@ -39,8 +39,18 @@ MATCH_RUNNABLE = "runnable"          # recognised AND a pipeline exists -> run i
 MATCH_NOT_IMPLEMENTED = "not_implemented"  # recognised, no pipeline yet -> 501
 UNRECOGNISED = "unrecognised"        # name matches nothing -> 422
 
-# Which data_keys have a real pipeline today. Extend as you build them.
-RUNNABLE_MODALITIES = {"face_rgb"}
+# Which data_keys can be graded from a SINGLE uploaded file via /checks/file.
+# Extend as you wire a pipeline in live.check_one.
+#
+# face_rgb : one video -> full verdict.
+# walk_F/S : one video -> full verdict (run_walk grades a single clip).
+# palm_*   : DELIBERATELY EXCLUDED. A palm image's headline check (angle) is
+#            graded ABSOLUTELY per image, but the meaningful palm verdict spans
+#            all five poses together (run_palm_participant). One image in
+#            isolation cannot produce that, so palm is batch-only: a single palm
+#            upload here stays 501 rather than returning a misleadingly partial
+#            pass. Run palm through /checks/batch or /checks/uploads instead.
+RUNNABLE_MODALITIES = {"face_rgb", "walk_F", "walk_S"}
 
 
 @functools.lru_cache(maxsize=1)

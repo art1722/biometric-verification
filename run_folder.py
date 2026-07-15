@@ -103,9 +103,6 @@ def parse_args():
     ap.add_argument("--config", default="config.yml")
     ap.add_argument("--out-root", default="reports",
                     help="root for per-volunteer report folders (default: reports)")
-    ap.add_argument("--face-summary-csv", default=None,
-                    help="face per-check summary CSV "
-                         "(default: <out-root>/face_summary.csv)")
     ap.add_argument("--all-summary", default=None,
                     help="cross-modal FAIL/ERROR roll-up, written as both .csv "
                          "and .json, shared by all modalities "
@@ -137,6 +134,7 @@ def parse_args():
                          "and all their face/palm/walk files (F/S pairs kept together)")
     ap.add_argument("--no-detail", action="store_true",
                     help="skip the big per-frame detail CSV (keep result/overall only)")
+
     ap.add_argument("--no-palm", action="store_true",
                     help="skip the palm image batch (palm runs by default)")
     ap.add_argument("--palm-summary-csv", default=None,
@@ -149,6 +147,9 @@ def parse_args():
                          "(default: <out-root>/walk_summary.csv)")
     ap.add_argument("--no-face", action="store_true",
                     help="skip the face batch (e.g. run palm+walk only with --no-face)")
+    ap.add_argument("--face-summary-csv", default=None,
+                    help="face per-check summary CSV "
+                         "(default: <out-root>/face_summary.csv)")
     return ap.parse_args()
 
 
@@ -276,17 +277,32 @@ def process_one(path, vid, config, args):
     return rec
 
 
-def error_row(path, vid, exc, elapsed):
-    """An ERROR record shaped like build_overall_record's output, so the same
-    writers expand it (one row, status ERROR, reason = the error text)."""
+def error_row(path, vid, exc, elapsed, data_type="face_rgb"):
+    """A crash record shaped like build_overall_record's output, so the same
+    writers expand it.
+
+    A file that THREW mid-grading (corrupt video, a library crash, a bug) is
+    recorded as FAIL, not a separate ERROR status: the spec's media-level verdict
+    is PASS/FAIL only. The exception text is preserved by surfacing it as a
+    synthetic failed check named "processing_error", so it flows through the
+    normal FAIL -> failed_checks_detail rendering (report rows, all_summary
+    failures, the API /results rows) exactly like any other failure reason —
+    nothing downstream needs an ERROR branch to show it.
+
+    data_type labels which modality crashed ("face_rgb" default; the walk batch
+    passes "walk_F"/"walk_S") so a crash row is attributed to the right pipeline.
+    """
+    error_text = " ".join(str(exc).split())[:300]
     return {
         "volunteer_id": vid,
-        "data_type": "face_rgb",
+        "data_type": data_type,
         "filename": os.path.basename(path),
-        "final_status": "ERROR",
-        "failed_checks": [],
-        "failed_checks_detail": [],
-        "error": " ".join(str(exc).split())[:300],
+        "final_status": "FAIL",
+        "failed_checks": ["processing_error"],
+        "failed_checks_detail": [
+            {"check_name": "processing_error", "reason": error_text},
+        ],
+        "error": error_text,
         "processing_time_sec": f"{elapsed:.1f}",
     }
 
@@ -442,19 +458,27 @@ def run_palm_batch(input_dir, config, args, all_summary, counts, allowed_ids=Non
                 )
             except Exception as exc:  # noqa: BLE001 — one bad participant must not kill the batch
                 elapsed = time.perf_counter() - t0
+                error_text = " ".join(str(exc).split())[:300]
+                # A participant that THREW is recorded as FAIL (media verdict is
+                # PASS/FAIL only). The exception text is preserved as a synthetic
+                # "processing_error" check so it renders through the normal FAIL
+                # path everywhere, no ERROR branch needed.
                 rec = {
                     "volunteer_id": vid,
                     "data_type": "palm",
                     "filename": f"{vid}_palm_*",
-                    "final_status": "ERROR",
-                    "failed_checks": [],
-                    "failed_checks_detail": [],
-                    "error": " ".join(str(exc).split())[:300],
+                    "final_status": "FAIL",
+                    "failed_checks": ["processing_error"],
+                    "failed_checks_detail": [
+                        {"check_name": "processing_error", "reason": error_text},
+                    ],
+                    "error": error_text,
                 }
                 palm_summary.add(rec)
                 all_summary.add(rec)
-                counts["ERROR"] = counts.get("ERROR", 0) + 1
-                print(f"[{i}/{total_p}] {vid:>5}  ERROR  {rec['error']}", flush=True)
+                counts["FAIL"] = counts.get("FAIL", 0) + 1
+                print(f"[{i}/{total_p}] {vid:>5}  FAIL (crash)  {error_text}",
+                      flush=True)
                 traceback.print_exc()
                 continue
 
@@ -601,8 +625,10 @@ def run_walk_batch(input_dir, config, args, all_summary, counts, allowed_ids=Non
                     rec["processing_time_sec"] = f"{elapsed:.1f}"
                 except Exception as exc:  # noqa: BLE001 — one bad file must not kill the batch
                     elapsed = time.perf_counter() - t0
-                    rec = error_row(path, vid, exc, elapsed)
-                    print(f"[{i}/{total_w}] {vid:>5}  ERROR  {rec['error']}", flush=True)
+                    rec = error_row(path, vid, exc, elapsed,
+                                    data_type=f"walk_{view}")
+                    print(f"[{i}/{total_w}] {vid:>5}  FAIL (crash)  "
+                          f"{rec['error']}", flush=True)
                     traceback.print_exc()
                 else:
                     print(f"[{i}/{total_w}] {vid:>5}_{view}  "
@@ -705,7 +731,8 @@ def main():
                     except Exception as exc:  # noqa: BLE001 — one bad file must not kill the batch
                         elapsed = time.perf_counter() - t0
                         rec = error_row(path, vid, exc, elapsed)
-                        print(f"[{i}/{total}] {vid:>5}  ERROR  {rec['error']}", flush=True)
+                        print(f"[{i}/{total}] {vid:>5}  FAIL (crash)  "
+                              f"{rec['error']}", flush=True)
                         traceback.print_exc()
                     else:
                         status = rec["final_status"]
@@ -741,10 +768,10 @@ def main():
     if run_walk_flag:
         print(f"  walk: {n_walk_videos} video row(s)")
     print(f"  PASS={counts.get('PASS',0)}  FAIL={counts.get('FAIL',0)}  "
-          f"SKIP={counts.get('SKIP',0)}  ERROR={counts.get('ERROR',0)}")
+          f"SKIP={counts.get('SKIP',0)}")
     if run_face:
         print(f"  summary: {summary_csv}")
-    print(f"  all    : {all_stem}.csv / .json  ({all_kept} FAIL/ERROR video(s) "
+    print(f"  all    : {all_stem}.csv / .json  ({all_kept} video(s) "
           f"{'appended' if args.append else 'written'})")
     if wrong_case:
         print(f"\n  WARNING: {len(wrong_case)} wrong-case face_rgb file(s) were "
