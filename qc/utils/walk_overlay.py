@@ -29,7 +29,7 @@ from typing import Any, Optional
 import cv2
 import numpy as np
 
-from qc.utils.overlay import (
+from qc.utils.face_overlay import (
     _put, _STATUS_COLOR,
     _GREEN, _RED, _AMBER, _GREY, _WHITE, _BLACK, _PANEL, _FONT,
 )

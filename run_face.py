@@ -382,7 +382,7 @@ def main():
 
     overlay = None
     if args.overlay:
-        from qc.utils.overlay import OverlayWriter
+        from qc.utils.face_overlay import OverlayWriter
         # Overlay plays at the rate frames were SAMPLED (overlay_fps, resolved
         # above), so its duration matches the source. Sparse sampling looks
         # choppy but stays time-accurate, which is what the QC reviewer needs.

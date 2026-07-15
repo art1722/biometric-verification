@@ -31,7 +31,7 @@ import cv2
 import numpy as np
 
 # Reuse the single source of truth for styling from the on-video overlay.
-from qc.utils.overlay import (
+from qc.utils.face_overlay import (
     _put, _shorten_reason, _STATUS_COLOR,
     _GREEN, _RED, _AMBER, _GREY, _WHITE, _BLACK, _PANEL, _FONT,
 )
