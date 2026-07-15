@@ -47,3 +47,4 @@ Thumbs.db
 # others
 tmp/
 out/
+.ultralytics/
