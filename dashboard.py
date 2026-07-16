@@ -47,6 +47,9 @@ STATUS_COLORS = {
     "INCOMPLETE": "#C0392B",
     "UNRECOGNISED": "#C0392B",
     "NO_REPORT": "#5A6473",
+
+    # palm per-image grid: a slot with no graded row
+    "MISSING": "#5A6473",
 }
 
 REPORT_CHECK_ORDER = {
@@ -757,7 +760,61 @@ def load_volunteer(reports_dir, vid):
         "result": load_csv(_find(reports_dir, vid, "_result")),
         "detail": load_csv(_find(reports_dir, vid, "_detail")),
         "header": load_csv(_find(reports_dir, vid, "_detail_header")),
+        # Palm is graded PER IMAGE: palm_<id>_overall.csv has ONE row per palm
+        # file (data_type = pose key, e.g. palm_L_N), each with its own PASS/FAIL.
+        # _find(..., "_overall") already matches face_*_overall; disambiguate by
+        # the palm_ prefix so we load the palm file specifically.
+        "palm_overall": load_csv(_find_palm_overall(reports_dir, vid)),
+        # Palm per-(image,check) rows: palm_<id>_detail.csv. We use it to pull
+        # just the check_palm_angle rows for the Palm tab.
+        "palm_detail": load_csv(_find_palm_detail(reports_dir, vid)),
+        # Walk writes ONE set of files PER VIEW (F and S), named
+        # walk_<id>_walk_<view>_<kind>.csv. Collect both views into dicts keyed
+        # by "F"/"S" so the Walk tab can show each camera.
+        "walk_overall": _load_walk_by_view(reports_dir, vid, "overall"),
+        "walk_result": _load_walk_by_view(reports_dir, vid, "result"),
+        "walk_detail": _load_walk_by_view(reports_dir, vid, "detail"),
     }
+
+
+def _load_walk_by_view(reports_dir, vid, kind):
+    """Load walk_<id>_walk_<view>_<kind>.csv for each view -> {"F": df, "S": df}.
+
+    kind is "overall" | "result" | "detail". Missing views are simply absent
+    from the returned dict. Returns {} if none found.
+
+    We match on "_walk_<view>_<kind>.csv" so we do NOT accidentally pick up the
+    detail_header file when kind="detail" (that file ends _detail_header.csv).
+    """
+    sub = os.path.join(reports_dir, vid)
+    out = {}
+    for view in ("F", "S"):
+        hits = glob.glob(os.path.join(sub, f"walk_*_walk_{view}_{kind}.csv"))
+        # Exclude detail_header when asking for detail (glob for _detail matches
+        # _detail_header too, since the suffix appears mid-name).
+        if kind == "detail":
+            hits = [h for h in hits if not h.endswith("_detail_header.csv")]
+        if hits:
+            out[view] = load_csv(hits[0])
+    return out
+
+
+def _find_palm_detail(reports_dir, vid):
+    """Locate palm_<id>_detail.csv specifically (not face_/walk_ detail)."""
+    sub = os.path.join(reports_dir, vid)
+    hits = glob.glob(os.path.join(sub, "palm_*_detail.csv"))
+    return hits[0] if hits else None
+
+
+def _find_palm_overall(reports_dir, vid):
+    """Locate palm_<id>_overall.csv specifically (not face_/walk_).
+
+    _find("_overall") globs *_overall.csv and returns the first hit, which may be
+    the face file. Palm needs its OWN file, so match the palm_ prefix explicitly.
+    """
+    sub = os.path.join(reports_dir, vid)
+    hits = glob.glob(os.path.join(sub, "palm_*_overall.csv"))
+    return hits[0] if hits else None
     
 @st.cache_data(show_spinner=False)
 def load_filename_report(reports_dir):
@@ -933,6 +990,280 @@ def render_face_qc_summary(status, reason):
         st.caption("No face RGB QC reason available.")
 
 
+def expected_palm_keys(config):
+    """The 10 expected palm file keys, in config order (palm.pattern_keys).
+
+    Falls back to the L/R x N/RL/RR/PU/PD product if pattern_keys is absent, so
+    the grid still renders on an older config.
+    """
+    palm = (config or {}).get("palm", {})
+    keys = palm.get("pattern_keys")
+    if keys:
+        return list(keys)
+    hands = palm.get("hands", ["L", "R"])
+    poses = palm.get("poses", ["N", "RL", "RR", "PU", "PD"])
+    return [f"palm_{h}_{p}" for h in hands for p in poses]
+
+
+def _palm_pose_key(filename, expected_keys):
+    """Extract the pose key (e.g. palm_L_N) from a palm filename.
+
+    The overall/detail CSVs carry the pose in the FILENAME (096_palm_L_N.jpg),
+    not in data_type (which is just "palm"). We match against the known expected
+    keys so we never mis-parse an odd filename into a bogus pose. Returns None if
+    no expected key is found in the name.
+    """
+    name = str(filename)
+    for key in expected_keys:
+        if key in name:
+            return key
+    return None
+
+
+def render_palm_qc_summary(palm_df, config):
+    """Per-image PASS/FAIL grid for all 10 palm files of one volunteer.
+
+    palm_df is palm_<id>_overall.csv: ONE row per palm image, keyed by data_type
+    (e.g. palm_L_N). We show EVERY expected pose (config.palm.pattern_keys), so a
+    file with no row is surfaced as MISSING rather than silently dropped -- the
+    reviewer sees all 10 slots at a glance, present or not. Overall palm status
+    = worst of the present rows (FAIL if any file FAILs), with missing files
+    flagged separately so a missing file does not read as a QC FAIL.
+    """
+    expected = expected_palm_keys(config)
+
+    # Map present rows to their pose key. IMPORTANT: the real overall CSV writes
+    # data_type="palm" for EVERY row (the pose identity lives in the FILENAME,
+    # e.g. 096_palm_L_N.jpg), so we key on the filename first and only fall back
+    # to data_type if a future CSV populates it with the pose key directly.
+    present = {}
+    if palm_df is not None and not palm_df.empty:
+        for _, row in palm_df.iterrows():
+            key = _palm_pose_key(row.get("filename", ""), expected)
+            if key is None:
+                dt = str(row.get("data_type", ""))
+                key = dt if dt in expected else None
+            if key is None:
+                continue  # unrecognised row -> skip, don't invent a "palm" slot
+            present[key] = {
+                "status": str(row.get("final_status", "—")),
+                "reason": str(row.get("reason", "")),
+                "filename": str(row.get("filename", "")),
+            }
+
+    # Overall palm verdict from the PRESENT files only (missing handled apart).
+    present_statuses = [v["status"].upper() for v in present.values()]
+    if not present_statuses:
+        palm_status = "INCOMPLETE"
+    elif "FAIL" in present_statuses or "ERROR" in present_statuses:
+        palm_status = "FAIL"
+    elif "REVIEW" in present_statuses:
+        palm_status = "REVIEW"
+    else:
+        palm_status = "PASS"
+
+    st.markdown(
+        f"**Palm QC** &nbsp; {status_pill(palm_status)}",
+        unsafe_allow_html=True,
+    )
+
+    if palm_df is None:
+        st.caption(
+            "No palm overall CSV for this volunteer. "
+            "Run `python run_palm.py data` (or `run_folder.py data`)."
+        )
+        return
+
+    n_present = len(present_statuses)
+    n_missing = len([k for k in expected if k not in present])
+    st.caption(
+        f"{n_present}/{len(expected)} palm files graded"
+        + (f" · {n_missing} missing" if n_missing else "")
+    )
+
+    # One grid row per EXPECTED pose (present -> its verdict; absent -> MISSING).
+    # We list ONLY the expected poses, so a row whose pose we could not identify
+    # never leaks in as a stray slot.
+    grid = []
+    for key in expected:
+        info = present.get(key)
+        if info is None:
+            grid.append({"palm file": key, "status": "MISSING", "reason": ""})
+        else:
+            grid.append({
+                "palm file": key,
+                "status": info["status"],
+                "reason": info["reason"],
+            })
+
+    grid_df = pd.DataFrame(grid, columns=["palm file", "status", "reason"])
+    n_rows = len(grid_df)
+    table_height = 38 + n_rows * 35 + 3
+    st.dataframe(
+        _style_status(grid_df, "status"),
+        use_container_width=True, hide_index=True, height=table_height,
+    )
+
+
+def render_palm_detail(palm_detail_df, config, *, check_name="check_palm_angle"):
+    """Palm-angle detail table for one volunteer.
+
+    Reads palm_<id>_detail.csv (one row per (image, check)) and shows ONLY the
+    `check_palm_angle` rows, on the columns the reviewer cares about:
+        volunteer_id, data_type, filename, check_name, status, reason
+    One row per palm image that has an angle verdict, ordered by config pose
+    order (palm.pattern_keys) so L/R and N/RL/RR/PU/PD read in a stable order.
+    """
+    if palm_detail_df is None or palm_detail_df.empty:
+        st.info(
+            "No palm detail CSV for this volunteer. "
+            "Run `python run_palm.py data` (or `run_folder.py data`)."
+        )
+        return
+
+    df = palm_detail_df
+    if "check_name" not in df.columns:
+        st.info("Palm detail CSV has no check_name column.")
+        return
+
+    angle = df[df["check_name"] == check_name].copy()
+    if angle.empty:
+        st.info(f"No {check_name} rows in this volunteer's palm detail.")
+        return
+
+    # Order rows by the config pose order. The pose lives in the FILENAME (the
+    # data_type column is just "palm"), so derive the key from the filename.
+    expected = expected_palm_keys(config)
+    order = {k: i for i, k in enumerate(expected)}
+    if "filename" in angle.columns:
+        angle["_ord"] = angle["filename"].map(
+            lambda fn: order.get(_palm_pose_key(fn, expected), len(order)))
+        angle = angle.sort_values("_ord").drop(columns="_ord")
+
+    cols = [c for c in ["volunteer_id", "data_type", "filename",
+                        "check_name", "status", "reason"] if c in angle.columns]
+    view = angle[cols]
+
+    n_rows = len(view)
+    table_height = 38 + n_rows * 35 + 3
+    st.dataframe(
+        _style_status(view, "status"),
+        use_container_width=True, hide_index=True, height=table_height,
+    )
+
+
+def _walk_overall_verdict(overall_df):
+    """(status, reason) from a single walk overall CSV (one OVERALL row)."""
+    if overall_df is None or overall_df.empty:
+        return None, None
+    row = overall_df.iloc[0].to_dict()
+    return row.get("final_status", "—"), row.get("reason", "")
+
+
+def _walk_failed_checks(result_df):
+    """List of check_name that FAILed, from a walk result CSV (per-check rows)."""
+    if result_df is None or result_df.empty:
+        return []
+    if "final_status" not in result_df.columns or "check_name" not in result_df.columns:
+        return []
+    failed = result_df[result_df["final_status"].astype(str).str.upper() == "FAIL"]
+    return [str(c) for c in failed["check_name"].tolist()]
+
+
+def render_walk_qc_summary(walk_overall, walk_result):
+    """Top-of-page Walk summary: a combined Walk QC pill, then per-view (F/S)
+    verdicts with their failed checks.
+
+    walk_overall / walk_result are {"F": df, "S": df} dicts (one entry per view
+    actually present). The combined Walk QC status is the worst of the present
+    views (FAIL if either camera fails), mirroring the Palm QC header. Under it,
+    each view shows its own OVERALL pill and, when it did not PASS, the list of
+    checks that FAILed (from that view's result CSV).
+    """
+    if not walk_overall:
+        st.markdown(
+            f"**Walk QC** &nbsp; {status_pill('INCOMPLETE')}",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "No walk overall CSV for this volunteer. "
+            "Run `python run_walk.py data` (or `run_folder.py data`)."
+        )
+        return
+
+    # Combined verdict from the present views (worst wins).
+    view_statuses = []
+    for view in ("F", "S"):
+        odf = walk_overall.get(view)
+        if odf is not None:
+            s, _ = _walk_overall_verdict(odf)
+            view_statuses.append(str(s).upper())
+
+    if "FAIL" in view_statuses or "ERROR" in view_statuses:
+        combined = "FAIL"
+    elif "REVIEW" in view_statuses:
+        combined = "REVIEW"
+    elif view_statuses:
+        combined = "PASS"
+    else:
+        combined = "INCOMPLETE"
+
+    st.markdown(
+        f"**Walk QC** &nbsp; {status_pill(combined)}",
+        unsafe_allow_html=True,
+    )
+
+    for view in ("F", "S"):
+        odf = walk_overall.get(view)
+        if odf is None:
+            st.markdown(
+                f"**Walk {view}** &nbsp; {status_pill('MISSING')}",
+                unsafe_allow_html=True,
+            )
+            st.caption(f"No walk_{view} overall CSV for this volunteer.")
+            continue
+
+        status, reason = _walk_overall_verdict(odf)
+        st.markdown(
+            f"**Walk {view}** &nbsp; {status_pill(status)}",
+            unsafe_allow_html=True,
+        )
+
+        failed = _walk_failed_checks(walk_result.get(view))
+        if failed:
+            st.caption("failed checks: " + ", ".join(failed))
+        elif reason:
+            st.caption(reason)
+
+
+def render_walk_detail(walk_detail):
+    """Part 2 of the Walk tab: detail results per view.
+
+    walk_detail is {"F": df, "S": df}. Each detail CSV is one row per
+    (frame, check). We show the reviewer-facing columns per view, F first.
+    """
+    if not walk_detail:
+        st.info(
+            "No walk detail CSV for this volunteer. "
+            "Run `python run_walk.py data` (or `run_folder.py data`)."
+        )
+        return
+
+    for view in ("F", "S"):
+        det = walk_detail.get(view)
+        if det is None or det.empty:
+            continue
+        st.markdown(f"**Walk {view} detail**")
+        cols = [c for c in ["frame_index", "time", "check_level",
+                            "check_name", "status", "reason"] if c in det.columns]
+        view_df = det[cols] if cols else det
+        # Detail is long (frames x checks); cap height and let it scroll.
+        st.dataframe(
+            _style_status(view_df, "status"),
+            use_container_width=True, hide_index=True, height=400,
+        )
+
+
 def status_pill(status):
     c = STATUS_COLORS.get(str(status).upper(), "#888")
     return (f'<span style="background:{c};color:#fff;padding:3px 12px;'
@@ -962,165 +1293,193 @@ def render_single(reports_dir, vid):
     st.markdown("")
     render_face_qc_summary(status, reason)
 
+    st.markdown("")
+    render_palm_qc_summary(data.get("palm_overall"), load_config("config.yml"))
+
+    st.markdown("")
+    render_walk_qc_summary(data.get("walk_overall", {}),
+                           data.get("walk_result", {}))
+
     st.divider()
-    
-    st.subheader("Face RGB Result")
+
+    # Detailed results split into per-modality tabs. Face RGB keeps its full
+    # existing view; Palm shows the check_palm_angle rows per image.
+    face_tab, palm_tab, walk_tab = st.tabs(["Face RGB", "Palm angle", "Walk"])
+
+    with face_tab:
+        st.subheader("Face RGB Result")
 
 
-    # quick facts from the overall row
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Frames sampled", orow.get("frames_sampled", "—"))
-    c2.metric("Detection gaps", orow.get("detection_gaps", "—"))
-    yaw = f'{orow.get("yaw_min","")} … {orow.get("yaw_max","")}'
-    pit = f'{orow.get("pitch_min","")} … {orow.get("pitch_max","")}'
-    c3.metric("Yaw range (°)", yaw)
-    c4.metric("Pitch range (°)", pit)
+        # quick facts from the overall row
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Frames sampled", orow.get("frames_sampled", "—"))
+        c2.metric("Detection gaps", orow.get("detection_gaps", "—"))
+        yaw = f'{orow.get("yaw_min","")} … {orow.get("yaw_max","")}'
+        pit = f'{orow.get("pitch_min","")} … {orow.get("pitch_max","")}'
+        c3.metric("Yaw range (°)", yaw)
+        c4.metric("Pitch range (°)", pit)
 
-    # per-check verdicts
-    st.subheader("Checks")
-    res = data["result"]
-    if res is not None and not res.empty:
-        cols = [c for c in ["check_level", "check_name", "final_status",
-                            "pass", "fail", "skip", "reason"] if c in res.columns]
-        styled = res[cols].rename(columns={"final_status": "status"})
-        # Show every check row without an inner scrollbar. Streamlit caps a
-        # dataframe at ~400px and makes it scroll; instead size the height to
-        # the row count (≈35px/row + 38px header + a small pad) so the whole
-        # table is visible at once however many checks there are.
-        n_rows = len(styled)
-        table_height = 38 + n_rows * 35 + 3
-        st.dataframe(_style_status(styled, "status"),
-                     use_container_width=True, hide_index=True,
-                     height=table_height)
-    else:
-        st.info("No per-check result CSV for this volunteer.")
+        # per-check verdicts
+        st.subheader("Checks")
+        res = data["result"]
+        if res is not None and not res.empty:
+            cols = [c for c in ["check_level", "check_name", "final_status",
+                                "pass", "fail", "skip", "reason"] if c in res.columns]
+            styled = res[cols].rename(columns={"final_status": "status"})
+            # Show every check row without an inner scrollbar. Streamlit caps a
+            # dataframe at ~400px and makes it scroll; instead size the height to
+            # the row count (≈35px/row + 38px header + a small pad) so the whole
+            # table is visible at once however many checks there are.
+            n_rows = len(styled)
+            table_height = 38 + n_rows * 35 + 3
+            st.dataframe(_style_status(styled, "status"),
+                         use_container_width=True, hide_index=True,
+                         height=table_height)
+        else:
+            st.info("No per-check result CSV for this volunteer.")
 
-    # pose timeline
-    hdr = data["header"]
-    if hdr is not None and not hdr.empty and {"yaw", "pitch"}.issubset(hdr.columns):
-        st.subheader("Head pose over time")
-        st.caption(
-            "Yaw and pitch are shown separately. Dashed lines are turn thresholds "
-            "from config.yml, not front-zone thresholds."
-        )
-
-        cfg = load_config("config.yml")
-        yaw_turn_th, pitch_turn_th = get_turn_thresholds(cfg)
-
-        plot = hdr.copy()
-        for c in ["time", "frame_index", "yaw", "pitch"]:
-            if c in plot.columns:
-                plot[c] = pd.to_numeric(plot[c], errors="coerce")
-
-        idx = "time" if "time" in plot.columns else "frame_index"
-
-        render_pose_threshold_chart(
-            plot,
-            x_col=idx,
-            y_col="yaw",
-            title="Yaw over time",
-            threshold=yaw_turn_th,
-            height=260,
-        )
-
-        render_pose_threshold_chart(
-            plot,
-            x_col=idx,
-            y_col="pitch",
-            title="Pitch over time",
-            threshold=pitch_turn_th,
-            height=260,
-        )
-
-    # quality timelines (brightness, eyes-open, sharpness)
-    if hdr is not None and not hdr.empty:
-        cfg = load_config("config.yml")
-        idx = "time" if "time" in hdr.columns else "frame_index"
-
-        qplot = hdr.copy()
-        for c in [idx, "brightness", "blink_left", "blink_right", "sharpness"]:
-            if c in qplot.columns:
-                qplot[c] = pd.to_numeric(qplot[c], errors="coerce")
-        # Occlusion per-region columns (written by face_rgb.py) coerced too.
-        _occ_cols = [col for col, _ in _OCC_REGION_COLS if col in qplot.columns]
-        for c in _occ_cols:
-            qplot[c] = pd.to_numeric(qplot[c], errors="coerce")
-
-        has_bright = "brightness" in qplot.columns and qplot["brightness"].notna().any()
-        has_eyes = (
-            {"blink_left", "blink_right"} & set(qplot.columns)
-            and qplot[[c for c in ("blink_left", "blink_right") if c in qplot.columns]]
-            .notna().any().any()
-        )
-        has_sharp = "sharpness" in qplot.columns and qplot["sharpness"].notna().any()
-        has_occ = bool(_occ_cols) and qplot[_occ_cols].notna().any().any()
-
-        if has_bright or has_eyes or has_sharp or has_occ:
-            st.subheader("Frame quality over time")
+        # pose timeline
+        hdr = data["header"]
+        if hdr is not None and not hdr.empty and {"yaw", "pitch"}.issubset(hdr.columns):
+            st.subheader("Head pose over time")
             st.caption(
-                "Brightness, eye blink, sharpness, and per-region occlusion skin "
-                "ratio on sampled frontal frames. Dashed lines are the pass/fail "
-                "cutoffs read from config.yml. Click a legend entry on the "
-                "occlusion chart to isolate a region. Gaps are non-frontal / "
-                "no-face / skipped frames."
+                "Yaw and pitch are shown separately. Dashed lines are turn thresholds "
+                "from config.yml, not front-zone thresholds."
             )
 
-        if has_bright:
-            dark_th, bright_th = get_brightness_thresholds(cfg)
-            render_metric_threshold_chart(
-                qplot,
+            cfg = load_config("config.yml")
+            yaw_turn_th, pitch_turn_th = get_turn_thresholds(cfg)
+
+            plot = hdr.copy()
+            for c in ["time", "frame_index", "yaw", "pitch"]:
+                if c in plot.columns:
+                    plot[c] = pd.to_numeric(plot[c], errors="coerce")
+
+            idx = "time" if "time" in plot.columns else "frame_index"
+
+            render_pose_threshold_chart(
+                plot,
                 x_col=idx,
-                y_col="brightness",
-                title="Brightness over time",
-                y_label="face brightness (mean V)",
-                thresholds=[
-                    (dark_th, f"too dark < {dark_th:g}"),
-                    (bright_th, f"too bright > {bright_th:g}"),
-                ],
-                line_color="#e6a817",   # amber — distinct from yaw/pitch blue
+                y_col="yaw",
+                title="Yaw over time",
+                threshold=yaw_turn_th,
                 height=260,
             )
 
-        if has_eyes:
-            blink_th = get_blink_threshold(cfg)
-            render_eyes_chart(
-                qplot,
+            render_pose_threshold_chart(
+                plot,
                 x_col=idx,
-                left_col="blink_left",
-                right_col="blink_right",
-                threshold=blink_th,
-                title="Eye blink score over time (left vs right)",
+                y_col="pitch",
+                title="Pitch over time",
+                threshold=pitch_turn_th,
                 height=260,
             )
 
-        if has_sharp:
-            blur_th = get_blur_threshold(cfg)
-            render_metric_threshold_chart(
-                qplot,
-                x_col=idx,
-                y_col="sharpness",
-                title="Sharpness over time",
-                y_label="Tenengrad sharpness",
-                thresholds=[(blur_th, f"blurry < {blur_th:g}")],
-                line_color="#17a2a2",   # teal — distinct from the others
-                height=260,
-            )
+        # quality timelines (brightness, eyes-open, sharpness)
+        if hdr is not None and not hdr.empty:
+            cfg = load_config("config.yml")
+            idx = "time" if "time" in hdr.columns else "frame_index"
 
-        if has_occ:
-            occ_th = get_occlusion_min_skin(cfg)
-            render_occlusion_chart(
-                qplot,
-                x_col=idx,
-                threshold=occ_th,
-                title="Occlusion skin ratio over time (per region)",
-                height=300,
-            )
+            qplot = hdr.copy()
+            for c in [idx, "brightness", "blink_left", "blink_right", "sharpness"]:
+                if c in qplot.columns:
+                    qplot[c] = pd.to_numeric(qplot[c], errors="coerce")
+            # Occlusion per-region columns (written by face_rgb.py) coerced too.
+            _occ_cols = [col for col, _ in _OCC_REGION_COLS if col in qplot.columns]
+            for c in _occ_cols:
+                qplot[c] = pd.to_numeric(qplot[c], errors="coerce")
 
-    # raw detail (collapsed)
-    det = data["detail"]
-    if det is not None and not det.empty:
-        with st.expander("Raw per-frame detail"):
-            st.dataframe(det, use_container_width=True, hide_index=True)
+            has_bright = "brightness" in qplot.columns and qplot["brightness"].notna().any()
+            has_eyes = (
+                {"blink_left", "blink_right"} & set(qplot.columns)
+                and qplot[[c for c in ("blink_left", "blink_right") if c in qplot.columns]]
+                .notna().any().any()
+            )
+            has_sharp = "sharpness" in qplot.columns and qplot["sharpness"].notna().any()
+            has_occ = bool(_occ_cols) and qplot[_occ_cols].notna().any().any()
+
+            if has_bright or has_eyes or has_sharp or has_occ:
+                st.subheader("Frame quality over time")
+                st.caption(
+                    "Brightness, eye blink, sharpness, and per-region occlusion skin "
+                    "ratio on sampled frontal frames. Dashed lines are the pass/fail "
+                    "cutoffs read from config.yml. Click a legend entry on the "
+                    "occlusion chart to isolate a region. Gaps are non-frontal / "
+                    "no-face / skipped frames."
+                )
+
+            if has_bright:
+                dark_th, bright_th = get_brightness_thresholds(cfg)
+                render_metric_threshold_chart(
+                    qplot,
+                    x_col=idx,
+                    y_col="brightness",
+                    title="Brightness over time",
+                    y_label="face brightness (mean V)",
+                    thresholds=[
+                        (dark_th, f"too dark < {dark_th:g}"),
+                        (bright_th, f"too bright > {bright_th:g}"),
+                    ],
+                    line_color="#e6a817",   # amber — distinct from yaw/pitch blue
+                    height=260,
+                )
+
+            if has_eyes:
+                blink_th = get_blink_threshold(cfg)
+                render_eyes_chart(
+                    qplot,
+                    x_col=idx,
+                    left_col="blink_left",
+                    right_col="blink_right",
+                    threshold=blink_th,
+                    title="Eye blink score over time (left vs right)",
+                    height=260,
+                )
+
+            if has_sharp:
+                blur_th = get_blur_threshold(cfg)
+                render_metric_threshold_chart(
+                    qplot,
+                    x_col=idx,
+                    y_col="sharpness",
+                    title="Sharpness over time",
+                    y_label="Tenengrad sharpness",
+                    thresholds=[(blur_th, f"blurry < {blur_th:g}")],
+                    line_color="#17a2a2",   # teal — distinct from the others
+                    height=260,
+                )
+
+            if has_occ:
+                occ_th = get_occlusion_min_skin(cfg)
+                render_occlusion_chart(
+                    qplot,
+                    x_col=idx,
+                    threshold=occ_th,
+                    title="Occlusion skin ratio over time (per region)",
+                    height=300,
+                )
+
+        # raw detail (collapsed)
+        det = data["detail"]
+        if det is not None and not det.empty:
+            with st.expander("Raw per-frame detail"):
+                st.dataframe(det, use_container_width=True, hide_index=True)
+
+    with palm_tab:
+        st.subheader("Palm angle per image")
+        st.caption(
+            "check_palm_angle verdict for each palm file, read from "
+            "palm_<id>_detail.csv."
+        )
+        render_palm_detail(data.get("palm_detail"), load_config("config.yml"))
+
+    with walk_tab:
+        st.subheader("Walk detail")
+        st.caption(
+            "Per-frame, per-check verdicts read from "
+            "walk_<id>_walk_<view>_detail.csv."
+        )
+        render_walk_detail(data.get("walk_detail", {}))
 
 
 def _style_status(df, cols):
