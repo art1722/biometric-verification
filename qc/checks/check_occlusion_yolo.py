@@ -54,6 +54,32 @@ def _boxes_overlap(a, b) -> bool:
     return (ix2 - ix) > 0 and (iy2 - iy) > 0
 
 
+def _in_foot_band(obj_bbox, foot_line_y: float, person_h: float,
+                  ratio: float) -> bool:
+    """True if an object's LOWER edge sits within +/- ratio*person_h of the
+    walker's foot line (SIDE-view rule, researcher decision 2026-07-16).
+
+    Rationale: in the side view a real floor obstruction rests on the SAME floor
+    as the walker, so its box bottom aligns with the walker's planted foot. Decor
+    on ledges/tables/planters floats ABOVE that line, so its box bottom is well
+    outside the band. This replaces the 2D-overlap test for _S videos, where the
+    depth-collapse of a side projection makes background objects overlap the
+    person box even though they are metres behind them.
+
+    Band geometry (span A, confirmed): band_half = ratio * person_h; an object
+    FAILs if  foot_line_y - band_half <= object_bottom <= foot_line_y + band_half
+    i.e. a total band of 2*ratio (default ratio=0.10 -> 20% of person height),
+    centred on the foot line. NO horizontal (x) test -- researcher's literal
+    proposal: lower-edge level alone decides. y grows DOWNWARD, so the foot line
+    is max(y) of the two foot landmarks (the planted foot), passed in by caller.
+
+    obj_bbox is (x, y, w, h) px; the object's lower edge is y + h.
+    """
+    band_half = ratio * person_h
+    obj_bottom = obj_bbox[1] + obj_bbox[3]
+    return (foot_line_y - band_half) <= obj_bottom <= (foot_line_y + band_half)
+
+
 def check_occlusion_yolo(
     detections: Optional[Iterable[Detection]],
     *,
@@ -61,6 +87,8 @@ def check_occlusion_yolo(
     person_bbox: Optional[tuple] = None,
     allowed_class_ids: Iterable[int] = (PERSON_CLASS_ID,),
     max_names_in_message: int = 5,
+    foot_band_ratio: Optional[float] = None,
+    foot_line_y: Optional[float] = None,
 ):
     """Frame-level occlusion verdict from COCO detections, using person overlap.
 
@@ -80,14 +108,31 @@ def check_occlusion_yolo(
               - no foreign object -> PASS.
         allowed_class_ids: COCO ids that never count as occlusion (default person).
         max_names_in_message: cap distinct classes listed in the message.
+        foot_band_ratio: SIDE-view (_S) rule selector. When None (default, and
+            what FRONT/_F passes), the ORIGINAL 2D box-overlap test decides --
+            behaviour is byte-for-byte unchanged. When set (e.g. 0.10 for _S),
+            the overlap test is REPLACED by the foot-band test: an object FAILs
+            iff its lower edge is within +/- foot_band_ratio*person_height of the
+            walker's foot line (see _in_foot_band). No x-overlap is required in
+            this mode (researcher's literal proposal, 2026-07-16).
+        foot_line_y: the walker's foot line in PIXELS, = max(y) of foot landmarks
+            31/32 (planted foot; y grows downward), supplied by the caller. Only
+            used when foot_band_ratio is set. If foot_band_ratio is set but this
+            is None (feet not visible this frame), the caller should fall back to
+            the person-bbox bottom before calling -- but as a safety net we fall
+            back to person_bbox bottom here too.
 
     Returns:
         (success, message).
-          PASS: no foreign object, or foreign objects exist but none overlaps the
-                person box.
-          FAIL: at least one foreign object overlaps the person box; OR a foreign
-                object exists and there is no person box to clear it against. The
-                message lists the offending classes with confidence.
+          FRONT (foot_band_ratio None):
+            PASS: no foreign object, or none overlaps the person box.
+            FAIL: >=1 foreign object overlaps the person box; OR a foreign object
+                  exists and there is no person box to clear it against.
+          SIDE (foot_band_ratio set):
+            PASS: no foreign object, or none has its lower edge in the foot band.
+            FAIL: >=1 foreign object's lower edge is in the foot band; OR a
+                  foreign object exists and there is no person box/foot line.
+        The message lists the offending classes with confidence.
     """
     allowed = set(allowed_class_ids)
 
@@ -103,12 +148,30 @@ def check_occlusion_yolo(
     if not foreign:
         return (True, "only person present")
 
-    # No person box this frame -> we cannot check overlap. Per spec decision, an
-    # object we cannot clear against a person is treated as obstructing -> FAIL.
+    # No person box this frame -> we cannot check overlap OR the foot band. Per
+    # spec decision, an object we cannot clear against a person is treated as
+    # obstructing -> FAIL. (Same for both rules.)
     if person_bbox is None:
         best = _rank_message(foreign, max_names_in_message)
         return (False, "foreign objects (no person box to clear): " + best)
 
+    # ---- SIDE (_S) rule: foot-band on the object's lower edge, no x test ----
+    if foot_band_ratio is not None:
+        person_h = person_bbox[3]
+        # Foot line: caller passes max(y) of foot landmarks 31/32. If it could
+        # not (feet not visible), fall back to the person-bbox bottom so the
+        # frame still gets a verdict rather than crashing.
+        line_y = foot_line_y if foot_line_y is not None \
+            else (person_bbox[1] + person_bbox[3])
+        in_band = [d for d in foreign
+                   if _in_foot_band(d.bbox, line_y, person_h, foot_band_ratio)]
+        if not in_band:
+            return (True,
+                    f"{len(foreign)} object(s) present but none at foot level")
+        return (False, "foot-level objects: " + _rank_message(
+            in_band, max_names_in_message))
+
+    # ---- FRONT (_F) rule: original 2D overlap (unchanged) ----
     # Person box present -> FAIL only the objects that overlap it.
     overlapping = [d for d in foreign if _boxes_overlap(d.bbox, person_bbox)]
 

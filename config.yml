@@ -590,6 +590,12 @@ walk:
     #                   do NOT fail the frame), so you can see what YOLO saw.
     #   "overlap"    -> only objects overlapping the person (the ones that FAIL).
     overlay_draw: all                # [DESIGN] "all" | "overlap"
+    # SIDE-view (_S) ONLY: switch from 2D box-overlap to the foot-band rule. An
+    # object FAILs iff its lower edge is within +/- foot_band_ratio * person
+    # height of the walker's planted-foot line (landmarks 31/32, max-y). Default
+    # 0.10 -> a 20% band. null -> _S also keeps raw overlap. FRONT (_F) ALWAYS
+    # uses overlap and ignores this. [DESIGN] pending อ.เหมียว sign-off.
+    foot_band_ratio: 0.10
 
   direction:
     # check_walk_direction (sequence-level): F=toward+away via body scale, S=left+right via

@@ -50,7 +50,9 @@ from qc.checks.check_walk_direction import check_walk_direction
 from qc.checks.yolo_detector import (
     create_yolo_detector, detect_objects, close_yolo_detector, PERSON_CLASS_ID,
 )
-from qc.checks.check_occlusion_yolo import check_occlusion_yolo, _boxes_overlap
+from qc.checks.check_occlusion_yolo import (
+    check_occlusion_yolo, _boxes_overlap, _in_foot_band,
+)
 from qc.checks import check_metadata as md
 from qc.schemas import CheckRow
 
@@ -155,6 +157,10 @@ def run_walk(
     occlusion_enabled = occlusion_cfg.get("enabled", True)
     occlusion_conf = occlusion_cfg.get("conf", 0.35)
     occlusion_overlay_draw = occlusion_cfg.get("overlay_draw", "all")  # "all" | "overlap"
+    # SIDE-view (_S) foot-band ratio. None -> _S also uses raw overlap (old
+    # behaviour). Default 0.10 = +/-10% of person height (20% band). [DESIGN]
+    # pending อ.เหมียว sign-off. FRONT (_F) ignores this and always uses overlap.
+    occlusion_foot_band_ratio = occlusion_cfg.get("foot_band_ratio", None)
 
     dir_cfg = walk_cfg.get("direction", {})
 
@@ -342,6 +348,7 @@ def run_walk(
         fail_fast=fail_fast,
         yolo_detector=yolo_detector, occlusion_active=occlusion_active, occlusion_conf=occlusion_conf,
         occlusion_overlay_draw=occlusion_overlay_draw,
+        occlusion_foot_band_ratio=occlusion_foot_band_ratio,
         min_real_vis=min_real_vis, min_real_lms=min_real_lms,
     )
 
@@ -390,7 +397,8 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                     brightness_dark, brightness_bright, brightness_margin, blur_threshold,
                     height_status, height_reason, fail_fast=True,
                     yolo_detector=None, occlusion_active=False, occlusion_conf=0.35,
-                    occlusion_overlay_draw="all", brightness_enabled=True,
+                    occlusion_overlay_draw="all", occlusion_foot_band_ratio=None,
+                    brightness_enabled=True,
                     min_real_vis=0.5, min_real_lms=8):
     """One pass over the sampled frames: pose once per frame, feeding BOTH the
     per-frame brightness check and (if enabled) the overlay video.
@@ -608,8 +616,20 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                         person_bbox = max(
                             yolo_persons, key=lambda d: d.conf).bbox
 
+                # SIDE (_S) videos use the foot-band rule (object lower edge vs
+                # the walker's planted-foot line), FRONT (_F) keeps raw overlap.
+                # foot_band_ratio None on _F -> check_occlusion_yolo is unchanged.
+                view = _view_from_filename(filename)
+                if view == "S" and occlusion_foot_band_ratio is not None:
+                    fb_ratio = occlusion_foot_band_ratio
+                    fb_line_y = _foot_line_y(p, min_vis=min_real_vis)
+                else:
+                    fb_ratio = None
+                    fb_line_y = None
+
                 occlusion_ok, occlusion_msg = check_occlusion_yolo(
-                    dets, conf=occlusion_conf, person_bbox=person_bbox)
+                    dets, conf=occlusion_conf, person_bbox=person_bbox,
+                    foot_band_ratio=fb_ratio, foot_line_y=fb_line_y)
                 occlusion_status = _bool_to_status(occlusion_ok)
                 occlusion_reason = f"frame={sf.frame_index} {occlusion_msg}"
 
@@ -620,8 +640,17 @@ def _run_frame_pass(path, volunteer_id, filename, data_type, detector, add,
                 foreign = [d for d in dets
                            if d.conf >= occlusion_conf and d.cls_id != PERSON_CLASS_ID]
                 if occlusion_overlay_draw == "overlap" and person_bbox is not None:
-                    foreign = [d for d in foreign
-                               if _boxes_overlap(d.bbox, person_bbox)]
+                    # Draw only the objects the ACTIVE rule would fail on, so the
+                    # overlay matches the verdict: foot-band on _S, overlap on _F.
+                    if fb_ratio is not None:
+                        line_y = fb_line_y if fb_line_y is not None \
+                            else (person_bbox[1] + person_bbox[3])
+                        foreign = [d for d in foreign
+                                   if _in_foot_band(d.bbox, line_y,
+                                                    person_bbox[3], fb_ratio)]
+                    else:
+                        foreign = [d for d in foreign
+                                   if _boxes_overlap(d.bbox, person_bbox)]
                 object_boxes = [(d.cls_name, d.conf, d.bbox) for d in foreign]
             else:
                 occlusion_status = "SKIP"
@@ -709,6 +738,37 @@ def _brightness_value(msg):
         return None
     m = re.search(r"brightness=(\d+)", msg)
     return int(m.group(1)) if m else None
+
+
+def _foot_line_y(pose, *, min_vis: float = 0.5) -> Optional[float]:
+    """The walker's foot line in PIXELS = max(y) of foot landmarks 31/32.
+
+    y grows DOWNWARD, so max(y) is the foot lower in the image -- the PLANTED
+    foot on the ground, which is what a floor obstruction aligns with. The lifted
+    (back) foot mid-stride has the smaller y and is NOT the floor.
+
+    Visibility-gated: only feet whose per-landmark visibility >= min_vis are
+    trusted (an occluded / off-frame foot has an unreliable y). Returns None when
+    neither foot is usable (no pose, no visibility list, or both feet occluded);
+    the caller then falls back to the person-bbox bottom for that frame.
+
+    LEFT_FOOT_INDEX=31, RIGHT_FOOT_INDEX=32 (PoseLandmark enum).
+    """
+    if not pose.ok or pose.landmarks_px is None:
+        return None
+    LEFT_FOOT_INDEX, RIGHT_FOOT_INDEX = 31, 32
+    vis = pose.visibility
+    ys = []
+    for idx in (LEFT_FOOT_INDEX, RIGHT_FOOT_INDEX):
+        if idx >= len(pose.landmarks_px):
+            continue
+        # Trust the foot only if we have a visibility score AND it clears the
+        # floor. No visibility list -> cannot prove reliability -> skip.
+        if vis is not None and idx < len(vis) and vis[idx] >= min_vis:
+            ys.append(pose.landmarks_px[idx][1])
+    if not ys:
+        return None
+    return float(max(ys))
 
 
 def _view_from_filename(filename: str) -> Optional[str]:
