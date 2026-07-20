@@ -1236,31 +1236,39 @@ def render_walk_qc_summary(walk_overall, walk_result):
             st.caption(reason)
 
 
-def render_walk_detail(walk_detail):
-    """Part 2 of the Walk tab: detail results per view.
+def render_walk_detail(walk_result):
+    """Walk tab body: per-check RESULT table per view (F and S).
 
-    walk_detail is {"F": df, "S": df}. Each detail CSV is one row per
-    (frame, check). We show the reviewer-facing columns per view, F first.
+    walk_result is {"F": df, "S": df}. Each result CSV is one row per check
+    (the same grain as the face "Checks" table), with final_status +
+    pass/fail/skip counts. We show the reviewer-facing columns per view, F first.
+    (Named render_walk_detail for call-site stability; it now reads the result
+    CSV, not the per-frame detail CSV.)
     """
-    if not walk_detail:
+    if not walk_result:
         st.info(
-            "No walk detail CSV for this volunteer. "
+            "No walk result CSV for this volunteer. "
             "Run `python run_walk.py data` (or `run_folder.py data`)."
         )
         return
 
     for view in ("F", "S"):
-        det = walk_detail.get(view)
-        if det is None or det.empty:
+        res = walk_result.get(view)
+        if res is None or res.empty:
             continue
-        st.markdown(f"**Walk {view} detail**")
-        cols = [c for c in ["frame_index", "time", "check_level",
-                            "check_name", "status", "reason"] if c in det.columns]
-        view_df = det[cols] if cols else det
-        # Detail is long (frames x checks); cap height and let it scroll.
+        st.markdown(f"**Walk {view} checks**")
+        cols = [c for c in ["check_level", "check_name", "final_status",
+                            "pass", "fail", "skip", "reason"]
+                if c in res.columns]
+        view_df = res[cols].rename(columns={"final_status": "status"}) \
+            if cols else res
+        # Result is one row per check -> size to the row count (no scrollbar),
+        # mirroring the face Checks table.
+        n_rows = len(view_df)
+        table_height = 38 + n_rows * 35 + 3
         st.dataframe(
             _style_status(view_df, "status"),
-            use_container_width=True, hide_index=True, height=400,
+            use_container_width=True, hide_index=True, height=table_height,
         )
 
 
@@ -1474,12 +1482,12 @@ def render_single(reports_dir, vid):
         render_palm_detail(data.get("palm_detail"), load_config("config.yml"))
 
     with walk_tab:
-        st.subheader("Walk detail")
+        st.subheader("Walk checks")
         st.caption(
-            "Per-frame, per-check verdicts read from "
-            "walk_<id>_walk_<view>_detail.csv."
+            "Per-check PASS/FAIL/SKIP per camera (F and S), read from "
+            "walk_<id>_walk_<view>_result.csv."
         )
-        render_walk_detail(data.get("walk_detail", {}))
+        render_walk_detail(data.get("walk_result", {}))
 
 
 def _style_status(df, cols):
