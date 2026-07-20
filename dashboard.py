@@ -778,18 +778,22 @@ def load_volunteer(reports_dir, vid):
 
 
 def _load_walk_by_view(reports_dir, vid, kind):
-    """Load walk_<id>_walk_<view>_<kind>.csv for each view -> {"F": df, "S": df}.
+    """Load walk_<id>_<view>_<kind>.csv for each view -> {"F": df, "S": df}.
 
     kind is "overall" | "result" | "detail". Missing views are simply absent
     from the returned dict. Returns {} if none found.
 
-    We match on "_walk_<view>_<kind>.csv" so we do NOT accidentally pick up the
-    detail_header file when kind="detail" (that file ends _detail_header.csv).
+    Naming fix 2026-07-20: both runners now write walk_<id>_<view>_<kind>.csv
+    (run_folder always did; run_walk used to write walk_<id>_walk_<view>_...,
+    which this loader alone matched -- so BATCH walk CSVs were invisible
+    here). The relaxed glob matches the unified naming AND, as a side
+    effect, legacy double-walk files. The detail/detail_header collision is
+    handled by the explicit endswith filter below, not by the glob.
     """
     sub = os.path.join(reports_dir, vid)
     out = {}
     for view in ("F", "S"):
-        hits = glob.glob(os.path.join(sub, f"walk_*_walk_{view}_{kind}.csv"))
+        hits = glob.glob(os.path.join(sub, f"walk_*_{view}_{kind}.csv"))
         # Exclude detail_header when asking for detail (glob for _detail matches
         # _detail_header too, since the suffix appears mid-name).
         if kind == "detail":

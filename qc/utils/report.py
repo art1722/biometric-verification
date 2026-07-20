@@ -207,8 +207,22 @@ def summarize_overall(check_summaries):
 
 
 def summarize_timeline(timeline):
+    # MODALITY-AWARE (bug fix 2026-07-20): the old version hardcoded the FACE
+    # keys (face_detected / yaw / pitch) but is also called for WALK timelines,
+    # whose entries have neither -- so `not t.get("face_detected")` was True for
+    # EVERY walk frame and detection_gaps always equalled frames_sampled
+    # (observed: 126/126 on a clip where all 126 frames detected a person).
+    # A "gap" is a sampled frame with no usable detection:
+    #   face: face_detected is False        (face_rgb timeline entries)
+    #   walk: body_scale is None (no pose)  (walk timeline entries; walk.py
+    #         appends an entry for EVERY sampled frame, None scale on no-pose)
+    # Detected by key inspection, not data_type, so no caller changes needed.
+    if any("face_detected" in t for t in timeline):
+        gaps = [t for t in timeline if not t.get("face_detected")]
+    else:
+        gaps = [t for t in timeline if t.get("body_scale") is None]
+
     measured = [t for t in timeline if t.get("yaw") is not None]
-    gaps = [t for t in timeline if not t.get("face_detected")]
 
     if measured:
         yaws = [t["yaw"] for t in measured]

@@ -14,11 +14,11 @@ Usage (folder searches are RECURSIVE up to MAX_SEARCH_DEPTH levels):
 Output (per participant, self-contained under <out-root>/<id>/, mirroring
 run_face -- this runner does NOT write the shared walk_summary.csv, which is
 owned solely by run_folder.py's batch path):
-    walk_<file>_detail.csv         one row per (frame, check)
-    walk_<file>_detail_header.csv  one row per frame (per-frame series)
-    walk_<file>_result.csv         per-check verdict (PASS/FAIL/SKIP)
-    walk_<file>_overall.csv        one OVERALL row for the video
-    walk_<file>_summary.txt        human-readable check tally + timing
+    walk_<id>_<view>_detail.csv         one row per (frame, check)
+    walk_<id>_<view>_detail_header.csv  one row per frame (per-frame series)
+    walk_<id>_<view>_result.csv         per-check verdict (PASS/FAIL/SKIP)
+    walk_<id>_<view>_overall.csv        one OVERALL row for the video
+    walk_<id>_<view>_summary.txt        human-readable check tally + timing
 
 One detector is built ONCE and reused across every video (avoids reloading the
 .task bundle per file).
@@ -292,7 +292,7 @@ def main():
 
     print(f"walk videos ({len(videos)}): "
           + ", ".join(os.path.basename(p) for p in videos))
-    print(f"per-video summaries -> {args.out_root}/<id>/walk_<file>_summary.txt\n")
+    print(f"per-video summaries -> {args.out_root}/<id>/walk_<id>_<view>_summary.txt\n")
 
     t0 = time.time()
     n = 0
@@ -303,7 +303,12 @@ def main():
     try:
         for path in videos:
             vid, view = _identity(path)
-            stem = os.path.splitext(os.path.basename(path))[0]  # e.g. 002_walk_F
+            # Naming fix 2026-07-20: stem is <vid>_<view> (e.g. 005_F) so the
+            # CSVs are walk_<id>_<view>_*.csv -- IDENTICAL to run_folder.py's
+            # batch naming and to the face convention (face_<id>_*.csv). The
+            # old stem was the video basename (005_walk_F), which produced
+            # walk_005_walk_F_*.csv and split the naming between runners.
+            stem = f"{vid}_{view}"  # e.g. 005_F
 
             # Per-participant folder groups BOTH F and S under reports/<id>/,
             # mirroring run_face's reports/<id>/ layout. The overlay .mp4 is
