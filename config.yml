@@ -368,7 +368,7 @@ face:
 
     brightness:
       dark_threshold: 35             # [REPO]
-      bright_threshold: 200          # [REPO]
+      bright_threshold: 220          # [REPO]
       diff_threshold: 20             # [REPO]
       margin: 0.1                    # [REPO]
     head_fully_visible:
@@ -437,7 +437,7 @@ palm:
   brightness:
     enabled: true                    # [DESIGN] config toggle, like the angle gate
     dark_threshold: 35.0             # [ASSUMPTION] inherited from face default
-    bright_threshold: 200.0          # [ASSUMPTION] inherited from face default
+    bright_threshold: 220.0          # [ASSUMPTION] inherited from face default
     margin: 0.1                      # [DESIGN] trim each side of the hand bbox
 
   obstruction:
@@ -563,7 +563,7 @@ walk:
     # opposite of the spec wording ("not too glaring, not too dark"). Flagged
     # for confirmation, same discipline as the palm in-plane leak.
     dark_threshold: 35               # [FACE-ALIGNED]
-    bright_threshold: 200            # [FACE-ALIGNED]
+    bright_threshold: 220            # [FACE-ALIGNED]
     margin: 0.1                      # trim each side of the body bbox before measuring
     # Video-level rule: overall brightness FAILS when >= this fraction of judged
     # frames fail. Kept SEPARATE from report.aggregation so walk can be tuned
