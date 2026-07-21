@@ -21,7 +21,8 @@ What it shows:
   - the five palm-reference landmarks: 0, 5, 9, 13, 17,
   - the fitted reference palm plane (visual aid),
   - the oriented palm normal used for roll/pitch,
-  - camera axes: x right, y down, z toward camera (normalized-z convention).
+  - camera axes: x right, y down; normalized z grows AWAY from the camera
+    (smaller = closer), so the toward-camera arrow is drawn along -z.
 """
 
 from __future__ import annotations
@@ -79,13 +80,16 @@ def make_plane_patch(plane_pts: np.ndarray, scale: float = 1.35) -> np.ndarray:
     ])
 
 
-# Front-on camera looking from the +y side.
-# This makes +y ("y down") protrude out of the screen toward the viewer.
-# Keep up=-z so x still appears to the right in the initial Plotly view.
+# Front-on start view looking from the +y side -- DESIGN CHOICE, keep it.
+# +y ("y down") points at the viewer, so the screen shows the x-z plane:
+# x horizontal, DEPTH vertical. The palm reads as an edge-on strip ON
+# PURPOSE: roll (RL/RR = one palm edge nearer the camera) is then directly
+# visible as the strip's slope, which is exactly what this debug view is
+# for. up=-z makes screen-up = -z = TOWARD the camera (agrees with the
+# toward-camera arrow) and keeps "x right" reading rightward on screen.
 NORMAL_POSITION_CAMERA = dict(
-    # Almost front-on from +y.
-    # Tiny x/z offsets avoid Plotly choosing the opposite 180° screen orientation
-    # after user orbit/reset.
+    # Tiny x/z offsets avoid Plotly choosing the opposite 180-degree
+    # screen orientation after user orbit/reset.
     eye=dict(x=0.001, y=+2.2, z=0.001),
     up=dict(x=0.0, y=0.0, z=-1.0),
     center=dict(x=0.0, y=0.0, z=0.0),
@@ -146,7 +150,11 @@ def _add_camera_axes(fig: go.Figure, origin: np.ndarray, length: float):
     axes = [
         (np.array([length, 0.0, 0.0]), "x right"),
         (np.array([0.0, length, 0.0]), "y down"),
-        (np.array([0.0, 0.0, length]), "z toward camera"),
+        # Normalized z GROWS AWAY from the camera (smaller = closer), so
+        # the "toward camera" arrow must point along -z to be visually
+        # truthful. (Fix 2026-07-20: it was drawn along +z, i.e. pointing
+        # AWAY from the camera while labeled "toward".)
+        (np.array([0.0, 0.0, -length]), "z toward camera"),
     ]
     for vec, label in axes:
         end = origin + vec
@@ -230,7 +238,7 @@ def build_palm_angle_figure(
         text=[str(i) for i in range(len(pts))],
         textposition="top center",
         marker=dict(size=4),
-        name="21 world landmarks",
+        name="21 normalized landmarks",
     ))
 
     # Hand skeleton.
@@ -306,7 +314,7 @@ def build_palm_angle_figure(
         scene=dict(
             xaxis_title="x right",
             yaxis_title="y down",
-            zaxis_title="z toward camera",
+            zaxis_title="z (smaller = toward camera)",
             aspectmode="data",
             camera=NORMAL_POSITION_CAMERA,
         ),
@@ -361,116 +369,139 @@ body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
 .tabbtn.active { background:var(--accent); color:#fff; }
 .tabbtn .sub { font-weight:400; opacity:.85; margin-left:6px; font-size:12px; }
 
-:root { --accent:#5a288c; --accent-pale:#f3ebfa; --border:#d9c8ec; }
-* { box-sizing:border-box; }
-body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
-       color:#222; background:#fff; }
-.tabbar { display:flex; flex-wrap:wrap; gap:4px; padding:10px 12px 0;
-          border-bottom:2px solid var(--border); position:sticky; top:0;
-          background:#fff; z-index:5; }
-.tabbtn { border:1px solid var(--border); border-bottom:none;
-          background:var(--accent-pale); color:var(--accent);
-          padding:7px 14px; border-radius:8px 8px 0 0; cursor:pointer;
-          font-size:14px; font-weight:600; }
-.tabbtn:hover { background:#e7d7f6; }
-.tabbtn.active { background:var(--accent); color:#fff; }
-.tabbtn .sub { font-weight:400; opacity:.85; margin-left:6px; font-size:12px; }
-
 .resetbtn { margin-left:auto; border:1px solid var(--border);
             background:#fff; color:var(--accent); cursor:pointer;
             padding:7px 12px; border-radius:8px 8px 0 0;
             font-size:13px; font-weight:600; }
 .resetbtn:hover { background:var(--accent-pale); }
 
-.panel { display:none; padding:0; }
-.panel.active { display:block; }
-.plotwrap { width:100%; height:82vh; }
-.hint { font-size:12px; color:#666; padding:6px 14px; }
-
-.panel { display:none; padding:0; }
-.panel.active { display:block; }
-.plotwrap { width:100%; height:82vh; }
+/* Keep every panel laid out at its real size.  visibility:hidden preserves
+   geometry, unlike display:none, so Plotly never sees a 0x0 scene. */
+.panels { position:relative; width:100%; height:82vh; }
+.panel { position:absolute; inset:0; padding:0; visibility:hidden;
+         opacity:0; pointer-events:none; }
+.panel.active { visibility:visible; opacity:1; pointer-events:auto; }
+.plotwrap { width:100%; height:100%; }
+.plot-target { width:100%; height:100%; }
 .hint { font-size:12px; color:#666; padding:6px 14px; }
 """
 
 _TABS_JS = """
+let tabSwitchGeneration = 0;
+let activeTabIndex = null;
+
 function cloneNormalCamera(){
   return JSON.parse(JSON.stringify(NORMAL_CAMERA));
 }
 
 function getPlotInPanel(panel){
   if (!panel) return null;
-  return panel.querySelector('.js-plotly-plot') || panel.querySelector('.plotly-graph-div');
+  return panel.querySelector('.plot-target');
 }
 
-function cameraRelayoutUpdate(){
-  const c = cloneNormalCamera();
-
-  return {
-    'scene.camera.eye': c.eye,
-    'scene.camera.up': c.up,
-    'scene.camera.center': c.center
-  };
-}
-
-function resetOneCamera(gd){
-  if (!window.Plotly || !gd) return;
-
-  Plotly.Plots.resize(gd);
-  window.requestAnimationFrame(function(){
-    Plotly.relayout(gd, cameraRelayoutUpdate()).then(function(){
-      Plotly.Plots.resize(gd);
+function nextPaint(){
+  return new Promise(function(resolve){
+    window.requestAnimationFrame(function(){
+      window.requestAnimationFrame(resolve);
     });
   });
 }
 
-function showTab(idx){
-  document.querySelectorAll('.tabbtn').forEach((b,i)=>
-     b.classList.toggle('active', i===idx));
-  document.querySelectorAll('.panel').forEach((p,i)=>
-     p.classList.toggle('active', i===idx));
+async function preparePanel(panel, generation){
+  if (!window.Plotly || !panel) return false;
 
-  const panel = document.querySelectorAll('.panel')[idx];
   const gd = getPlotInPanel(panel);
+  if (!gd) return true;  // note/error panel
 
-  if (gd && window.Plotly) {
-    Plotly.Plots.resize(gd);
+  // Panels use visibility:hidden rather than display:none, so they already
+  // have their final dimensions even before becoming the active tab.
+  await nextPaint();
+  if (generation !== tabSwitchGeneration) return false;
 
-    if (panel.dataset.needsCameraReset === "1") {
-      setTimeout(function(){
-        resetOneCamera(gd);
-        panel.dataset.needsCameraReset = "0";
-      }, 80);
-    }
+  if (!gd.offsetWidth || !gd.offsetHeight) {
+    console.warn('Plot target still has no size; refusing to render at 0x0');
+    return false;
   }
+
+  if (gd.dataset.rendered !== '1') {
+    const specIndex = Number(gd.dataset.plotIndex);
+    const spec = PLOT_SPECS[specIndex];
+    if (!spec) return false;
+
+    // Render while the panel is still invisible. The user never sees Plotly's
+    // intermediate autosize/WebGL projection state.
+    await Plotly.newPlot(gd, spec.data, spec.layout, spec.config);
+    gd.dataset.rendered = '1';
+  }
+
+  if (generation !== tabSwitchGeneration) return false;
+
+  // Apply the final camera while the destination panel is still hidden.
+  // Deliberately do NOT call Plotly.Plots.resize() on each tab click: that
+  // resize was the visible middle "auto-rotation" step.
+  await Plotly.relayout(gd, {
+    'scene.camera': cloneNormalCamera()
+  });
+
+  // Let the final WebGL frame commit before revealing the panel.
+  await nextPaint();
+  return generation === tabSwitchGeneration;
 }
 
-function resetAllCameras(){
-  if (!window.Plotly || typeof NORMAL_CAMERA === 'undefined') {
-    console.warn("Plotly or NORMAL_CAMERA is missing");
+async function showTab(idx){
+  const buttons = document.querySelectorAll('.tabbtn');
+  const panels = document.querySelectorAll('.panel');
+  if (idx < 0 || idx >= panels.length) return;
+
+  // Clicking the already-open tab should not launch another camera/reset cycle.
+  if (idx === activeTabIndex && panels[idx].classList.contains('active')) return;
+
+  const generation = ++tabSwitchGeneration;
+  const targetPanel = panels[idx];
+
+  // Keep the current plot visible while the destination is prepared off-screen.
+  // This prevents correct -> wrong -> correct from ever being painted.
+  const ready = await preparePanel(targetPanel, generation);
+  if (!ready || generation !== tabSwitchGeneration) return;
+
+  panels.forEach((panel, i) => panel.classList.toggle('active', i === idx));
+  buttons.forEach((button, i) => button.classList.toggle('active', i === idx));
+  activeTabIndex = idx;
+}
+
+async function resetAllCameras(){
+  if (!window.Plotly) {
+    console.warn('Plotly is missing');
     return;
   }
 
   const panels = document.querySelectorAll('.panel');
+  if (activeTabIndex === null || !panels[activeTabIndex]) return;
 
-  panels.forEach(function(panel){
-    panel.dataset.needsCameraReset = "1";
+  const gd = getPlotInPanel(panels[activeTabIndex]);
+  if (!gd || gd.dataset.rendered !== '1') return;
+
+  // No resize and no autorange: one direct camera update only.
+  await Plotly.relayout(gd, {
+    'scene.camera': cloneNormalCamera()
   });
+}
 
-  const activePanel = document.querySelector('.panel.active');
-  const gd = getPlotInPanel(activePanel);
-
-  if (gd) {
-    resetOneCamera(gd);
-    activePanel.dataset.needsCameraReset = "0";
+function whenPlotlyReady(cb, tries){
+  tries = (tries === undefined) ? 200 : tries;
+  if (window.Plotly) {
+    cb();
+    return;
   }
+  if (tries <= 0) {
+    console.warn('Plotly did not become ready in time');
+    return;
+  }
+  setTimeout(function(){ whenPlotlyReady(cb, tries - 1); }, 50);
 }
 
 document.addEventListener('DOMContentLoaded', function(){
-  document.querySelectorAll('.panel').forEach(function(panel){
-    panel.dataset.needsCameraReset = "0";
-  });
-  showTab(0);
+  whenPlotlyReady(function(){ void showTab(0); });
 });
 """
 
@@ -481,88 +512,103 @@ def save_palm_angle_debug_tabs_html(
     *,
     page_title: str = "Palm angle 3D debug",
 ) -> str:
-    """Write ONE self-contained HTML file with a clickable tab per entry.
+    """Write ONE HTML file with a clickable tab per entry.
 
-    Args:
-        entries: list of dicts, each:
-            {
-              "label": str,                    # short tab label, e.g. "L / N"
-              "world_landmarks": <21 landmarks>,
-              "angle_info": dict | None,       # from calculate_palm_angles; if
-                                               # None it is computed here
-              "title": str | None,             # per-figure title (optional)
-            }
-            Entries whose angle cannot be computed are skipped with a note tab.
-        out_path: output .html path.
-        page_title: browser tab / page heading.
-
-    Returns:
-        out_path.
-
-    Notes:
-        - Only the FIRST embedded figure includes plotly.js (via CDN); the rest
-          are injected as bare <div>s that reuse the already-loaded library.
-          This keeps the file small even with 10 hands.
-        - Each figure opens in the front-on NORMAL_POSITION_CAMERA view.
+    Each Plotly figure is serialized as JSON and prepared while its panel is
+    hidden with ``visibility:hidden``. Because that CSS preserves real layout
+    dimensions, Plotly never receives a 0x0 viewport. The final camera is
+    committed before the panel is revealed, eliminating the visible
+    "correct -> wrong -> correct" tab-switch sequence.
     """
-    import plotly.io as pio
+    from html import escape
+
+    from plotly.offline import get_plotlyjs_version
+    from plotly.utils import PlotlyJSONEncoder
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
     panels_html = []
     tabs_html = []
-    first = True
-    for idx, e in enumerate(entries):
-        label = e.get("label", f"tab {idx+1}")
-        title = e.get("title") or label
-        wl = e.get("world_landmarks")
-        ainfo = e.get("angle_info")
+    plot_specs = []
 
-        # Build the figure; on failure emit a note panel instead of crashing.
+    for idx, entry in enumerate(entries):
+        label = str(entry.get("label", f"tab {idx + 1}"))
+        title = entry.get("title") or label
+        world_landmarks = entry.get("world_landmarks")
+        angle_info = entry.get("angle_info")
+
         try:
-            fig = build_palm_angle_figure(wl, ainfo, title=title)
-            roll = fig.layout.title.text  # already contains roll/pitch line
-            include_js = "cdn" if first else False
-            div = pio.to_html(
-                fig, include_plotlyjs=include_js, full_html=False,
-                default_height="82vh", config={"displaylogo": False},
+            fig = build_palm_angle_figure(
+                world_landmarks,
+                angle_info,
+                title=title,
             )
-            body = f'<div class="plotwrap">{div}</div>'
+            fig_json = fig.to_plotly_json()
+            plot_specs.append({
+                "data": fig_json["data"],
+                "layout": fig_json["layout"],
+                "config": {
+                    "displaylogo": False,
+                    "responsive": True,
+                },
+            })
+            body = (
+                '<div class="plotwrap">'
+                f'<div id="plot-{idx}" class="plot-target" '
+                f'data-plot-index="{idx}"></div>'
+                '</div>'
+            )
             sub = ""
         except Exception as ex:
-            body = (f'<div class="hint">Could not render this hand: '
-                    f'{type(ex).__name__}: {ex}</div>')
+            plot_specs.append(None)
+            error_text = escape(f"{type(ex).__name__}: {ex}")
+            body = (
+                '<div class="hint">Could not render this hand: '
+                f'{error_text}</div>'
+            )
             sub = "n/a"
 
-        active = " active" if first else ""
+        # Panels start hidden. JavaScript reveals tab 0 only after Plotly has
+        # completed its initial render and final camera update.
+        active = ""
+        button_active = " active" if idx == 0 else ""
         tabs_html.append(
-            f'<button class="tabbtn{active}" onclick="showTab({idx})">'
-            f'{label}<span class="sub">{sub}</span></button>'
+            f'<button class="tabbtn{button_active}" onclick="showTab({idx})">'
+            f'{escape(label)}<span class="sub">{sub}</span></button>'
         )
         panels_html.append(f'<div class="panel{active}">{body}</div>')
-        first = False
 
     if not entries:
         tabs_html.append('<button class="tabbtn active">no hands</button>')
-        panels_html.append('<div class="panel active"><div class="hint">'
-                            'No detectable hands were provided.</div></div>')
+        panels_html.append(
+            '<div class="panel active"><div class="hint">'
+            'No detectable hands were provided.</div></div>'
+        )
 
-    normal_camera_js = json.dumps(NORMAL_POSITION_CAMERA)
-    
+    normal_camera_js = json.dumps(NORMAL_POSITION_CAMERA, separators=(",", ":"))
+    plot_specs_js = json.dumps(
+        plot_specs,
+        cls=PlotlyJSONEncoder,
+        separators=(",", ":"),
+    ).replace("</", "<\\/")
+    plotly_js_version = get_plotlyjs_version()
+
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>{page_title}</title>
+<title>{escape(page_title)}</title>
 <style>{_TABS_CSS}</style>
+<script src="https://cdn.plot.ly/plotly-{plotly_js_version}.min.js" charset="utf-8"></script>
 </head>
 <body>
 <div class="tabbar">{''.join(tabs_html)}<button class="resetbtn" onclick="resetAllCameras()">Reset view</button></div>
-<div class="hint">Front-on start view (y-down toward you). Drag to orbit; double-click to reset.</div>
-{''.join(panels_html)}
+<div class="hint">Front-on start view (y-down toward you): palm reads edge-on, roll = slope of the strip, toward-camera is UP. Drag to orbit; double-click or the Reset view button returns here.</div>
+<div class="panels">{''.join(panels_html)}</div>
 <script>
 const NORMAL_CAMERA = {normal_camera_js};
+const PLOT_SPECS = {plot_specs_js};
 {_TABS_JS}
 </script>
 </body>
