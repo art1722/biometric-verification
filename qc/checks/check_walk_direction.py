@@ -43,7 +43,7 @@ Method (mirrors the structure of check_turn_sequence_seg without its yaw math)
 
 Thresholds come from config walk.direction.* so the researcher can tune them
 without code changes. All are [DESIGN] defaults pending validation on real
-_F/_S footage -- flag for อ.เหมียว.
+_F/_S footage
 
 Returns (success, message): one (bool, str), same contract as every check. The
 message names what was and was not found so the reviewer sees why it passed or
