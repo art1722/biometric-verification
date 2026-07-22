@@ -185,7 +185,7 @@ def _watch(job_id: str, proc: subprocess.Popen) -> None:
             return
         job["return_code"] = proc.returncode
         job["finished_at"] = time.time()
-        # run_folder exits 0 only if nothing FAILed/ERRORed, non-zero otherwise.
+        # run_folder exits 0 only if nothing FAILed, non-zero otherwise.
         # A non-zero code here does NOT mean the run crashed — it can mean "ran
         # fine, some videos failed QC". So success = the process actually ran to
         # completion (we reached here), and we record the code for the caller.

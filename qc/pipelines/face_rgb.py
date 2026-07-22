@@ -322,16 +322,22 @@ def run_face_rgb(
     #   - face_det : legacy FaceDetection, still used by blur and brightness.
     #     Those two genuinely need a face-region box from this model (not just
     #     landmarks), so it is kept rather than folded into the landmarker.
-    # Landmarker params come from config.models.mediapipe (same keys as before);
-    # the model bundle path from config.models.face_landmarker.model_path.
-    mp_cfg = config.get("models", {}).get("mediapipe", {})
+    # All FaceLandmarker params now come from ONE block,
+    # config.models.face_landmarker, using key names that match the
+    # create_face_landmarker() parameters they feed. (They were previously
+    # split across models.mediapipe + models.face_landmarker, a leftover from
+    # the pre-Tasks-API migration: the legacy `mediapipe` block held
+    # max_num_faces / min_detection_confidence under names that no longer
+    # matched anything in the Tasks API. Consolidated so one detector is
+    # configured from one place.)
     fl_cfg = config.get("models", {}).get("face_landmarker", {})
     fd_cfg = config.get("models", {}).get("face_detection", {})
 
     face_landmarker = create_face_landmarker(
         model_path=fl_cfg.get("model_path", "models/face_landmarker.task"),
-        num_faces=mp_cfg.get("max_num_faces", 10),
-        min_face_detection_confidence=mp_cfg.get("min_detection_confidence", 0.6),
+        num_faces=fl_cfg.get("num_faces", 10),
+        min_face_detection_confidence=fl_cfg.get(
+            "min_face_detection_confidence", 0.6),
         min_face_presence_confidence=fl_cfg.get("min_face_presence_confidence", 0.5),
         min_tracking_confidence=fl_cfg.get("min_tracking_confidence", 0.5),
     )

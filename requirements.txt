@@ -27,9 +27,7 @@ ultralytics==8.4.95
 
 # --- config / data ---
 PyYAML==6.0.2
-
 lide==1.0.0
-scipy==1.13.1
 
 # --- API (FastAPI + server) ---
 # These were imported by main.py but never listed. Without them the container

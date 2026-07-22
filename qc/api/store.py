@@ -118,8 +118,8 @@ def read_batch_summary(status: Optional[str] = None,
     scan/pivot it the way the old face_summary.csv allowed.
 
     One row per failed check; a PASS media contributes one placeholder row
-    (blank check_name/reason); an ERROR media one row carrying the error text.
-    If `status` is given (e.g. "FAIL"/"PASS"/"ERROR"), only rows whose
+    (blank check_name/reason).
+    If `status` is given (e.g. "FAIL"/"PASS"/"SKIP"), only rows whose
     overall_status matches (case-insensitive) are returned — so ?status=FAIL
     yields just the problem set.
 
@@ -139,9 +139,7 @@ def read_batch_summary(status: Optional[str] = None,
             "overall_status": st,
         }
         failures = rec.get("failures") or []
-        if st == "ERROR":
-            rows.append({**base, "check_name": "", "reason": rec.get("error", "")})
-        elif failures:
+        if failures:
             for fl in failures:
                 rows.append({
                     **base,
@@ -156,7 +154,7 @@ def read_batch_summary(status: Optional[str] = None,
 
 def _volunteer_records(volunteer_id: str,
                        reports: Optional[str] = None) -> list[dict]:
-    """All result FILES for one volunteer, across modalities (PASS + FAIL + ERROR)."""
+    """All result FILES for one volunteer, across modalities (PASS + FAIL)."""
     vid = str(volunteer_id).strip()
     return [
         rec for rec in _read_all_summary(reports)
@@ -169,7 +167,7 @@ def read_overall(volunteer_id: str,
     """One volunteer's overall verdict, aggregated across their media files.
 
     Returns None only if the volunteer is absent from the roll-up entirely (not
-    processed). ERROR outranks FAIL outranks PASS. Now that PASS media are
+    processed). FAIL outranks PASS. Now that PASS media are
     recorded, a volunteer who passed everything returns final_status=PASS
     instead of None.
     """
@@ -178,9 +176,7 @@ def read_overall(volunteer_id: str,
         return None
 
     statuses = {(r.get("overall_status") or "").upper() for r in recs}
-    if "ERROR" in statuses:
-        final = "ERROR"
-    elif "FAIL" in statuses:
+    if "FAIL" in statuses:
         final = "FAIL"
     else:
         final = "PASS"
@@ -191,7 +187,7 @@ def read_overall(volunteer_id: str,
     )
     problem_files = sorted(
         {(r.get("data_type") or "", r.get("filename") or "") for r in recs
-         if (r.get("overall_status") or "").upper() in ("FAIL", "ERROR")}
+         if (r.get("overall_status") or "").upper() == "FAIL"}
     )
     modalities = sorted({dt for dt, _fn in all_files if dt})
 
@@ -210,8 +206,8 @@ def read_checks(volunteer_id: str,
     """One volunteer's checks across ALL modalities, one row per failed check.
 
     Shape: data_type, filename, check_name, reason (+ overall_status). A PASS
-    media contributes one placeholder row (blank check_name/reason); an ERROR
-    file one row with the error text in `reason`.
+    media contributes one placeholder row (blank check_name/reason). A crashed
+    file surfaces its text via the synthetic processing_error check.
     """
     out: list[dict] = []
     for rec in _volunteer_records(volunteer_id, reports):
@@ -221,9 +217,6 @@ def read_checks(volunteer_id: str,
             "filename": rec.get("filename") or "",
             "overall_status": st,
         }
-        if st == "ERROR":
-            out.append({**base, "check_name": "", "reason": rec.get("error", "")})
-            continue
         failures = rec.get("failures") or []
         if not failures:
             # PASS media -> one clean placeholder row so it's visible in detail.

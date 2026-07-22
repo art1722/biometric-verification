@@ -273,12 +273,12 @@ def build_overall_record(rows, timeline, config=None):
     # Same failed checks, but each paired with WHY it failed (the per-check
     # reason string). This is what the customer-facing summaries report: one
     # entry per failed check, so the reason gets its own column/field instead
-    # of being crammed together. ERROR checks are folded in too so a structural
+    # of being crammed together. Crash rows are folded in too so a structural
     # failure still shows a reason.
     failed_checks_detail = [
         {"check_name": s["check_name"], "reason": s["reason"]}
         for s in check_summaries
-        if s["final_status"] in ("FAIL", "ERROR")
+        if s["final_status"] == "FAIL"
     ]
     return {
         "volunteer_id": vid,
@@ -424,13 +424,13 @@ def write_detail_csv(path, rows, timeline=None, quiet=False):
 #       ONE ROW PER FAILED CHECK so each failure's reason gets its own cell
 #       (no "check: reason | check: reason" cramming). A video that passes
 #       everything contributes exactly ONE row with status PASS and blank
-#       check/reason. An ERROR video contributes one row carrying the error
+#       check/reason. A crashed video contributes one row carrying the error
 #       text as the reason. Internal-only stats (yaw/pitch, frames_sampled,
 #       timing) are deliberately NOT here — they live in each participant's
 #       own report and are not the customer's concern.
 #
 #   all_summary.csv / all_summary.json: the cross-modal roll-up of PROBLEM
-#       cases only (FAIL/ERROR) from every modality. The CSV is the same flat
+#       cases only (FAIL) from every modality. The CSV is the same flat
 #       per-check grain as above (minus PASS rows) so a reviewer can pivot it
 #       in Excel; the JSON nests one object per video with a `failures` array,
 #       which is the clean shape for a customer's tooling to consume.
@@ -440,17 +440,17 @@ def write_detail_csv(path, rows, timeline=None, quiet=False):
 # --------------------------------------------------------------------------
 
 # Statuses that mean "needs attention" -> included in the all_* roll-up.
-ATTENTION_STATUSES = frozenset({"FAIL", "ERROR"})
+ATTENTION_STATUSES = frozenset({"FAIL"})
 
 # Per-check grain, shared by <modality>_summary.csv and all_summary.csv.
-# One row = one failed check (or one PASS/ERROR placeholder row).
+# One row = one failed check (or one PASS placeholder row).
 PERCHECK_FIELDNAMES = [
     "data_type",        # face_rgb | palm | walk_* — which modality
     "volunteer_id",
     "filename",
-    "overall_status",   # the video's verdict: PASS | FAIL | ERROR
-    "check_name",       # the failed check; blank on a PASS/ERROR placeholder row
-    "reason",           # why it failed; blank on PASS; error text on ERROR
+    "overall_status",   # the video's verdict: PASS | FAIL | SKIP
+    "check_name",       # the failed check; blank on a PASS placeholder row
+    "reason",           # why it failed; blank on PASS
 ]
 
 
@@ -461,7 +461,7 @@ def expand_to_check_rows(rec):
     Returns a list of flat dicts with PERCHECK_FIELDNAMES:
 
       - FAIL video  -> one row per failed check (check_name + reason filled)
-      - ERROR video -> one row, check_name blank, reason = the error text
+      - crashed video -> FAIL rows via the synthetic processing_error check
       - PASS video  -> exactly one row, check_name + reason blank
 
     Keeping this as a pure function (record -> rows) means the same expansion
@@ -475,9 +475,6 @@ def expand_to_check_rows(rec):
         "overall_status": rec.get("final_status") or rec.get("overall_status") or "",
     }
     status = base["overall_status"].upper()
-
-    if status == "ERROR":
-        return [{**base, "check_name": "", "reason": rec.get("error", "")}]
 
     detail = rec.get("failed_checks_detail") or []
     if status == "FAIL" and detail:
@@ -535,19 +532,19 @@ class AllSummaryWriter:
     """Cross-modal COMPLETE roll-up in BOTH csv and json.
 
     Fed the SAME per-video records as SummaryWriter, and now keeps EVERY
-    processed media file (PASS, FAIL, and ERROR) so all_summary is the full
+    processed media file (PASS and FAIL) so all_summary is the full
     result set, not just a problem worklist. Writes two files that stay in
     lock-step:
 
       <stem>.csv  — flat per-check rows (Excel-pivotable). A FAIL media contributes
                     one row per failed check; a PASS media contributes exactly one
-                    row (blank check_name/reason); an ERROR media one error row.
+                    row (blank check_name/reason).
       <stem>.json — list of {data_type, volunteer_id, filename, overall_status,
                     failures: [{check_name, reason}, ...]} ; one object per
-                    media file. failures is [] for a PASS (and for ERROR, which
+                    media file. failures is [] for a PASS (which
                     carries `error` instead).
 
-    To get just the problem set, filter overall_status == FAIL/ERROR (the API's
+    To get just the problem set, filter overall_status == FAIL (the API's
     /results?status=FAIL does this).
 
     JSON is rewritten in full on each add() (the registry is held in memory)
@@ -590,9 +587,9 @@ class AllSummaryWriter:
 
     def add(self, rec):
         """Keep `rec` and write its rows: one row per failed check for a FAIL,
-        one error row for an ERROR, and ONE PASS row for a clean media file.
+        and ONE PASS row for a clean media file.
 
-        Previously all_summary kept only FAIL/ERROR (a reviewer worklist). It now
+        Previously all_summary kept only FAIL (a reviewer worklist). It now
         records EVERY processed media file so all_summary is the COMPLETE result
         set: a PASS video/image contributes exactly one row (overall_status=PASS,
         blank check_name/reason) and one JSON object with an empty failures list.
@@ -617,8 +614,9 @@ class AllSummaryWriter:
                 {"check_name": r["check_name"], "reason": r["reason"]}
                 for r in check_rows if r["check_name"]  # drop blank placeholder
             ] if status == "FAIL" else [],
-            # ERROR videos have no per-check failures; surface the message.
-            "error": rec.get("error", "") if status == "ERROR" else "",
+            # Crash text is carried as a "processing_error" failed check (see
+            # run_folder.error_row), so it already appears in `failures` above.
+            "error": rec.get("error", ""),
         }
         self._flush_json()
         self.kept += 1

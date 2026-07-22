@@ -1,36 +1,17 @@
-# config.yml
-# Biometric data QC configuration
-#
-# Source tags:
-# [SPEC]    = official project specification PDF
-# [PLAN]    = PROJECT_PLAN.md / 4th meeting plan
-# [REPO]    = researcher Face-Verification example repo
-# [DESIGN]  = implementation choice, not from spec
-# [CONFIRM] = should be confirmed with researcher
-#
-# NOTE on ID width: Phase 0 has NOT settled whether IDs are zero-padded to a
-# fixed width. The spec only SHOWS examples (001_face_rgb.mp4, 0001_palm_L_N.jpg);
-# it does not state the rule. Until confirmed, every filename pattern accepts
-# an id of one or more digits ((?P<volunteer_id>\d+)), so no valid file is
-# rejected on width. Tighten to a fixed width once the researcher confirms. [CONFIRM]
-
 project:
-  status_pass: "PASS"      # [DESIGN]
-  status_fail: "FAIL"      # [DESIGN]
-  status_skip: "SKIP"      # [DESIGN]
-  status_review: "REVIEW"  # [DESIGN]
+  status_pass: "PASS"
+  status_fail: "FAIL"
+  status_skip: "SKIP"
+  status_review: "REVIEW"
 
 paths:
-  input_root: "data"       # [DESIGN]
-  report_dir: "reports"    # [DESIGN]
-  report_csv: "reports/qc_report.csv"    # [DESIGN]
-  report_json: "reports/qc_report.json"  # [DESIGN]
+  input_root: "data"
+  report_dir: "reports"
+  report_csv: "reports/qc_report.csv"
+  report_json: "reports/qc_report.json" 
 
-# --- filename validation (read by validate_filenames.py) ---
-# Each required file = (key, regex). The regex MUST capture a named group
-# `volunteer_id`. Width is one-or-more digits (\d+) until Phase 0 confirms. [CONFIRM]
 filenames:
-  id_width_policy: "any"   # [CONFIRM] any | fixed_3 | fixed_4
+  id_width_policy: "any"   # any | fixed_3 | fixed_4
   required:
     face_rgb:        "^(?P<volunteer_id>\\d+)_face_rgb\\.mp4$"
     face_depth:   "^(?P<volunteer_id>\\d+)_face_depth\\.mp4$"
@@ -51,215 +32,64 @@ filenames:
     walk_S:          "^(?P<volunteer_id>\\d+)_walk_S\\.mp4$"
 
 video:
-  sample_fps: 1            # [DESIGN] sample 1 frame/sec for model-based checks
-  sample_first_frame: true # [DESIGN]
-  sample_last_frame: true  # [DESIGN]
-  max_frames: 6000         # [DESIGN] safety cap on a very long video
+  max_frames: 10000
 
 models:
-  mediapipe:
-    static_image_mode: true          # [REPO] (legacy face_det only; landmarker uses running_mode=IMAGE)
-    max_num_faces: 10                # [REPO] repo used 10; pipelines take first/largest
-    min_detection_confidence: 0.6    # [REPO]
-    refine_landmarks: true
-
-  # Tasks-API Face Landmarker — produces landmarks AND blendshapes in one pass.
-  # Required for the blendshape-based eyes-open check (eyeBlinkLeft/Right).
-  # Download the .task bundle once (see verify_env.py / README):
-  #   https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
-  face_landmarker:                   # [DESIGN] new in Tasks-API migration
-    model_path: "models/face_landmarker.task"   # [CONFIRM] where the bundle lives
+  face_landmarker:
+    model_path: "models/face_landmarker.task"
+    num_faces: 10
+    min_face_detection_confidence: 0.6
     min_face_presence_confidence: 0.5
     min_tracking_confidence: 0.5
 
   face_detection:
-    model_selection: 1               # [REPO]
-    min_detection_confidence: 0.5    # [REPO/code behavior]
+    model_selection: 1
+    min_detection_confidence: 0.5
 
-  # Tasks-API Hand Landmarker — palm-side mirror of face_landmarker.
-  # Produces 21 hand landmarks (image + world space) + handedness in one pass.
-  # Required for the palm size/angle checks (bbox from landmarks, roll/pitch
-  # from world landmarks). Download the .task bundle once (see verify_env.py):
-  #   https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
-  hand_landmarker:                   # [DESIGN] palm pipeline, Tasks-API
-    model_path: "models/hand_landmarker.task"   # [CONFIRM] where the bundle lives
-    min_hand_presence_confidence: 0.5
-    min_tracking_confidence: 0.5
+  hand_landmarker:
+    model_path: "models/hand_landmarker.task"
 
   hands:
-    max_num_hands: 1                 # [DESIGN]
-    min_detection_confidence: 0.1    # [DESIGN]
-    # Palm screening: a second hand in frame is a capture error (spec wants ONE
-    # hand per shot), so >1 hand -> FAIL, NOT REVIEW. Contrast face, where a
-    # second (background) face -> REVIEW because the spec does not forbid it.
-    multiple_hands_policy: "FAIL"    # [CONFIRM]
+    max_num_hands: 1
+    min_detection_confidence: 0.1
+    multiple_hands_policy: "FAIL"
 
-  pose:
-    min_detection_confidence: 0.5    # [DESIGN]
-    min_tracking_confidence: 0.5     # [DESIGN]
-
-  # NOTE: the walk pipeline + runners read models.pose_landmarker.* (below), NOT
-  # models.pose.* above. The `pose:` block's keys (min_detection_confidence) do
-  # not match the code's expected keys (min_pose_detection_confidence), so those
-  # values are currently ignored and the code defaults apply. [CONFIRM] whether
-  # to consolidate these two blocks -- flagged, not silently merged.
   pose_landmarker:
-    # >1 so MediaPipe returns a SECOND person when present, letting detect_pose
-    # report "Multiple persons detected" -> check_single_person -> whole-video
-    # FAIL (mirrors face's multiple-faces rule). With num_poses=1 a two-person
-    # frame degrades to "No poses detected" and is mis-graded as no-person.
-    num_poses: 10                     # [DESIGN] headroom over the one expected walker
-    # A returned pose counts as a REAL person only if >= min_real_landmarks of
-    # its landmarks clear min_real_visibility. This separates a genuine second
-    # walker (many confident landmarks -> video FAIL) from a phantom skeleton on
-    # a bench/foliage (few confident landmarks -> ignored, no false FAIL).
-    min_real_visibility: 0.5          # [DESIGN] MediaPipe's own confidence floor
-    min_real_landmarks: 8             # [DESIGN] whole-person floor; tune on real footage
-
+    model_path: "models/pose_landmarker.task"
+    num_poses: 10
+    min_pose_detection_confidence: 0.5
+    min_pose_presence_confidence: 0.5
+    min_tracking_confidence: 0.5
+    min_real_visibility: 0.5
+    min_real_landmarks: 8
+    
   yolo:
-    # COCO object detector for the occlusion / foreign-object check. Pretrained
-    # weights (knows all 80 COCO classes); we only read back predicted class ids.
-    # Vendor the .pt next to the other model bundles for offline batch runs;
-    # verify_env.py should check it is present. A bare name auto-downloads if
-    # ultralytics can reach the network.
-    model_path: models/yolov8n.pt    # [DESIGN] n=nano (fastest); s/m/l/x trade speed for accuracy
-    conf: 0.6                       # [DESIGN] default confidence gate; walk.occlusion.conf overrides per-run
+    model_path: models/yolov8n.pt
+    conf: 0.6
 
 
 face:
-  extension: ".mp4"                  # [SPEC]
-  container: "MPEG-4"                # [SPEC]
-
-  streams:
-    rgb:
-      required: true
-      pattern_key: "face_rgb"
-      require_rgb: true              # [SPEC]
-      checks:
-        metadata: true
-        face_size: true
-        blur: true
-        brightness: true
-        head_fully_visible: true
-        head_pose: true
-        eyes_open: true
-        occlusion: true
-        turn_sequence: true
-
-    depth:
-      required: true
-      pattern_key: "face_depth"
-      require_rgb: false
-      checks:
-        metadata: true
-        face_size: false             # [PLAN] RGB face model may fail on depth
-        blur: false                  # [PLAN]
-        brightness: false            # [PLAN]
-        head_fully_visible: false    # [PLAN]
-        head_pose: false             # [PLAN]
-        eyes_open: false             # [PLAN]
-        occlusion: false             # [PLAN]
-        turn_sequence: false         # [PLAN]
-
-    ir1:
-      required: true
-      pattern_key: "face_ir1"
-      require_rgb: false
-      checks:
-        metadata: true
-        face_size: true              # [PLAN] try face checks on IR
-        blur: true                   # [PLAN]
-        brightness: true             # [PLAN]
-        head_fully_visible: true     # [PLAN]
-        head_pose: true              # [PLAN]
-        eyes_open: false             # [DESIGN] eye check may be unreliable on IR
-        occlusion: false             # [DESIGN]
-        turn_sequence: true          # [PLAN] if head pose works
-
-    ir2:
-      required: true
-      pattern_key: "face_ir2"
-      require_rgb: false
-      checks:
-        metadata: true
-        face_size: true              # [PLAN] try face checks on IR
-        blur: true                   # [PLAN]
-        brightness: true             # [PLAN]
-        head_fully_visible: true     # [PLAN]
-        head_pose: true              # [PLAN]
-        eyes_open: false             # [DESIGN] eye check may be unreliable on IR
-        occlusion: false             # [DESIGN]
-        turn_sequence: true          # [PLAN] if head pose works
-
-    thermal:
-      required: true
-      pattern_key: "face_thermal"
-      require_rgb: false
-      checks:
-        metadata: true
-        face_size: false             # [PLAN] RGB face model may fail on thermal
-        blur: false                  # [PLAN]
-        brightness: false            # [PLAN]
-        head_fully_visible: false    # [PLAN]
-        head_pose: false             # [PLAN]
-        eyes_open: false             # [PLAN]
-        occlusion: false             # [PLAN]
-        turn_sequence: false         # [PLAN]
-
-  required_sets:
-    rgb:
-      - "rgb"
-    depth_ir_thermal:
-      - "depth"
-      - "ir1"
-      - "ir2"
-      - "thermal"
+  extension: ".mp4"
+  container: "MPEG-4"
 
   metadata:
-    min_fps: 5                       # [SPEC]
-    min_duration_sec: 40             # [SPEC] confirm applies to all 4 thermal streams [CONFIRM]
+    min_fps: 5
+    min_duration_sec: 40
 
   size:
-    min_head_width_px: 180           # [SPEC]
-    min_head_height_px: 180          # [SPEC]
-
-  visibility:
-    require_head_to_neck_visible: true   # [SPEC]
-    require_clear_face: true             # [SPEC]
-    require_enough_light: true           # [SPEC]
-    require_head_straight: true          # [SPEC]
-    require_eye_level_camera: true       # [SPEC] no detector yet -> emit SKIP
-    require_no_occlusion: true           # [SPEC]
+    min_head_width_px: 180
+    min_head_height_px: 180
 
   occlusion:
-    no_hair_covering_face_or_eyes: true  # [SPEC]
-    no_mask: true                        # [SPEC]
-    no_sunglasses: true                  # [SPEC]
-    no_hat: true                         # [SPEC]
-    policy: "FAIL"                     # [DESIGN]
-
-    # [DESIGN] Skin-colour occlusion method (check_occlusion.py). The landmark
-    # model cannot report occlusion (it hallucinates covered landmarks with no
-    # confidence signal), so occlusion is detected by appearance: build a small
-    # ROI per face region from the landmarks, and test what fraction of each
-    # region's pixels are skin-coloured in YCrCb. A required region whose skin
-    # fraction falls below min_skin_ratio is flagged occluded.
+    policy: "FAIL"
     skin:
-      # Which regions FAIL the frame if occluded. Eyes+nose+mouth are the
-      # spec-critical cases (mask = nose+mouth; sunglasses = eyes). Add
-      # "forehead" if a hat brim / low hair must also fail.
-      required_regions: ["left_eye", "right_eye", "nose", "mouth"]  # [DESIGN]
-      # YCrCb skin-chroma bounds (inclusive). Classic face-skin range; widen
-      # cr/cb if darker or lighter skin tones false-fail in the real data.
-      cr_min: 133                        # [DESIGN] tune on real volunteers
-      cr_max: 173                        # [DESIGN]
-      cb_min: 77                         # [DESIGN]
-      cb_max: 127                        # [DESIGN]
-      # A region passes if its skin-pixel fraction >= this. Lower = more
-      # permissive (fewer false occlusions); higher = stricter.
-      min_skin_ratio: 0.40               # [DESIGN]
-      # Padding added to each region ROI, as a fraction of the ROI's own size.
-      roi_margin: 0.15                   # [DESIGN]
+      required_regions: ["left_eye", "right_eye", "nose", "mouth"]
+      cr_min: 133
+      cr_max: 173
+      cb_min: 77
+      cb_max: 127
+      min_skin_ratio: 0.40
+      roi_margin: 0.15
 
   turn_sequence:
     enabled: true                    # [SPEC]
@@ -594,7 +424,7 @@ walk:
     # object FAILs iff its lower edge is within +/- foot_band_ratio * person
     # height of the walker's planted-foot line (landmarks 31/32, max-y). Default
     # 0.10 -> a 20% band. null -> _S also keeps raw overlap. FRONT (_F) ALWAYS
-    # uses overlap and ignores this. [DESIGN] pending อ.เหมียว sign-off.
+    # uses overlap and ignores this. [DESIGN] pending sign-off.
     foot_band_ratio: 0.10
 
   direction:

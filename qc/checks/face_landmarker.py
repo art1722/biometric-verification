@@ -106,9 +106,9 @@ def create_face_landmarker(
     """Create ONE Tasks-API FaceLandmarker, blendshapes enabled.
 
     Mirrors the old shared-detector pattern: the pipeline builds this once and
-    passes it to every frame. Settings map onto the old config keys:
-      num_faces                     <- models.mediapipe.max_num_faces (was 10)
-      min_face_detection_confidence <- models.mediapipe.min_detection_confidence
+    passes it to every frame. Settings map onto config keys:
+      num_faces                     <- models.face_landmarker.num_faces
+      min_face_detection_confidence <- models.face_landmarker.min_face_detection_confidence
 
     static_image_mode is expressed here as running_mode=IMAGE (each frame is
     treated independently — the previous behaviour with static_image_mode=True).

@@ -8,13 +8,13 @@ summaries.
 Customer-facing output (one row per FAILED check, so each reason is its own
 cell — see qc.utils.report):
   - face_summary.csv : this modality's full report. One row per failed check;
-    a video that passes everything gets one PASS row; an ERROR video gets one
+    a video that passes everything gets one PASS row; a crashed video gets one
     row carrying the error text. Columns: volunteer_id, data_type, filename,
     overall_status, check_name, reason. Internal stats (yaw/pitch, frame
     counts, timing) are deliberately NOT here — they stay in each volunteer's
     own report.
   - all_summary.csv + all_summary.json : the cross-modal roll-up of PROBLEM
-    cases only (FAIL/ERROR) across face + palm + walk. CSV is the same flat
+    cases only (FAIL) across face + palm + walk. CSV is the same flat
     per-check grain (Excel-pivotable); JSON nests one object per video with a
     `failures: [{check_name, reason}]` array for a customer's tooling.
 
@@ -33,7 +33,7 @@ Design choices (confirmed with the team):
     to change; None (native, every frame) is intentionally NOT the batch
     default because it is far too slow at scale.
   - One bad/corrupt video does NOT stop the run: it is caught, logged, and
-    recorded as an ERROR row so it stays visible.
+    recorded as a FAIL row (synthetic processing_error check) so it stays visible.
   - REVIEW is not used.
 
 Usage:
@@ -104,7 +104,7 @@ def parse_args():
     ap.add_argument("--out-root", default="reports",
                     help="root for per-volunteer report folders (default: reports)")
     ap.add_argument("--all-summary", default=None,
-                    help="cross-modal FAIL/ERROR roll-up, written as both .csv "
+                    help="cross-modal FAIL roll-up, written as both .csv "
                          "and .json, shared by all modalities "
                          "(default stem: <out-root>/all_summary). Overwritten "
                          "each run by default; pass --append to add to an "
@@ -223,7 +223,7 @@ def process_one(path, vid, config, args):
     """Run the pipeline on one video and write its per-volunteer files.
 
     Returns a global-summary row dict. Raises nothing — callers expect a row
-    even on error (the row's status is ERROR).
+    even on error (the row's status is FAIL, via error_row).
     """
     out_dir = os.path.join(args.out_root, vid)
     os.makedirs(out_dir, exist_ok=True)
@@ -308,6 +308,67 @@ def error_row(path, vid, exc, elapsed, data_type="face_rgb"):
 
 
 # ---------------------------------------------------------------------------
+# Face batch
+# ---------------------------------------------------------------------------
+def run_face_batch(matched, config, args, all_summary, counts, total=None):
+    """Grade each face_rgb video, feed the shared writers.
+
+    Extracted from main() so face, palm and walk all have the SAME shape:
+    open a per-modality SummaryWriter, loop, add every record to BOTH that
+    writer and the shared cross-modal all_summary, mutate `counts` in place,
+    and return (n_rows, wrong_case).
+
+    Face differs from palm/walk in one way ONLY, and it is deliberate:
+    discovery happens in main() (find_face_rgb_videos), because main() needs
+    `matched` up front to compute allowed_ids for the OTHER two modalities via
+    compute_allowed_ids. So the already-discovered, already-id-filtered list is
+    passed IN rather than found here. wrong_case is likewise owned and printed
+    by main(); this returns [] to keep the 2-tuple signature uniform with
+    run_palm_batch / run_walk_batch.
+
+    A video that THROWS is recorded via error_row() -> final_status "FAIL" with
+    a synthetic "processing_error" check, exactly like the palm batch. There is
+    no ERROR status anywhere in the pipeline (media verdict is PASS/FAIL/SKIP).
+    """
+    summary_csv = args.face_summary_csv or os.path.join(
+        args.out_root, "face_summary.csv"
+    )
+    os.makedirs(os.path.dirname(summary_csv) or ".", exist_ok=True)
+
+    if total is None:
+        total = len(matched)
+    n_videos = 0
+
+    with SummaryWriter(summary_csv, mode="w") as summary:
+        for i, (vid, path) in enumerate(matched, start=1):
+            t0 = time.perf_counter()
+            try:
+                rec = process_one(path, vid, config, args)
+            except Exception as exc:  # noqa: BLE001 — one bad file must not kill the batch
+                elapsed = time.perf_counter() - t0
+                rec = error_row(path, vid, exc, elapsed)
+                print(f"[{i}/{total}] {vid:>5}  FAIL (crash)  "
+                      f"{rec['error']}", flush=True)
+                traceback.print_exc()
+            else:
+                status = rec["final_status"]
+                print(f"[{i}/{total}] {vid:>5}  {status:<6} "
+                      f"({rec['processing_time_sec']}s, "
+                      f"{rec.get('frames_sampled', '')} frames, "
+                      f"{rec.get('detection_gaps', '')} gaps)", flush=True)
+
+            counts[rec["final_status"]] = counts.get(rec["final_status"], 0) + 1
+            # Per-modality summary gets EVERY video (PASS included); the
+            # cross-modal all_summary keeps only FAIL (self-filtering).
+            summary.add(rec)
+            all_summary.add(rec)
+            n_videos += 1
+
+    print(f"  face summary: {summary_csv}  ({n_videos} video row(s))")
+    return n_videos, []
+
+
+# ---------------------------------------------------------------------------
 # Palm batch
 # ---------------------------------------------------------------------------
 # Palm differs from face in ONE structural way: the angle check grades each
@@ -385,7 +446,7 @@ def process_palm_participant(vid, files, config, args):
     Returns (records, counts_delta) where `records` is a list of per-IMAGE
     overall records (the chosen grain) for the summary writers, and
     counts_delta tallies image verdicts. Raises nothing: a participant-level
-    failure becomes one ERROR record so the batch keeps going.
+    failure becomes one FAIL record so the batch keeps going.
     """
     out_dir = os.path.join(args.out_root, vid)
     os.makedirs(out_dir, exist_ok=True)
@@ -428,7 +489,7 @@ def run_palm_batch(input_dir, config, args, all_summary, counts, allowed_ids=Non
     """Discover palm images, grade each participant, feed the shared writers.
 
     Uses a SEPARATE palm_summary.csv (opened here) but the SAME all_summary
-    writer passed in, so palm FAIL/ERROR rows append to the cross-modal roll-up
+    writer passed in, so palm FAIL rows append to the cross-modal roll-up
     after face. Mutates `counts` in place with palm image verdicts.
 
     allowed_ids: if given (from --limit), only participants whose id is in this
@@ -513,7 +574,7 @@ def run_walk_batch(input_dir, config, args, all_summary, counts, allowed_ids=Non
     Walk grades PER VIDEO (each _F/_S file is its own row), so this loop is
     shaped like the face loop, not palm's per-participant grouping. Uses a
     SEPARATE walk_summary.csv but the SAME all_summary writer passed in, so walk
-    FAIL/ERROR rows append to the cross-modal roll-up after face and palm.
+    FAIL rows append to the cross-modal roll-up after face and palm.
     Mutates `counts` in place.
 
     allowed_ids: if given (from --limit), only videos whose participant id is in
@@ -704,9 +765,9 @@ def main():
         print(f"walk      : ON  (per-video grading, one row per F/S video)")
     print(f"out root  : {args.out_root}")
     print(f"summary   : {summary_csv}  (per-check, all videos)")
-    print(f"all       : {all_stem}.csv / .json  (FAIL/ERROR only, cross-modal)\n")
+    print(f"all       : {all_stem}.csv / .json  (FAIL only, cross-modal)\n")
 
-    counts = {"PASS": 0, "FAIL": 0, "SKIP": 0, "ERROR": 0}
+    counts = {"PASS": 0, "FAIL": 0, "SKIP": 0}
     palm_wrong_case = []
     n_palm_images = 0
     n_walk_videos = 0
@@ -715,7 +776,7 @@ def main():
     # Two writers, opened together so both flush per video and a crash mid-run
     # still leaves valid partial files:
     #   SummaryWriter   -> face_summary.csv  (per-check rows; PASS gets one row)
-    #   AllSummaryWriter-> all_summary.csv + .json (FAIL/ERROR only, cross-modal)
+    #   AllSummaryWriter-> all_summary.csv + .json (FAIL only, cross-modal)
     # Both expand the SAME overall record, so face/palm/walk stay identical.
     # The all_summary writer stays open across BOTH the face loop and the palm
     # batch so palm rows append to the same cross-modal roll-up in one process.
@@ -723,29 +784,9 @@ def main():
     with AllSummaryWriter(all_stem, mode=all_mode) as all_summary:
 
         if run_face:
-            with SummaryWriter(summary_csv, mode="w") as summary:
-                for i, (vid, path) in enumerate(matched, start=1):
-                    t0 = time.perf_counter()
-                    try:
-                        rec = process_one(path, vid, config, args)
-                    except Exception as exc:  # noqa: BLE001 — one bad file must not kill the batch
-                        elapsed = time.perf_counter() - t0
-                        rec = error_row(path, vid, exc, elapsed)
-                        print(f"[{i}/{total}] {vid:>5}  FAIL (crash)  "
-                              f"{rec['error']}", flush=True)
-                        traceback.print_exc()
-                    else:
-                        status = rec["final_status"]
-                        print(f"[{i}/{total}] {vid:>5}  {status:<6} "
-                              f"({rec['processing_time_sec']}s, "
-                              f"{rec.get('frames_sampled', '')} frames, "
-                              f"{rec.get('detection_gaps', '')} gaps)", flush=True)
-
-                    counts[rec["final_status"]] = counts.get(rec["final_status"], 0) + 1
-                    # Per-modality summary gets EVERY video (PASS included); the
-                    # cross-modal all_summary keeps only FAIL/ERROR (self-filtering).
-                    summary.add(rec)
-                    all_summary.add(rec)
+            n_face_videos, _face_wrong = run_face_batch(
+                matched, config, args, all_summary, counts, total=total
+            )
 
         if run_palm:
             n_palm_images, palm_wrong_case = run_palm_batch(
@@ -787,8 +828,8 @@ def main():
         print(f"\n  note: {len(skipped)} non-RGB .mp4 files were ignored "
               f"(depth/ir/thermal belong to other pipelines).")
 
-    # exit 0 only if nothing failed or errored
-    return 0 if (counts.get("FAIL", 0) == 0 and counts.get("ERROR", 0) == 0) else 1
+    # exit 0 only if nothing FAILed (a crash is recorded as FAIL via error_row)
+    return 0 if counts.get("FAIL", 0) == 0 else 1
 
 
 if __name__ == "__main__":
