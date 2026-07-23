@@ -46,7 +46,7 @@ checks change as little as possible:
 `landmarks_px` reproduces exactly what the old get_lm returned (int pixel x/y,
 relative z), so check_face_size / check_head_fully / the old EAR all still read
 the same tuples. `landmarks_norm` exposes objects with `.x/.y/.z` so the
-researcher's head-pose math (which reads normalized coords) is untouched.
+head-pose math (which reads normalized coords) is untouched.
 
 Model bundle
 ------------

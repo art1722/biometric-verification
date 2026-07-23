@@ -76,7 +76,7 @@ REPORT_CHECK_ORDER_WALK = {
 
 
 def report_sort_key(check_name, level, data_type=None):
-    """Stable researcher-facing order for result CSV rows.
+    """Stable order for result CSV rows.
 
     Each pipeline has its OWN order dict so numbers are only meaningful within a
     modality (no cross-pipeline collisions on shared names like check_brightness).

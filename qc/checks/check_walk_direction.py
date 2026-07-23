@@ -41,7 +41,7 @@ Method (mirrors the structure of check_turn_sequence_seg without its yaw math)
    required order EXACTLY (F: grow->shrink; S: left->right). Order matters --
    "both present" is not enough.
 
-Thresholds come from config walk.direction.* so the researcher can tune them
+Thresholds come from config walk.direction.* so the debugger can tune them
 without code changes. All are [DESIGN] defaults pending validation on real
 _F/_S footage
 

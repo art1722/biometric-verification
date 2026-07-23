@@ -121,7 +121,7 @@ def create_batch(
     """Start a batch QC run over the local data/ folder.
 
     By default runs ALL THREE modalities (face videos + palm images + walk
-    videos) — the researcher uploads everything, so everything is checked. Turn
+    videos) — after uploading everything, so everything is checked. Turn
     any off with run_face=false / run_palm=false / run_walk=false. sample_fps
     optionally overrides the frame-sampling rate. Returns 202 Accepted with a
     job_id immediately; poll GET /checks/batch/{job_id} for progress.

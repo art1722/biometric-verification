@@ -185,7 +185,7 @@ def run_palm(
         hl_cfg = models_cfg.get("hand_landmarker", {})
         hands_cfg = models_cfg.get("hands", {})
         # >1 hand is a capture error for palm (one hand per shot) -> FAIL, vs
-        # face's REVIEW for an extra face. Confirm policy with อ.เหมียว.
+        # face's REVIEW for an extra face.
         multi_policy = hands_cfg.get("multiple_hands_policy", "FAIL")
 
         try:
@@ -288,7 +288,7 @@ def run_palm(
             # SKIP when there is no single-hand result (same root cause as size:
             # present already FAILed). Per the current assumption, a fully-
             # detected hand is expected; a non-measurable spread returns FAIL via
-            # the check's own message. [DESIGN -> CONFIRM with อ.เหมียว] ---
+            # the check's own message.
             spread_cfg = palm_cfg.get("hand_pose", {}).get("spread", {})
             spread_enabled = spread_cfg.get("enabled", True)
             spread_poses = spread_cfg.get("eval_poses", ["N"])
@@ -345,7 +345,7 @@ def run_palm(
                     level="image")
 
             # --- check_palm_angle: graded at PARTICIPANT/BATCH level, not
-            # per-image. Measurement is the researcher's depth-wise roll/pitch;
+            # per-image. Measurement is the depth-wise roll/pitch;
             # grading is ABSOLUTE per-image against each pose's band (see
             # run_palm_participant / check_palm_pose_absolute).
             # Here we only (a) emit a deferred SKIP row, and (b) capture the raw
@@ -353,10 +353,10 @@ def run_palm(
             # angle is returned via `measured_angle` (None if unmeasurable). ---
             if hand_result.ok and hand_result.landmarks_norm is not None:
                 from qc.checks.check_palm_angle import calculate_palm_angles
-                # Pass the FILENAME hand (ground truth) so the researcher's
+                # Pass the FILENAME hand (ground truth) so the
                 # depth-wise method applies the correct L/R roll-sign branch.
                 # NOTE: feed NORMALIZED landmarks (wrist-origin z), NOT
-                # world_landmarks -- the researcher's method was validated on
+                # world_landmarks -- the method was validated on
                 # normalized z (see palm_pitch_roll_report.csv). world_landmarks
                 # gave the wrong angles.
                 aok, ainfo = calculate_palm_angles(
@@ -412,7 +412,7 @@ def run_palm_participant(
          delta). Replace each image's deferred angle row with the PASS/FAIL
          verdict.
 
-    Decisions (confirmed with the researcher 2026-07-09):
+    Decisions:
       - Every pose graded ABSOLUTELY on its own raw roll/pitch (no N baseline,
         no delta, no REVIEW). N: both axes within neutral tolerance. Rotated
         pose: active axis within its band; the other axis is REPORTED only.

@@ -254,17 +254,14 @@ def check_brightness_walk(
     """Walk/gait brightness — INVERTED verdict of the face check.
 
     Mirrors check_brightness_palm's shape (measure inside the bbox the shared
-    pose detector already produced; no detector call here), but the verdict is
-    the LITERAL INVERSE of the shared core, per the researcher decision
-    (2026-07-13):
-
+    pose detector already produced; no detector call here), but the result is
+    the LITERAL INVERSE of the shared core.
         core / face : PASS when dark_threshold <= brightness <= bright_threshold
         walk        : PASS when brightness <  dark_threshold
                               OR brightness >  bright_threshold
 
     So a walk frame is a PASS only when it is very dark or very bright, and a
-    normally-lit frame FAILS. (Flagged for อ.เหมียว in config; implemented as
-    specified.)
+    normally-lit frame FAILS.
 
     The same numeric cutoffs as face are used by default; walk drives them from
     config walk.brightness.* so they can diverge without touching face.

@@ -14,8 +14,7 @@ Confidence gate
 ---------------
 Low-confidence ghost detections (a 0.15 "toothbrush" on a noisy frame) would
 false-FAIL almost every clip, so a foreign object only counts when its
-confidence is >= conf. Default 0.35 [DESIGN]; confirm the value with อ.เหมียว.
-The person class is never a failure reason, at any confidence.
+confidence is >= conf. Default 0.35
 
 Aggregation (done by report.py, not here)
 -----------------------------------------
@@ -57,7 +56,7 @@ def _boxes_overlap(a, b) -> bool:
 def _in_foot_band(obj_bbox, foot_line_y: float, person_h: float,
                   ratio: float) -> bool:
     """True if an object's LOWER edge sits within +/- ratio*person_h of the
-    walker's foot line (SIDE-view rule, researcher decision 2026-07-16).
+    walker's foot line (SIDE-view rule)
 
     Rationale: in the side view a real floor obstruction rests on the SAME floor
     as the walker, so its box bottom aligns with the walker's planted foot. Decor
@@ -69,9 +68,9 @@ def _in_foot_band(obj_bbox, foot_line_y: float, person_h: float,
     Band geometry (span A, confirmed): band_half = ratio * person_h; an object
     FAILs if  foot_line_y - band_half <= object_bottom <= foot_line_y + band_half
     i.e. a total band of 2*ratio (default ratio=0.10 -> 20% of person height),
-    centred on the foot line. NO horizontal (x) test -- researcher's literal
-    proposal: lower-edge level alone decides. y grows DOWNWARD, so the foot line
-    is max(y) of the two foot landmarks (the planted foot), passed in by caller.
+    centred on the foot line. NO horizontal (x) test :lower-edge level alone decides. 
+    y grows DOWNWARD, so the foot line is max(y) of the two foot landmarks 
+    (the planted foot), passed in by caller.
 
     obj_bbox is (x, y, w, h) px; the object's lower edge is y + h.
     """

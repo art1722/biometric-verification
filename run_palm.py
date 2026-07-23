@@ -348,7 +348,7 @@ def main():
     # --- visual debug outputs, one per image ---
     # Overlay is ON by default. The combined 3D angle tabs HTML is also written
     # by default (opt out via --no-angle-3d-tabs); it needs the optional Plotly
-    # dependency and is meant for researcher/debug review.
+    # dependency and is meant for debug review.
     if (not args.no_overlay) or args.angle_3d_tabs:
         from types import SimpleNamespace
         if not args.no_overlay:

@@ -17,7 +17,7 @@ matches a spec pattern exactly, including a lowercase extension (.mp4 / .jpg).
 A wrong-case extension such as '.JPG' or '.MP4' is NOT accepted - it is
 reported as unrecognised (and attributed to a volunteer via leading digits
 where possible). This replaces the earlier 'wrong_extension_case' accept-and-
-warn behaviour, which the researcher found confusing.
+warn behaviour, which is found confusing.
 
 Patterns are loaded from config.yml (filenames.required) so the naming
 convention lives in ONE place. Until Phase 0 confirms the ID-padding rule,

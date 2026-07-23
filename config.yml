@@ -259,7 +259,7 @@ palm:
     # side closer to the sensor. Signs are normalized to the spec labels:
     #   RL negative, RR positive, PU negative, PD positive.
     # --- Grading (run_palm_participant) ---
-    #   N : graded ABSOLUTELY -- researchers expect roll ~ 0 AND pitch ~ 0;
+    #   N : graded ABSOLUTELY -- expected roll ~ 0 AND pitch ~ 0;
     #       tolerance n_reference_max_deg. A FAILed-but-measurable N still
     #       yields deltas, but the rotated verdicts are demoted to REVIEW
     #       ("delta may be biased -- re-capture N").

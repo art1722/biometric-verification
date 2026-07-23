@@ -1,7 +1,7 @@
 """Debug overlay video writer.
 
 Draws a "full debug" overlay onto each SAMPLED frame as the face_rgb pipeline
-runs, so a reviewer (e.g. พี่ยอ) can SEE why a case broke instead of reading the
+runs, so a reviewer can see why a case broke instead of reading the
 CSV. The writer is fed live from inside the per-frame loop, so it draws the
 EXACT bbox / landmarks / pose / check results the checks used — no re-detection,
 no second pass, no drift between the video and the report.

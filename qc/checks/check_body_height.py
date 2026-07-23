@@ -4,7 +4,7 @@ Spec requirement (source of truth), Thai:
     "ตัวคนต้องมีความสูงอย่างน้อยครึ่งหนึ่งของความสูงภาพ"
     -> the person's height must be AT LEAST HALF the image height.
 
-Where is it measured?  (researcher decision, 2026-07-09)
+Where is it measured?
     NOT every frame. Only the FIRST frame of each walk video -- the point where
     the person is FARTHEST from the camera (so they appear smallest). If the
     person clears the half-frame bar at their smallest, they clear it for the

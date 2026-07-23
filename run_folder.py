@@ -69,6 +69,10 @@ from qc.pipelines.palm import run_palm_participant
 from qc.pipelines.walk import run_walk
 from qc.checks.pose_landmarker import create_pose_landmarker
 from run_walk import find_walk_files, _identity as _walk_identity
+from run_palm import (
+    write_consolidated_overall as _palm_write_overall,
+    parse_hand_pose as _palm_parse_hand_pose,
+)
 from qc.utils.report import (
     build_overall_record,
     write_result_csv,
@@ -451,6 +455,95 @@ def _image_record(file_rows, config):
     }
 
 
+def _write_palm_visuals(out_dir, vid, files, rows_by_file, config, args):
+    """Write per-image palm overlays + one combined 3D angle-tabs HTML.
+
+    Mirrors the visual block in run_palm.py so a batch run produces the SAME
+    per-volunteer artifacts as the standalone runner. Grading is already done by
+    the caller; this re-detects each image purely for the visuals, which keeps
+    the batch grading path unchanged.
+
+    Never raises: a visual failure must not lose the batch's grading work, so
+    every fallible step degrades to a printed note and the run continues.
+    """
+    from types import SimpleNamespace
+
+    try:
+        from qc.utils.palm_overlay import draw_palm_overlay
+    except ImportError as e:
+        print(f"  (skip palm overlays: {e})")
+        return
+
+    # 3D tabs need plotly. Missing plotly must not cost the overlays, so this is
+    # a separate optional import rather than part of the block above.
+    angle_3d = True
+    try:
+        from qc.debug.visualize_palm_angle import save_palm_angle_debug_tabs_html
+        from qc.checks.check_palm_angle import calculate_palm_angles
+    except ImportError:
+        angle_3d = False
+
+    # NOTE: the per-image entry point is named run_palm in the pipeline module;
+    # run_palm.py imports it under the alias run_palm_image. Same function.
+    from qc.pipelines.palm import run_palm as run_palm_image
+
+    tab_entries = []
+    for _name, path in files:
+        fname = os.path.basename(path)
+        hand, pose = _palm_parse_hand_pose(path)
+        try:
+            _, _, hand_result, _ = run_palm_image(
+                path, vid, config, hand=hand, pose=pose, detect=True)
+        except Exception as e:
+            print(f"  (skip palm visual for {fname}: {e})")
+            continue
+
+        # {check_name: (status, reason)} so the overlay's bottom panel shows the
+        # full reason per check, not just the PASS/FAIL word.
+        check_status = {r.check_name: (r.status, r.reason)
+                        for r in rows_by_file.get(fname, [])}
+        if hand_result is None:
+            hand_result = SimpleNamespace(
+                ok=False, message="hand model unavailable",
+                landmarks_px=None, bbox=None, norm_box=None,
+                landmarks_norm=None, handedness=None,
+                handedness_score=None, world_landmarks=None)
+
+        tag = "_".join(x for x in (hand, pose) if x)
+        ov_path = os.path.join(out_dir, f"palm_{vid}_{tag}_overlay.jpg")
+        try:
+            draw_palm_overlay(path, hand_result, checks=check_status,
+                              out_path=ov_path, panel_below=True,
+                              hand_override=hand)
+        except Exception as e:
+            print(f"  (skip palm overlay for {fname}: {e})")
+
+        # Angle math runs on NORMALIZED landmarks, matching the reported CSV.
+        has_hand = (getattr(hand_result, "ok", False)
+                    and getattr(hand_result, "landmarks_norm", None) is not None)
+        if angle_3d and has_hand:
+            try:
+                aok, ainfo = calculate_palm_angles(
+                    hand_result.landmarks_norm, handedness=hand)
+                tab_entries.append({
+                    "label": tag.replace("_", " / ") or fname,
+                    "world_landmarks": hand_result.landmarks_norm,
+                    "angle_info": ainfo if aok else None,
+                    "title": f"{fname} — palm angle 3D debug",
+                })
+            except Exception:
+                pass  # one unmeasurable hand must not lose the whole HTML
+
+    if angle_3d and tab_entries:
+        tabs_path = os.path.join(out_dir, f"palm_{vid}_angle3d_tabs.html")
+        try:
+            save_palm_angle_debug_tabs_html(
+                tab_entries, tabs_path,
+                page_title=f"{vid} — palm angle 3D debug (all hands)")
+        except Exception as e:
+            print(f"  (skip palm 3D angle HTML for {vid}: {e})")
+
+
 def process_palm_participant(vid, files, config, args):
     """Run palm QC for ONE participant and write their per-volunteer files.
 
@@ -478,6 +571,17 @@ def process_palm_participant(vid, files, config, args):
         write_detail_csv(
             os.path.join(out_dir, f"palm_{vid}_detail.csv"), rows, [], quiet=True
         )
+
+    # Per-volunteer overall CSV (ONE row per image) — mirrors run_palm.py.
+    # Always written even with --no-overlay: it is a small CSV and the summary
+    # readers / dashboard expect it alongside the face and walk overall files.
+    _palm_write_overall(out_dir, vid, rows_by_file, image_order, config,
+                        quiet=True)
+
+    # Visual artifacts (per-image overlays + combined 3D angle HTML). These are
+    # the expensive part, so they honour --no-overlay exactly like face/walk.
+    if not args.no_overlay:
+        _write_palm_visuals(out_dir, vid, files, rows_by_file, config, args)
 
     records = []
     counts_delta = {}

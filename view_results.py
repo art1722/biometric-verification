@@ -81,7 +81,7 @@ REPORT_CHECK_ORDER = {
 
 
 def ordered_checks(*status_maps):
-    """Return check names in the same researcher-facing order as result CSV."""
+    """Return check names in the same order as result CSV."""
     checks = set()
     for m in status_maps:
         checks |= set(m)

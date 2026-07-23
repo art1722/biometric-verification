@@ -1,34 +1,3 @@
-"""Head pose estimation — RESEARCHER'S algorithm (from Copy_of_face_angle_test.ipynb).
-
-Source hierarchy for this project:
-  - The NOTEBOOK is the researcher's own code -> it is the authority for head
-    pose. This file ports its `calculate_angles` function.
-  - The repo (a master's student's helper) is only used to fill gaps the
-    notebook does not cover. Its solvePnP pose method is therefore NOT used
-    here; it is kept as check_head_pose_solvepnp_backup.py for reference only.
-
-Method (verbatim from the notebook)
------------------------------------
-Build three direction vectors from face landmarks (eye, mouth, vertical), cross
-the eye/mouth vectors with the vertical to estimate the face normal (z-axis),
-average them, then read yaw/pitch off that normal and roll off eye+mouth tilt.
-The 1.05 / 1.45 / 0.7 factors are the researcher's empirical calibration — kept
-exactly, since they were presumably tuned for this capture setup.
-
-IMPORTANT — coordinate space
-----------------------------
-The notebook reads landmark.x/.y/.z straight from MediaPipe, i.e. NORMALIZED
-0..1 coords where x and y share the same scale. This file works on the RAW
-MediaPipe landmark object, NOT get_lm's pixel-space tuples (which scale x by
-width and y by height and would distort the vectors). The pipeline passes the
-raw landmark object here.
-
-Changes from the notebook (wrapper only, math untouched):
-- ARRAY-FIRST input + optional DETECTOR REUSE.
-- Returns (success, info_dict) with yaw/pitch/roll/direction for the future
-  turn-sequence check. The notebook only printed the values.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -56,7 +25,7 @@ def _to_bgr(image, input_color_space):
 
 
 def calculate_angles(face_landmarks):
-    """Researcher's geometric pitch/yaw/roll from RAW (normalized) landmarks.
+    """Geometric pitch/yaw/roll from RAW (normalized) landmarks.
 
     Returns (pitch, yaw, roll) in degrees.
     """
@@ -105,7 +74,7 @@ def estimate_head_pose(
     left_th=-10.0, right_th=10.0, down_th=-10.0, up_th=15.0,
     til_left_th=-10.0, til_right_th=10.0,
 ):
-    """Estimate head pose using the researcher's notebook algorithm.
+    """Estimate head pose
 
     Two ways to supply the face:
       - landmarks=<raw normalized landmark list>: PREFERRED. The pipeline runs
@@ -116,7 +85,7 @@ def estimate_head_pose(
         landmarks are given, this still works on its own using the legacy
         solutions FaceMesh, preserving the original behaviour for ad-hoc use.
 
-    The angle math (calculate_angles) is the researcher's, untouched: it reads
+    The angle math is untouched: it reads
     normalized .x/.y/.z, which is exactly what both paths feed it.
 
     Returns (success, info) where info = {yaw, pitch, roll, direction}.

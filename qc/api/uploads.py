@@ -2,7 +2,7 @@
 
 Why this module exists
 ----------------------
-The researcher's mental model is "upload the folder, get all_summary back". But
+The mental model is "upload the folder, get all_summary back". But
 HTTP has no "folder" type: multipart/form-data only carries FILES. A folder is
 always flattened by the CLIENT into a list of files before it reaches us. So an
 upload arrives in one of two shapes, and this module accepts BOTH through the

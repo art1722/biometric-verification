@@ -13,7 +13,7 @@ one check at a time:
 Everything else is deliberately omitted for now (not stubbed as SKIP rows yet) so
 the MVP output is a single, easy-to-verify row per video.
 
-Where the height is measured (researcher decision, 2026-07-09)
+Where the height is measured
 --------------------------------------------------------------
 On the FIRST frame only -- the point where the walker is farthest from the
 camera and therefore appears smallest. If they clear the half-frame bar at their
@@ -158,8 +158,7 @@ def run_walk(
     occlusion_conf = occlusion_cfg.get("conf", 0.35)
     occlusion_overlay_draw = occlusion_cfg.get("overlay_draw", "all")  # "all" | "overlap"
     # SIDE-view (_S) foot-band ratio. None -> _S also uses raw overlap (old
-    # behaviour). Default 0.10 = +/-10% of person height (20% band). [DESIGN]
-    # pending อ.เหมียว sign-off. FRONT (_F) ignores this and always uses overlap.
+    # behaviour). Default 0.10 = +/-10% of person height (20% band).
     occlusion_foot_band_ratio = occlusion_cfg.get("foot_band_ratio", None)
 
     dir_cfg = walk_cfg.get("direction", {})
@@ -190,7 +189,7 @@ def run_walk(
             # pose, so a two-person frame degrades to "No poses detected" (an
             # ambiguous wide scene the single slot can't lock) and is mis-routed
             # as a no-person FAIL. Mirrors face's num_faces=10. Config-driven so
-            # the researcher can tune it without code changes; default 5 is a
+            # the developer can tune it without code changes; default 5 is a
             # safe headroom over the one expected walker.
             num_poses=pose_cfg.get("num_poses", 10),
             min_pose_detection_confidence=pose_cfg.get(

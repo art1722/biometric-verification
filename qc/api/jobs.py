@@ -29,7 +29,7 @@ No need to parse the subprocess's stdout.
 
 State
 -----
-Jobs are tracked in an in-memory dict. This is fine for one researcher's machine
+Jobs are tracked in an in-memory dict. This is fine for one machine
 running a few batches. It is NOT persistent — if the API process restarts, the
 job registry is lost (the reports on disk survive). A database/file store would
 be the next step if persistence is needed.
