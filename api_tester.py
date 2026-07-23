@@ -95,14 +95,29 @@ def api_results(base, job_id, *, status=None):
         return False, str(e)
 
 
-def api_download_csv(base, job_id):
-    """GET /results/download?format=csv -> (ok, bytes|error)."""
-    params = {"job_id": job_id, "format": "csv"}
+def api_download(base, job_id, *, scope="summary", fmt="csv",
+                 include_overlays=False):
+    """GET /results/download -> (ok, bytes|error).
+
+    scope mirrors the API's own parameter:
+      "summary"     -> zip of all_summary + filenames  (API default)
+      "all_summary" -> just all_summary.<fmt>
+      "filenames"   -> just filenames.<fmt>   (validate_filenames output)
+      "full"        -> zip of the whole reports folder
+    Always passes scope explicitly so this UI never silently depends on
+    whatever the API's default happens to be.
+    """
+    params = {"job_id": job_id, "scope": scope, "format": fmt}
+    if scope == "full" and include_overlays:
+        params["include_overlays"] = "true"
     try:
         r = requests.get(_url(base, "/results/download"),
-                         params=params, timeout=60)
+                         params=params, timeout=300)
         if r.status_code == 404:
-            return False, r.json().get("detail", r.text)
+            try:
+                return False, r.json().get("detail", r.text)
+            except Exception:
+                return False, r.text
         r.raise_for_status()
         return True, r.content
     except Exception as e:
@@ -260,15 +275,67 @@ if job:
             else:
                 st.error(f"Could not read results: {all_payload}")
 
-        # ---- Step 4: download the result CSV ----
+        # ---- Step 4: download results ----
         st.subheader("4 · Download")
-        ok_csv, csv_bytes = api_download_csv(api_base, job_id)
-        if ok_csv:
-            st.download_button(
-                "Download result CSV (all_summary.csv)",
-                data=csv_bytes,
-                file_name=f"all_summary_{job_id}.csv",
-                mime="text/csv",
+
+        # One picker instead of one button, because a reviewer needs two
+        # different artefacts: all_summary answers "did the files pass?" and
+        # filenames (from validate_filenames.py) answers "did they send the
+        # right files at all?". A file can be perfectly valid and still be the
+        # wrong file, so neither one alone is the full picture.
+        DL_CHOICES = {
+            "Summary bundle (all_summary + filenames)": "summary",
+            "all_summary only": "all_summary",
+            "filenames only (validate_filenames)": "filenames",
+            "Whole reports folder": "full",
+        }
+        choice = st.radio(
+            "What to download",
+            list(DL_CHOICES),
+            index=0,
+            help="The summary bundle is the usual deliverable: both the "
+                 "per-check verdicts and the file-completeness report.",
+        )
+        scope = DL_CHOICES[choice]
+
+        # format only applies to the CSV/JSON scopes; scope=full ships whatever
+        # is on disk, so offering a format toggle there would be misleading.
+        if scope == "full":
+            fmt = "csv"
+            include_overlays = st.checkbox(
+                "Include overlay media (large)",
+                value=False,
+                help="Overlay videos/images are debug visualisations. Across a "
+                     "big batch they dominate the download size and can time "
+                     "the request out.",
             )
         else:
-            st.warning(f"CSV not available yet: {csv_bytes}")
+            fmt = st.radio("Format", ["csv", "json"], index=0,
+                           horizontal=True)
+            include_overlays = False
+
+        if st.button("Prepare download"):
+            with st.spinner("Fetching from the API..."):
+                ok_dl, payload = api_download(
+                    api_base, job_id, scope=scope, fmt=fmt,
+                    include_overlays=include_overlays)
+
+            if not ok_dl:
+                st.warning(f"Not available: {payload}")
+            else:
+                # summary/full come back as a zip; the single-file scopes come
+                # back as the raw csv/json. Label and MIME must follow, or the
+                # browser saves a zip named .csv.
+                if scope in ("summary", "full"):
+                    fname = f"reports_{scope}_{job_id}.zip"
+                    mime = "application/zip"
+                else:
+                    fname = f"{scope}_{job_id}.{fmt}"
+                    mime = "text/csv" if fmt == "csv" else "application/json"
+
+                st.download_button(
+                    f"Save {fname}",
+                    data=payload,
+                    file_name=fname,
+                    mime=mime,
+                )

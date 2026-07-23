@@ -1,37 +1,8 @@
-"""router.py — decide which pipeline a file belongs to, from its NAME.
-
-This is the dispatch brain for POST /checks/file. It does NOT run QC itself; it
-parses the filename against the project's naming convention and says either
-"this is face_rgb, run it" or "this is palm_L_N, not built yet" or "this name
-matches nothing, reject it".
-
-Single source of truth
-----------------------
-The naming convention lives in config.yml (filenames.required) and is parsed by
-validate_filenames.classify() — the SAME function the first-scan validator uses.
-We reuse it so the API and the validator can never disagree about what a valid
-name is.
-
-classify(name, required) returns:
-    (data_key, volunteer_id)   e.g. ("face_rgb", "001")   on a match
-    (None, None)               on an unrecognised name
-
-data_key is one of the keys in config: face_rgb, face_depth, face_ir1, face_ir2,
-face_thermal, palm_L_N ... palm_R_PD, walk_F, walk_S.
-
-What's actually runnable today
-------------------------------
-Only face_rgb has a pipeline (run_face_rgb). Everything else is recognised by
-name but has no QC code yet, so the router marks it NOT_IMPLEMENTED. As palm /
-walk pipelines get written, add a branch here — nothing else changes.
-"""
-
 from __future__ import annotations
 
 import functools
 
-# Reuse the validator's parsing so the convention lives in one place.
-from validate_filenames import load_required, classify as _classify
+from qc.validate_filenames import load_required, classify as _classify
 
 
 # Outcome codes the API layer maps to HTTP status.
@@ -42,8 +13,8 @@ UNRECOGNISED = "unrecognised"        # name matches nothing -> 422
 # Which data_keys can be graded from a SINGLE uploaded file via /checks/file.
 # Extend as you wire a pipeline in live.check_one.
 #
-# face_rgb : one video -> full verdict.
-# walk_F/S : one video -> full verdict (run_walk grades a single clip).
+# face_rgb : one video -> full result.
+# walk_F/S : one video -> full result (run_walk grades a single clip).
 # palm_*   : DELIBERATELY EXCLUDED. A palm image's headline check (angle) is
 #            graded ABSOLUTELY per image, but the meaningful palm verdict spans
 #            all five poses together (run_palm_participant). One image in

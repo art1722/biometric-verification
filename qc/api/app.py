@@ -34,12 +34,14 @@ Run (from repo root):  uvicorn main:app --reload   ->  http://localhost:8000/doc
 from __future__ import annotations
 
 import functools
+import io
 import os
+import zipfile
 
 from typing import List
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Query, status
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 
 from . import store, jobs, live, uploads
 
@@ -296,26 +298,149 @@ def results(
     }
 
 
+#: Files a reviewer needs for the default ("summary") download. Both are written
+#: at the reports ROOT by run_folder.py: all_summary.* is the cross-modal
+#: verdict roll-up, filenames.* is the completeness/naming report. They answer
+#: two different questions ("did the files pass?" vs "did they send the right
+#: files?"), so the default hands over both rather than making the client make
+#: two calls and zip them itself.
+_SUMMARY_MEMBERS = ("all_summary", "filenames")
+
+#: Overlay media (face_001_overlay.mp4, palm_002_L_N_overlay.jpg, ...) are debug
+#: visualisations, not deliverables. Across ~1,500 volunteers they dominate the
+#: size of reports/ — streaming them through one HTTP response would time out —
+#: so scope=full drops them unless include_overlays=true is passed explicitly.
+_OVERLAY_MARKER = "_overlay."
+
+
+def _zip_of(paths_with_arcnames) -> io.BytesIO:
+    """Build an in-memory zip from (absolute_path, name_inside_zip) pairs.
+
+    In-memory (not a temp file on disk) because these bundles are small in the
+    summary case and this keeps the endpoint free of cleanup logic. scope=full
+    can be large; see the size note on the endpoint.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for src, arcname in paths_with_arcnames:
+            zf.write(src, arcname)
+    buf.seek(0)
+    return buf
+
+
+def _collect_full_reports(base: str, include_overlays: bool):
+    """Walk a reports dir, yielding (path, arcname) for everything to ship.
+
+    Keeps the on-disk layout inside the zip (root CSVs at the top, per-volunteer
+    files under <volunteer_id>/) so the extracted folder looks exactly like the
+    reports/ folder a CLI run produces.
+    """
+    for dirpath, _dirnames, filenames in os.walk(base):
+        for fn in filenames:
+            if not include_overlays and _OVERLAY_MARKER in fn:
+                continue
+            src = os.path.join(dirpath, fn)
+            yield src, os.path.relpath(src, base)
+
+
 @app.get("/results/download", tags=["Results"])
-def download_all_summary(
-    fmt: str = Query(default="json", alias="format", pattern="^(json|csv)$",
-                     description="all_summary.json or all_summary.csv"),
+def download_results(
+    scope: str = Query(
+        default="summary",
+        pattern="^(summary|full|all_summary|filenames)$",
+        description="summary = zip of all_summary + filenames (default); "
+                    "full = zip of the whole reports folder; "
+                    "all_summary / filenames = that single file only"),
+    fmt: str = Query(default="csv", alias="format", pattern="^(json|csv)$",
+                     description="csv or json (ignored when scope=full)"),
+    include_overlays: bool = Query(
+        default=False,
+        description="scope=full only: also include *_overlay.* debug media. "
+                    "Off by default — overlays dominate the folder size"),
     job_id: str | None = Query(
-        default=None, description="download THIS upload's all_summary"),
+        default=None, description="download THIS upload's results"),
 ):
-    """Download the raw all_summary file (the reviewer's single-file deliverable). 
-    json is the full nested set; csv is the flat per-check
-    grain. Pass job_id for an upload's own file."""
+    """Download stored results.
+
+    Four scopes, one endpoint:
+
+      scope=summary (DEFAULT) -> reports_summary.zip
+          all_summary.<fmt> + filenames.<fmt>. The reviewer's deliverable: the
+          verdicts plus the completeness report. Files missing from disk are
+          skipped rather than 404-ing the whole bundle, so a run with filename
+          validation disabled (--no-filenames) still yields a usable zip; a 404
+          is raised only when NEITHER file exists.
+
+      scope=full -> reports_full.zip
+          The entire reports folder, per-volunteer subfolders included, laid out
+          exactly as on disk. Excludes *_overlay.* unless include_overlays=true.
+          SIZE WARNING: with overlays on and a large batch this is many GB in a
+          single response and will likely time out; prefer fetching per-
+          volunteer files, or run the CLI and read reports/ directly.
+
+      scope=all_summary / scope=filenames -> that one file
+          Unchanged single-file behaviour (all_summary was the old default), so
+          existing clients keep working.
+
+    fmt selects .csv or .json for the single-file and summary scopes; it does
+    not apply to scope=full, which ships whatever is on disk. Pass job_id to
+    read an upload's own isolated reports dir instead of the shared one.
+    """
     reports = _reports_for_job(job_id)
     base = reports or store.reports_dir()
-    fname = "all_summary.json" if fmt == "json" else "all_summary.csv"
-    path = os.path.join(base, fname)
-    if not os.path.exists(path):
+
+    if not os.path.isdir(base):
         raise HTTPException(
             status_code=404,
-            detail=f"{fname} not found (has the batch finished writing?)")
-    media = "application/json" if fmt == "json" else "text/csv"
-    return FileResponse(path, media_type=media, filename=fname)
+            detail=f"reports dir not found: {base}")
+
+    # ---- scope=full: everything on disk, overlays optional ----
+    if scope == "full":
+        members = list(_collect_full_reports(base, include_overlays))
+        if not members:
+            raise HTTPException(
+                status_code=404,
+                detail="reports dir is empty (has the batch finished?)")
+        buf = _zip_of(members)
+        return StreamingResponse(
+            buf, media_type="application/zip",
+            headers={
+                "Content-Disposition": 'attachment; filename="reports_full.zip"'
+            })
+
+    ext = "json" if fmt == "json" else "csv"
+
+    # ---- single-file scopes: unchanged behaviour ----
+    if scope in _SUMMARY_MEMBERS:
+        fname = f"{scope}.{ext}"
+        path = os.path.join(base, fname)
+        if not os.path.exists(path):
+            raise HTTPException(
+                status_code=404,
+                detail=f"{fname} not found (has the batch finished writing?)")
+        media = "application/json" if ext == "json" else "text/csv"
+        return FileResponse(path, media_type=media, filename=fname)
+
+    # ---- scope=summary (default): both files in one zip ----
+    members = []
+    for stem in _SUMMARY_MEMBERS:
+        fname = f"{stem}.{ext}"
+        path = os.path.join(base, fname)
+        if os.path.exists(path):
+            members.append((path, fname))
+
+    if not members:
+        raise HTTPException(
+            status_code=404,
+            detail=f"neither all_summary.{ext} nor filenames.{ext} found "
+                   f"(has the batch finished writing?)")
+
+    buf = _zip_of(members)
+    return StreamingResponse(
+        buf, media_type="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="reports_summary.zip"'
+        })
 
 
 @app.get("/results/{volunteer_id}", tags=["Results"])
