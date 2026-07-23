@@ -1,8 +1,8 @@
-# Biometric QC — Multimodal Volunteer Data Validation
+# Biometric QC Multimodal Volunteer Data Validation
 
 Automated quality-control for multimodal biometric captures collected from volunteers.
 Given a folder of volunteer submissions, it validates each file against the capture
-spec and reports which files pass and which fail, at scale (~1,500 volunteers).
+spec and reports which files pass and which fail, at scale (around 1,500 volunteers).
 
 Developed by the Image Processing Unit (IPU), Artificial Intelligence Research Group
 (AINRG), National Electronics and Computer Technology Center (NECTEC).
@@ -22,7 +22,8 @@ four of them:
 | Gait (walk) | 2 | `.mp4` | container, fps, duration, resolution, body height, person detection, framing, blur, obstruction (YOLO), walk direction |
 
 Every check returns one of three statuses: **PASS**, **FAIL**, or **SKIP** (not
-applicable to this frame/image). A file passes only if it has no FAIL on any check.
+applicable to this frame/image). A file can have two statuses: **PASS**, or **FAIL**.
+The file passes only if it has no FAIL on any check.
 
 ---
 
@@ -34,8 +35,7 @@ applicable to this frame/image). A file passes only if it has no FAIL on any che
 
 ### Model bundles
 
-Four pretrained models must be placed in `models/` before running. They are **not**
-committed to the repo (large + downloaded once):
+Four pretrained models must be placed in `models/` before running.
 
 ```
 models/
@@ -91,7 +91,7 @@ data/
 │   └── 001_face_thermal.mp4
 └── 002/
     ├── 002_face_rgb.mp4
-    ├── 002_face_{depth,ir1,ir2,thermal}.mp4
+    ├── 002_face_{depth,ir1,ir2,thermal}.mp4   # 4 face images from a thermal camera
     ├── 002_palm_{L,R}_{N,RL,RR,PU,PD}.jpg   # 10 palm images
     ├── 002_walk_F.mp4
     └── 002_walk_S.mp4
