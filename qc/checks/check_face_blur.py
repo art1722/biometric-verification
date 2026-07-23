@@ -221,8 +221,8 @@ def check_face_blur(
     mean_luma = float(np.mean(y))
     contrast = float(np.std(y))
 
-    # Do not turn exposure/contrast problems into blur failures. The brightness
-    # check owns too-dark/too-bright decisions.
+    # Do not turn exposure/contrast problems into blur failures. (return None instead of Fail)
+    # The brightness check owns too-dark/too-bright decisions.
     if mean_luma < min_luma:
         return (
             None,
@@ -286,10 +286,6 @@ def check_face_blur(
             cv2.imwrite(out_path, debug_img)
 
         check_face_blur._debug_preprocess_n = n + 1
-
-    # Tenengrad / Sobel sharpness. sqrt(mean(gx^2 + gy^2)) keeps the score scale
-
-
 
     # Tenengrad / Sobel sharpness. sqrt(mean(gx^2 + gy^2)) keeps the score scale
     # easier to read than raw energy.

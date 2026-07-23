@@ -110,8 +110,7 @@ def check_brightness(
     x, y, bw, bh = bbox
 
     # Central region: trim `margin` off each side of the supplied bbox, then
-    # clamp to the image. Identical arithmetic to the old face version, but on
-    # an arbitrary bbox instead of the face-detection box.
+    # clamp to the image.
     x_start = max(0, int(x + bw * margin))
     y_start = max(0, int(y + bh * margin))
     x_end = min(w_img, int(x + bw * (1 - margin)))
@@ -148,7 +147,7 @@ def check_brightness(
 
 
 # ---------------------------------------------------------------------------
-# FACE wrapper — drop-in replacement for the old check_lightpol.
+# FACE wrapper
 # ---------------------------------------------------------------------------
 
 def check_brightness_face(
@@ -203,7 +202,7 @@ def check_brightness_face(
 
 
 # ---------------------------------------------------------------------------
-# PALM wrapper — reuses the bbox the shared HandLandmarker already produced.
+# PALM wrapper
 # ---------------------------------------------------------------------------
 
 def check_brightness_palm(
@@ -240,7 +239,7 @@ def check_brightness_palm(
 
 
 # ---------------------------------------------------------------------------
-# WALK wrapper — STUB. Not implemented; raises so it can't be wired silently.
+# WALK wrapper
 # ---------------------------------------------------------------------------
 
 def check_brightness_walk(

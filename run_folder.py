@@ -57,6 +57,13 @@ try:
 except ImportError:
     sys.exit("PyYAML required: pip install pyyaml")
 
+from qc.validate_filenames import (
+    load_required as _fn_load_required,
+    scan as _fn_scan,
+    build_report as _fn_build_report,
+    write_csv_long as _fn_write_csv,
+    write_json as _fn_write_json,
+)
 from qc.pipelines.face_rgb import run_face_rgb
 from qc.pipelines.palm import run_palm_participant
 from qc.pipelines.walk import run_walk
@@ -145,6 +152,10 @@ def parse_args():
     ap.add_argument("--walk-summary-csv", default=None,
                     help="walk per-check summary CSV "
                          "(default: <out-root>/walk_summary.csv)")
+    ap.add_argument("--no-filenames", action="store_true",
+                    help="skip the filename/completeness validation step "
+                         "(runs by default, writes filenames.csv/.json to "
+                         "--out-root; report-only, never blocks the QC run)")
     ap.add_argument("--no-face", action="store_true",
                     help="skip the face batch (e.g. run palm+walk only with --no-face)")
     ap.add_argument("--face-summary-csv", default=None,
@@ -710,6 +721,68 @@ def run_walk_batch(input_dir, config, args, all_summary, counts, allowed_ids=Non
     return n_videos, []
 
 
+def run_filename_validation(input_dir, config_path, out_root, quiet=False):
+    """Pipeline STEP 0: check delivered filenames against the spec patterns.
+
+    Runs the same core as `python qc/validate_filenames.py <folder>` and writes
+    the SAME two artifacts into out_root, so the batch output is identical
+    whether validation was run standalone or as part of run_folder:
+
+        <out_root>/filenames.csv
+        <out_root>/filenames.json
+
+    This is REPORT-ONLY and never blocks the QC run. A volunteer missing files,
+    or a wrong-case name like '005_face_RGB.MP4', is recorded here and the
+    modality batches still grade whatever files ARE present. Rationale: a
+    delivery is graded on what it contains; completeness is a separate question
+    from per-file quality, and nothing else in the pipeline halts a batch.
+
+    Returns the report dict (also usable by callers such as the API layer), or
+    None if validation could not run -- in which case the QC batch continues,
+    since a filename-report failure must not cost the caller the whole run.
+    """
+    try:
+        required, required_keys = _fn_load_required(config_path)
+        volunteers, unrecognised = _fn_scan(input_dir, required)
+        report = _fn_build_report(volunteers, unrecognised, required_keys)
+
+        os.makedirs(out_root, exist_ok=True)
+        csv_path = os.path.join(out_root, "filenames.csv")
+        json_path = os.path.join(out_root, "filenames.json")
+        _fn_write_csv(report, csv_path)
+        _fn_write_json(report, json_path)
+    except SystemExit as e:
+        # load_required calls sys.exit() on a malformed config. Inside a batch
+        # that must not kill the process, so it is caught and downgraded to a
+        # warning -- the QC run proceeds without the filename report.
+        print(f"[filenames] skipped: {e}")
+        return None
+    except Exception as e:
+        print(f"[filenames] skipped: {e}")
+        return None
+
+    if not quiet:
+        s = report["summary"]
+        print(f"filenames : {s['volunteers']} volunteer(s) — "
+              f"{s['complete']} complete, {s['incomplete']} incomplete, "
+              f"{s['unrecognised_file_count']} unrecognised file(s)")
+        print(f"            {csv_path} / {json_path}")
+        for v in report["volunteers"]:
+            if v["missing"]:
+                print(f"  - {v['volunteer']}: missing {len(v['missing'])} "
+                      f"-> {', '.join(v['missing'])}")
+            for d in v.get("duplicates", []):
+                print(f"  - {v['volunteer']}: duplicate {d['item']} "
+                      f"({len(d['paths'])} copies)")
+        for u in report["unrecognised_files"]:
+            who = (f"  [volunteer {u['volunteer_guess']}?]"
+                   if u["volunteer_guess"] else "")
+            print(f"  - unrecognised: {u['path']}{who}")
+        print()
+
+    return report
+
+
 def main():
     args = parse_args()
 
@@ -766,6 +839,13 @@ def main():
     print(f"out root  : {args.out_root}")
     print(f"summary   : {summary_csv}  (per-check, all videos)")
     print(f"all       : {all_stem}.csv / .json  (FAIL only, cross-modal)\n")
+
+    # ---- STEP 0: filename / completeness validation (report-only) ----
+    # Runs before any modality batch so the reviewer sees missing or misnamed
+    # files first. Does NOT gate the run: --no-filenames opts out entirely.
+    if not args.no_filenames:
+        run_filename_validation(args.input_dir, args.config, args.out_root,
+                                quiet=False)
 
     counts = {"PASS": 0, "FAIL": 0, "SKIP": 0}
     palm_wrong_case = []

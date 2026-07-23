@@ -48,8 +48,14 @@ try:
 except ImportError:
     sys.exit("PyYAML is required: pip install pyyaml")
 
-DEFAULT_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "config.yml")
+# config.yml lives at the PROJECT ROOT, one level above this file (qc/).
+# Resolving it from __file__ (rather than the process CWD) means the default
+# works no matter which directory the script is invoked from:
+#     python qc/validate_filenames.py data          # from the project root
+#     python ../qc/validate_filenames.py ../data    # from anywhere else
+# --config still overrides it when a different config is needed.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_CONFIG = os.path.join(_PROJECT_ROOT, "config.yml")
 
 
 def load_required(config_path):

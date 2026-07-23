@@ -1,45 +1,3 @@
-"""Palm angle check -- spec-aligned depth-wise wrist roll/pitch.
-
-Spec meaning
-------------
-Palm roll in the data specification is NOT image-plane rotation. It is the
-out-of-plane wrist rotation where one side of the palm moves closer to the
-sensor:
-
-  - RL/RR: thumb-side vs pinky-side palm edge moves toward the sensor.
-  - PU/PD: wrist-side vs finger-side palm region moves toward the sensor.
-
-This module therefore measures depth-wise tilt from MediaPipe 3D hand landmarks:
-
-  - roll  from the z-depth difference between thumb/index side and pinky side.
-  - pitch from the z-depth difference between wrist side and upper/finger side.
-
-MediaPipe's z convention is model-estimated, not calibrated physical depth. The
-pipeline still grades each rotated pose relative to the same hand's neutral (N)
-image, and keeps the raw +/-45 degree cap from the spec.
-
-Coordinate/sign convention used here
-------------------------------------
-MediaPipe hand landmarks use a camera-like z value where the side with the
-smaller z is closer to the camera/sensor. The returned signs are normalized to
-the filename/spec pose labels:
-
-  - RL should be negative roll.
-  - RR should be positive roll.
-  - PU should be negative pitch (wrist side closer).
-  - PD should be positive pitch (finger side closer).
-
-Because the spec defines RL/RR differently for left and right hands, roll sign
-uses the FILENAME hand (L/R), not MediaPipe's mirrored handedness label.
-
-Returns
--------
-calculate_palm_angles(world_landmarks, handedness="L"|"R") -> (ok, info)
-    info = {"roll": float, "pitch": float, "normal": (x,y,z), ...}
-check_palm_angle(...) -> (ok, message)
-    symmetric absolute wrapper for +/- roll/pitch caps.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -50,17 +8,14 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Base-of-palm keypoints (rigid relative to the wrist; finger curl barely moves
-# them). Indices are the standard MediaPipe HandLandmark order, matching the
-# HandLandmark enum in hand_landmarker.py (PINKY_MCP is 17; 13 is RING).
+# Base-of-palm keypoints
 _WRIST = 0
 _INDEX_MCP = 5
 _MIDDLE_MCP = 9
 _RING_MCP = 13
 _PINKY_MCP = 17
 
-# Base landmarks used for the palm angle/reference geometry. The name is kept
-# for backwards compatibility with overlay/debug modules that import it.
+# Base landmarks used for the palm angle/reference geometry.
 PLANE_LANDMARK_IDXS = (_WRIST, _INDEX_MCP, _MIDDLE_MCP, _RING_MCP, _PINKY_MCP)
 
 
@@ -111,43 +66,17 @@ def calculate_palm_angles(world_landmarks: Any, *, handedness: Any = None):
         return v / norm
 
     try:
-        # -------------------------------------------------------------------
-        # MEASUREMENT CORE (researcher's live-camera method, verified on the
-        # real rig images in tmp/palm_pitch_roll_report.csv).
-        #
-        # Ported verbatim from tmp/hand_angle_estimation.py::calculate_orientation
-        # so the pipeline reports the SAME numbers the researcher validated. Two
-        # deliberate points to be aware of, both explained inline:
-        #   (1) Roll follows the researcher's raw convention (NO extra flip):
-        #       on the real rig CSV this reads RL POSITIVE, RR NEGATIVE, and the
-        #       module's _POSE_SIGN has been updated to {"RL":+1,"RR":-1} to
-        #       match. This is the OPPOSITE roll polarity to the old world-
-        #       landmark code. [CONFIRM final sign-off: อ.เหมียว.]
-        #   (2) Feed this from NORMALIZED landmarks (HandResult.landmarks_norm),
-        #       NOT world_landmarks. The researcher's z-depth reasoning assumes
-        #       MediaPipe's normalized z (wrist-origin, smaller=closer). world_
-        #       landmarks use a different origin/scale and gave the wrong result.
-        #       The caller in palm.py must pass landmarks_norm now.
-        #
-        # This function reads .x/.y/.z the same way regardless of source, so it
-        # is source-agnostic; correctness depends on the CALLER passing the
-        # normalized list.
-        # -------------------------------------------------------------------
         p0 = _pt(_WRIST)         # wrist
         p5 = _pt(_INDEX_MCP)     # index MCP  (thumb/index side)
         p9 = _pt(_MIDDLE_MCP)    # middle MCP (central forward axis)
         p13 = _pt(_RING_MCP)     # ring MCP
         p17 = _pt(_PINKY_MCP)    # pinky MCP
 
-        # ---- Pitch: wrist -> middle-MCP forward axis (researcher's exact form)
-        # atan2(-forward_z, |forward_xy|): smaller z = closer, so a wrist that is
-        # closer than the fingers (PU) yields NEGATIVE pitch; fingers closer (PD)
-        # yields POSITIVE. Matches _POSE_SIGN PU=-1, PD=+1 with no extra flip.
         forward = p9 - p0
-        fwd_xy = math.hypot(float(forward[0]), float(forward[1]))
-        if fwd_xy < 1e-9:
+        forward_xy = math.hypot(float(forward[0]), float(forward[1]))
+        if forward_xy < 1e-9:
             return (False, {"error": "degenerate palm geometry (zero-length wrist-to-middle axis)"})
-        pitch = math.degrees(math.atan2(-float(forward[2]), fwd_xy))
+        pitch = math.degrees(math.atan2(-float(forward[2]), forward_xy))
 
         # ---- Roll: thumb/index side (p5) vs pinky side mean(p13,p17), depth-wise
         thumb_side = p5
@@ -157,15 +86,15 @@ def calculate_palm_angles(world_landmarks: Any, *, handedness: Any = None):
         if side_xy < 1e-9:
             return (False, {"error": "degenerate palm geometry (zero-width palm side axis)"})
 
-        # Researcher's raw roll: dz<0 (pinky closer) -> negative for LEFT hand;
-        # RIGHT hand negates. This is the researcher's own branch.
-        raw_roll_deg = math.degrees(math.atan2(float(side_vec[2]), side_xy))
+        # Rraw roll: dz<0 (pinky closer) -> negative for LEFT hand;
+        # RIGHT hand negates.
+        raw_roll_degree = math.degrees(math.atan2(float(side_vec[2]), side_xy))
         hs = str(handedness or "").strip().upper()
         is_right = hs in ("R", "RIGHT")
-        # Researcher's exact roll convention (validated on the rig CSV):
+        # Exact roll convention (validated on the rig CSV):
         #   RL reads POSITIVE, RR reads NEGATIVE, consistent across L and R.
         # _POSE_SIGN is updated to {"RL":+1,"RR":-1} to match. (Option A.)
-        roll = -raw_roll_deg if is_right else raw_roll_deg
+        roll = -raw_roll_degree if is_right else raw_roll_degree
 
         # Debug-only normal (unchanged contract). Built from the same two axes so
         # overlays keep drawing something sensible; grading never uses its x/y.
@@ -178,7 +107,7 @@ def calculate_palm_angles(world_landmarks: Any, *, handedness: Any = None):
             "roll": float(roll),
             "pitch": float(pitch),
             "normal": (float(normal[0]), float(normal[1]), float(normal[2])),
-            "raw_side_depth_deg": float(raw_roll_deg),
+            "raw_side_depth_deg": float(raw_roll_degree),
             "raw_up_depth_deg": float(-forward[2]),
             "handedness_used": "R" if is_right else "L_or_default",
         })
@@ -242,56 +171,8 @@ def check_palm_angle(
         reasons.append(f"pitch={pitch:.1f} ok")
     return (False, " ".join(reasons))
 
-# ---------------------------------------------------------------------------
-# Per-pose, per-hand directional validation (check_palm_pose)
-# ---------------------------------------------------------------------------
-# The symmetric check_palm_angle above only enforces |roll|,|pitch| <= 45 -- it
-# CANNOT tell a correctly-rolled RL (negative roll) from a wrong-way RL (positive
-# roll), so it is unsuitable for validating the 5 deliberate poses. This function
-# adds the directional rule the spec actually states (doc lines 36-47):
-#
-#   pose  spec wording                              expected band (deg)
-#   N     no rotation, parallel to camera           roll in [-N_tol, +N_tol],
-#                                                    pitch in [-N_tol, +N_tol]
-#   RL    roll not exceeding -45                     roll in [-45, -min_rot]
-#   RR    roll not exceeding +45                     roll in [+min_rot, +45]
-#   PU    pitch not exceeding -45                    pitch in [-45, -min_rot]
-#   PD    pitch not exceeding +45                    pitch in [+min_rot, +45]
-#
-# min_rot is the "must actually rotate" floor (a deliberate pose with ~0 roll is
-# a defect -> FAIL). For the rotated poses the OTHER axis should stay near zero
-# (an RL should not also be pitched), enforced by an off-axis tolerance.
-#
-# !!! HANDEDNESS / SIGN CALIBRATION -- STATUS !!!
-# The spec defines RL/RR relative to the VOLUNTEER (L-RL tilts the pinky edge
-# toward the sensor; R-RL tilts the THUMB edge). Both describe the SAME body
-# direction (for RL the palm normal sweeps toward the volunteer's left), so
-# the measured roll sign is expected to be IDENTICAL for L and R hands under
-# one capture geometry; what flips it is IMAGE MIRRORING, not handedness.
-# CALIBRATED 2026-07-09 to the researcher's method on real 099 rig images (see
-# _POSE_SIGN below). Grading is now ABSOLUTE per-image raw roll/pitch against the
-# pose band (no N baseline, no delta, PASS/FAIL only). Still open before full
-# sign-off (อ.เหมียว):
-#   (a) verify the RIGHT hand reproduces the same signs on more participants,
-#   (b) confirm whether the PRODUCTION rig saves mirrored or unmirrored
-#       images -- if unmirrored, RL/RR signs may flip (override via config
-#       palm.angle.hand_sign_overrides).
-# [CONFIRM]
-
 # Axis each pose acts on.
 _POSE_AXIS = {"N": None, "RL": "roll", "RR": "roll", "PU": "pitch", "PD": "pitch"}
-
-# Expected SIGN per pose. +1 expects a positive delta, -1 negative.
-# This follows the specification labels after calculate_palm_angles normalizes
-# depth signs by filename hand: RL=-, RR=+, PU=-, PD=+. If the production rig's
-# z/mirroring convention is shown to invert a pose, override it from config via
-# palm.angle.hand_sign_overrides.
-# CALIBRATED 2026-07-09 to the researcher's live-camera method, verified against
-# tmp/palm_pitch_roll_report.csv on real 099 rig images:
-#   RL -> POSITIVE roll, RR -> NEGATIVE roll  (both L and R hands, consistently)
-#   PU -> NEGATIVE pitch, PD -> POSITIVE pitch
-# Roll signs are FLIPPED from the previous world-landmark convention (which was
-# {RL:-1, RR:+1}); pitch is unchanged. [CONFIRM final sign-off: อ.เหมียว]
 _POSE_SIGN = {"RL": +1, "RR": -1, "PU": -1, "PD": +1}
 
 
@@ -415,24 +296,6 @@ def check_palm_pose(
     if not off_axis_ok:
         reasons.append(f"{other_name}={other:.1f} off-axis > +/-{off_axis_tol_deg:g}")
     return (False, f"{hand}/{pose} bad: {'; '.join(reasons)}")
-
-
-# ---------------------------------------------------------------------------
-# Absolute raw-angle pose validation: check_palm_pose_absolute
-# ---------------------------------------------------------------------------
-# The angle measurement is now reliable enough (validated against the researcher
-# rig CSV) to grade each image on its OWN raw roll/pitch -- no N baseline, no
-# delta. Agreed with the researcher (2026-07-09):
-#   - grade ONLY the pose's active axis (roll for RL/RR, pitch for PU/PD) against
-#     its directional band [min_rotation, max_abs] with the sign from _POSE_SIGN,
-#   - the OTHER axis is REPORTED but does NOT gate (no off-axis check),
-#   - N is graded by its own neutral tolerance on BOTH axes,
-#   - verdicts are PASS / FAIL only (no REVIEW, no delta, no d_roll/d_pitch).
-#
-# Message format (raw values, band shown):
-#   PASS:  "L/RL ok: raw roll=+42.7 within [10,45], pitch=-4.8"
-#   FAIL:  "L/RL fail: raw roll=+6.1 not in [10,45], pitch=-4.8"
-
 
 def check_palm_pose_absolute(
     pose: str,

@@ -254,11 +254,6 @@ palm:
     check_palm_fully_enabled: true   # [DESIGN -> CONFIRM] toggle like other palm checks
     margin_px: 10                    # [DESIGN] mirrors face head_fully.margin_px
 
-  quality:
-    require_bright_and_clear: true   # [SPEC]
-    require_visible_veins: true      # [SPEC]
-    visible_veins_policy: "FAIL"     # [DESIGN]
-
   # Runtime thresholds for check_palm_brightness (mean V inside the hand bbox).
   # Reuses the shared brightness core (qc/checks/check_brightness.py). Defaults
   # mirror face; palm skin under the capture rig may differ and "veins visible"
@@ -275,11 +270,6 @@ palm:
     jewelry_policy: "FAIL"           # [DESIGN]
 
   hand_pose:
-    require_palm_open: true                  # [SPEC]
-    require_all_five_fingers_visible: true   # [SPEC]
-    require_natural_finger_spread: true      # [SPEC]
-    require_not_overly_tensed: true          # [SPEC]
-
     # check_palm_spread: angular gap between adjacent fingers (MCP->TIP vectors).
     # Quality check -- enforced on the NEUTRAL (N) pose only, because RL/RR/PU/PD
     # tilt the hand out of the image plane and distort an in-plane spread angle.
@@ -375,8 +365,6 @@ walk:
 
   visibility:
     min_person_height_ratio: 0.5     # [SPEC]
-    require_full_body_visible: true  # [SPEC]
-    require_walking_pose_visible_every_frame: true  # [SPEC]
 
   brightness:
     # [RESEARCHER 2026-07-14] Brightness checking is OFF for walk. Set true to
@@ -441,16 +429,6 @@ walk:
     person_detected_fail_ratio: 0.2
     person_fully_fail_ratio: 0.2
 
-  recording:
-    require_indoor_safe_area: true       # [SPEC] no detector -> SKIP
-    require_no_obstacle: true            # [SPEC] no detector -> SKIP
-    require_normal_clothing: true        # [SPEC] no detector -> SKIP
-    require_F_walk_toward_and_back: true # [SPEC]
-    require_S_walk_left_and_right: true  # [SPEC]
-    require_two_cameras_simultaneous: true # [SPEC]
-
-  sync:
-    check_sync_enabled: false        # [DESIGN] simultaneous required, but no timestamp method defined
 
 report:
   # Frame-level aggregation policy: a frame-level check FAILs the file only if
@@ -472,19 +450,3 @@ report:
       # at the normal 20% fail-ratio, so a walker briefly out of view is NOT
       # sunk by one frame.
       check_single_person: 0.0
-  columns:
-    - "volunteer_id"
-    - "data_type"
-    - "stream_or_view"
-    - "filename"
-    - "check_name"
-    - "status"
-    - "reason"
-    - "measured_value"
-    - "threshold"
-    - "source"
-  include_pass: true                 # [DESIGN]
-  include_fail: true                 # [DESIGN]
-  include_skip: true                 # [DESIGN]
-  include_review: true               # [DESIGN]
-  aggregate_by_volunteer: true       # [PLAN]

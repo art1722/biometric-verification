@@ -380,7 +380,6 @@ def run_face_rgb(
                 _frame_checks.clear()
 
             # 1) face detection (once) -> landmarks + bbox + blendshapes.
-            # ONE Tasks-API inference yields everything the frame needs.
             fr = detect_face(
                 img, detector=face_landmarker, input_color_space=cspace)
             ok = fr.ok
@@ -390,19 +389,6 @@ def run_face_rgb(
             blendshapes = fr.blendshapes
             norm_landmarks = fr.landmarks_norm   # raw normalized, for head pose
             if not ok:
-                # No usable face this frame. Two distinct cases:
-                #
-                #   "No faces ..."  -> a detection gap. Whether acceptable depends
-                #     on WHERE it sits, known only once the whole timeline exists.
-                #     Start at SKIP (the expected-gap value) as a safe provisional;
-                #     the gap split after the loop re-statuses it to SKIP (expected,
-                #     inside a turn) or FAIL (unexpected, elsewhere). REVIEW is no
-                #     longer used: with no human review capacity, every row must
-                #     resolve to PASS / FAIL / SKIP.
-                #
-                #   "Multiple faces ..." -> a real defect (a second person in
-                #     frame). The spec wants ONE clearly-visible subject, so this
-                #     FAILs outright and is NOT tracked for the gap split.
                 no_faces = msg.startswith("No faces")
                 multiple_faces = msg.startswith("Multiple faces detected")
 
@@ -414,9 +400,6 @@ def run_face_rgb(
                     add("check_face_detected", "FAIL",
                         f"frame={sf.frame_index} {msg}", sf.frame_index)
                     
-                # Gap frame: still record it on the timeline so the turn-sequence
-                # check can SEE the gap (face_detected=False, yaw=None) rather than
-                # finding the frame simply absent.
                 add_frame(sf, face_detected=False)
                 if overlay is not None:
                     overlay.add_frame(
@@ -424,15 +407,6 @@ def run_face_rgb(
                         face_detected=False, landmarks=None, bbox=None,
                         pose=None, label="no-face", checks=dict(_frame_checks))
 
-                # ---- fail-fast GATE 3: multiple faces ----
-                # A second face is a STRUCTURAL defect (someone else in frame),
-                # not a detector limitation and not a ratio-judged transient.
-                # The spec wants ONE clearly-visible subject, so there is no
-                # point measuring 1,000+ more frames. Break the loop. The FAIL
-                # row above already records the verdict; the turn-sequence
-                # check is skipped on an aborted file (guarded below).
-                # (No-face gaps do NOT break — they are routine during deep
-                # turns and are resolved by the gap split after the loop.)
                 if multiple_faces:
                     sequence_blocked_by_structural_fail = True
 

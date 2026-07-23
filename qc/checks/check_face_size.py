@@ -36,7 +36,6 @@ def check_face_min_size(bbox, min_width: int = 180, min_height: int = 180):
 
     x, y, w, h = bbox
 
-    # Spec says "not less than", so >= (boundary value passes).
     if w >= min_width and h >= min_height:
         return (True, f"face={w}x{h} >= {min_width}x{min_height}")
     return (False, f"face={w}x{h} < {min_width}x{min_height}")

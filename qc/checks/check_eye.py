@@ -65,9 +65,6 @@ def check_eye_status(blendshapes: Optional[dict],
         blink scores are unavailable. Message includes the measured scores.
     """
     def _result(ok, msg, left=None, right=None):
-        # When return_scores is set, append the raw per-eye blink scores so the
-        # caller (pipeline timeline -> dashboard) can plot them. Default 2-tuple
-        # contract is unchanged for existing callers.
         if return_scores:
             return (ok, msg, left, right)
         return (ok, msg)
