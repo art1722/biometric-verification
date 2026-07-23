@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # ─────────────────────────────────────────────────────────────────────────────
 # Dockerfile — biometric QC API
 #
@@ -41,8 +42,9 @@ RUN mkdir -p /app/.ultralytics
 #    not change, Docker reuses the cached "pip install" layer and your rebuilds
 #    after editing a .py file take seconds, not minutes.
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip \
+    && pip install -r requirements.txt
 
 # 5. COPY YOUR PROJECT into the image (qc/, main.py, config.yml, run_*.py, ...).
 #    .dockerignore controls what is skipped (data/, reports/, __pycache__, ...).

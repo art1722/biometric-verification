@@ -92,8 +92,8 @@ face:
       roi_margin: 0.15
 
   turn_sequence:
-    enabled: true                    # [SPEC]
-    total_min_duration_sec: 40       # [SPEC]
+    enabled: true
+    total_min_duration_sec: 40
       
     # "exact": observed sequence must equal an accepted order exactly.
     # "contiguous_subsequence": accepted order may appear as one contiguous
@@ -101,19 +101,12 @@ face:
     # Use exact for final/spec QC; use contiguous_subsequence for legacy data
     # where volunteers may have turned before pressing/after stopping record.
     sequence_match_mode: "exact"
-    order_policy: "FAIL"        # [DESIGN] no human-review capacity at 1,500 scale;
+    order_policy: "FAIL"        # no human-review capacity at 1,500 scale;
                                 # a turn-order mismatch is a non-conforming file -> FAIL.
-                                # (was REVIEW)
-    short_hold_policy: "FAIL"   # [DESIGN] a turn held < its minimum duration did not
-                                # meet the spec's hold time -> FAIL. (was hard-coded
-                                # REVIEW)
-    unconfirmed_gap_policy: "FAIL"  # [DESIGN] a no-face gap Phase 1 cannot positively
-                                # confirm as a real turn. No human reviewer exists, so
-                                # this resolves to a decision rather than REVIEW.
-                                # NOTE: this is the one mode where the system admits it
-                                # CANNOT assess the frame — setting FAIL means such files
-                                # are rejected outright. Set to "REVIEW" only if a human
-                                # will actually look.
+    short_hold_policy: "FAIL"   # a turn held < its minimum duration did not
+                                # meet the spec's hold time -> FAIL.
+    unconfirmed_gap_policy: "FAIL"  # a no-face gap that we cannot positively
+                                # confirm as a real turn.
     accepted_orders:
       spec:
         - "front"
@@ -145,37 +138,25 @@ face:
       up: 2
 
     tolerance:
-      side_yaw_tolerance_deg: 30      # [DESIGN] guess - spec says ~90deg turn
-      tilt_pitch_tolerance_deg: 20    # [DESIGN] guess
-      min_detected_step_ratio: 0.6    # [DESIGN] guess - fraction of states seen
-      front_zone_yaw_deg: 15          # [DESIGN] guess - calibrate vs opening front hold
-      front_zone_pitch_deg: 15        # [DESIGN] guess - calibrate vs opening front hold
+      side_yaw_tolerance_deg: 30
+      tilt_pitch_tolerance_deg: 20
+      min_detected_step_ratio: 0.6
+      front_zone_yaw_deg: 15
+      front_zone_pitch_deg: 15
       label_jitter_tolerance_sec: 0.15
 
   checks:
-    detection:                       # [DESIGN] 2026-06: expected/unexpected gap split.
-                                     # A no-face frame is judged by WHERE it sits:
-                                     #   expected   = its gap run was absorbed into a
-                                     #                turn (>=1 detected over-floor
-                                     #                frame immediately adjacent) ->
-                                     #                the protocol asked the face to be
-                                     #                unmeasurable here; not a defect.
-                                     #   unexpected = anywhere else (e.g. during a front
-                                     #                hold) -> the face should have been
-                                     #                visible; a real defect.
-                                     # Frames with MULTIPLE faces are a different defect
-                                     # class (someone else in frame) and always stay
-                                     # REVIEW regardless of these settings.
-      expected_gap_status: "SKIP"    # [CONFIRM] not judged; excluded from fail ratio
-      unexpected_gap_status: "FAIL"  # [CONFIRM] counts toward frame_fail_ratio
+    detection:                      
+      expected_gap_status: "SKIP"
+      unexpected_gap_status: "FAIL"
     face_size:
-      threshold_px: 180              # [SPEC], not repo 150
+      threshold_px: 180
     blur:
-      threshold: 50.0                # [DESIGN] Tenengrad/Sobel after CLAHE, not old Laplacian=90
-      resize_px: 224                 # [DESIGN] fixed crop size makes scores less face-size dependent
-      crop_margin: 0.15              # [DESIGN] inner face crop; reduces hair/background edge bias
-      min_luma: 35.0                 # [DESIGN] below this, blur is SKIP; brightness owns the FAIL
-      min_contrast: 4.0              # [DESIGN] below this, blur is SKIP; insufficient edge evidence
+      threshold: 50.0                # Tenengrad/Sobel after CLAHE
+      resize_px: 224                 # fixed crop size makes scores less face-size dependent
+      crop_margin: 0.15              # inner face crop; reduces hair/background edge bias
+      min_luma: 35.0                 # below this, blur is SKIP; brightness owns the FAIL
+      min_contrast: 4.0              # below this, blur is SKIP; insufficient edge evidence
 
       # Preprocessing before Tenengrad/Sobel sharpness.
       # Options:
@@ -190,43 +171,29 @@ face:
       clahe_tile_grid_size: 8
 
       # LIDE params
-      # Note: README example uses d=100, but your face ROI is resized to 224x224.
-      # d=100 means a 201x201 local window, almost the whole face crop.
-      # For QC experiments, start smaller.
       lide_d: 30
       lide_sigma_min: 30.0
 
     brightness:
-      dark_threshold: 35             # [REPO]
-      bright_threshold: 220          # [REPO]
-      diff_threshold: 20             # [REPO]
-      margin: 0.1                    # [REPO]
+      dark_threshold: 35
+      bright_threshold: 220
+      diff_threshold: 20
+      margin: 0.1
     head_fully_visible:
-      margin_px: 10                  # [REPO]
+      margin_px: 10
     eyes_open:
-      blink_threshold: 0.5           # [DESIGN] Face Landmarker blendshape method.
-                                     # eyeBlinkLeft/Right is a trained closed-ness
-                                     # score in [0,1]; an eye is OPEN when its
-                                     # blink score < this. 0.5 is the natural
-                                     # midpoint starting point — CALIBRATE with a
-                                     # deliberate closed-eye clip, since the model
-                                     # tends to read clearly-closed eyes near ~0.9
-                                     # and open eyes near ~0.0-0.1. [CONFIRM]
-                                     # (Replaced the old EAR ratio + ear_threshold,
-                                     # which needed per-video calibration and broke
-                                     # off-frontal. EAR kept only as a fallback in
-                                     # check_eye.check_eye_status_ear.)
+      blink_threshold: 0.5
     head_pose:
-      left_th: -0.3                  # [REPO]
-      right_th: 0.3                  # [REPO]
-      down_th: -10                   # [REPO]
-      up_th: 15                      # [REPO]
-      til_left_th: -0.10             # [REPO]
-      til_right_th: 0.10             # [REPO]
+      left_th: -0.3
+      right_th: 0.3
+      down_th: -10
+      up_th: 15
+      til_left_th: -0.10
+      til_right_th: 0.10
 
 
 palm:
-  extension: ".jpg"                  # [SPEC]
+  extension: ".jpg"                 
   pattern_keys:
     - "palm_L_N"
     - "palm_L_RL"
@@ -239,67 +206,53 @@ palm:
     - "palm_R_PU"
     - "palm_R_PD"
 
-  hands: ["L", "R"]                  # [SPEC]
-  poses: ["N", "RL", "RR", "PU", "PD"]   # [SPEC]
-  expected_files_per_volunteer: 10   # [SPEC] 2 hands x 5 poses
+  hands: ["L", "R"]
+  poses: ["N", "RL", "RR", "PU", "PD"]
+  expected_files_per_volunteer: 10
 
   size:
-    min_width_px: 200                # [SPEC]
-    min_height_px: 200               # [SPEC]
+    min_width_px: 200
+    min_height_px: 200
 
-  # Palm-fully-visible: the whole hand must be inside the frame (wrist and upper
-  # palm not cut by an edge). Palm-side mirror of face.visibility + head_fully.
-  # check_palm_fully anchors on WRIST (0) and MIDDLE_FINGER_MCP (9).
   visibility:
-    check_palm_fully_enabled: true   # [DESIGN -> CONFIRM] toggle like other palm checks
-    margin_px: 10                    # [DESIGN] mirrors face head_fully.margin_px
-
+    check_palm_fully_enabled: true
+    margin_px: 10
   # Runtime thresholds for check_palm_brightness (mean V inside the hand bbox).
-  # Reuses the shared brightness core (qc/checks/check_brightness.py). Defaults
-  # mirror face; palm skin under the capture rig may differ and "veins visible"
-  # is a CONTRAST cue mean-V alone does not capture -- validate on real samples
-  # before trusting these. [CONFIRM]
+  # Reuses the shared brightness core (qc/checks/check_brightness.py).
   brightness:
-    enabled: true                    # [DESIGN] config toggle, like the angle gate
-    dark_threshold: 35.0             # [ASSUMPTION] inherited from face default
-    bright_threshold: 220.0          # [ASSUMPTION] inherited from face default
-    margin: 0.1                      # [DESIGN] trim each side of the hand bbox
+    enabled: true
+    dark_threshold: 35.0
+    bright_threshold: 220.0
+    margin: 0.1                      # trim each side of the hand bbox
 
   obstruction:
-    require_no_jewelry: true         # [SPEC]
-    jewelry_policy: "FAIL"           # [DESIGN]
+    require_no_jewelry: true
+    jewelry_policy: "FAIL"
 
   hand_pose:
     # check_palm_spread: angular gap between adjacent fingers (MCP->TIP vectors).
     # Quality check -- enforced on the NEUTRAL (N) pose only, because RL/RR/PU/PD
     # tilt the hand out of the image plane and distort an in-plane spread angle.
-    # [DESIGN -> CONFIRM]: N-only scoping deviates from the spec's
-    # "spread in every shot" wording; turn-pose spread is unreliable to measure.
     spread:
-      enabled: true                  # [DESIGN] config toggle, like the angle gate
-      eval_poses: ["N"]              # [DESIGN] only enforce spread on neutral
-      # Source-aware floors (degrees). MediaPipe extrapolates cropped fingertips
-      # (coords can fall outside [0,1]), so the check picks ONE hand-wide source:
-      # tips if every required finger's tip is in-frame, else PIPs. tip-tip gaps
-      # fan wider than pip-pip gaps, so each source has its own floors. All
-      # [ASSUMPTION] -- calibrate on real spread/closed samples.
+      enabled: true
+      eval_poses: ["N"]
       min_gap_inter_tip_deg: 2.0     # index-middle/middle-ring/ring-pinky (tip source)
       min_gap_thumb_tip_deg: 15.0    # thumb-index (tip source)
       min_gap_inter_pip_deg: 2.0     # inter-finger (pip source; PIPs fan less)
       min_gap_thumb_pip_deg: 15.0    # thumb-index (pip source)
       # A landmark must sit inside [margin, 1-margin] to count as in-frame; a
       # point at/over the edge is treated as cropped/extrapolated.
-      frame_margin: 0.02             # [DESIGN]
-      required_pairs:                # [DESIGN] gaps that FAIL the frame if closed
+      frame_margin: 0.02
+      required_pairs:
         - "thumb-index"
         - "index-middle"
         - "middle-ring"
         - "ring-pinky"
 
   angle:
-    max_abs_roll_deg: 45             # [SPEC]
-    max_abs_pitch_deg: 45            # [SPEC]
-    check_angle_enabled: true       # [DESIGN] flip TRUE after sign calibration
+    max_abs_roll_deg: 45
+    max_abs_pitch_deg: 45
+    check_angle_enabled: true
     # --- depth-wise measurement (check_palm_angle.calculate_palm_angles) ---
     # Spec roll is NOT in-plane rotation. It is side-edge depth tilt: thumb/index
     # side vs pinky side closer to the sensor. Pitch is wrist side vs upper/finger
@@ -309,122 +262,76 @@ palm:
     #   N : graded ABSOLUTELY -- researchers expect roll ~ 0 AND pitch ~ 0;
     #       tolerance n_reference_max_deg. A FAILed-but-measurable N still
     #       yields deltas, but the rotated verdicts are demoted to REVIEW
-    #       ("delta may be biased -- re-capture N"). [DESIGN -> CONFIRM]
+    #       ("delta may be biased -- re-capture N").
     #   RL/RR/PU/PD: graded on the DELTA vs this hand's own N:
     #     RL: d_roll in [-45, -min_rotation_deg]   RR: d_roll in [+min_rotation_deg, +45]
     #     PU: d_pitch in [-45, -min_rotation_deg]  PD: d_pitch in [+min_rotation_deg, +45]
-    #   PLUS the raw absolute cap |roll|,|pitch| <= max_abs_deg [SPEC], and the
+    #   PLUS the raw absolute cap |roll|,|pitch| <= max_abs_deg, and the
     #   raw values are always reported next to the delta verdict.
-    max_abs_deg: 45                  # [SPEC] outer magnitude bound (raw AND delta)
-    min_rotation_deg: 10             # [ASSUMPTION] a deliberate pose must rotate >= this; calibrate
-    neutral_tol_deg: 15              # [ASSUMPTION] used by the per-image absolute path (check_palm_pose)
-    n_reference_max_deg: 15          # [ASSUMPTION] N must read |roll|,|pitch| <= this to be a trusted baseline; calibrate
-    off_axis_tol_deg: 45             # [ASSUMPTION] a rotated pose's OTHER axis must stay within +/- this
-    # SIGN CALIBRATION NOTE: this implementation normalizes signs to the spec
-    # labels using the filename hand: RL=-, RR=+, PU=-, PD=+. If the production
-    # rig uses a different z/mirroring convention, override specific pose signs
-    # here after checking known-correct reference images, e.g.:
-    #   hand_sign_overrides: { R: { RL: 1, RR: -1 } }
-    # Calibrate on palm-side images only; dorsal/back-of-hand tests invert the
-    # physical "toward the sensor" relation.
-    hand_sign_overrides: {}          # [CONFIRM]
+    max_abs_deg: 45
+    min_rotation_deg: 10             # a deliberate pose must rotate >= this
+    neutral_tol_deg: 15              # used by the per-image absolute path (check_palm_pose)
+    n_reference_max_deg: 15          # N must read |roll|,|pitch| <= this to be a trusted baseline; calibrate
+    off_axis_tol_deg: 45             # a rotated pose's OTHER axis must stay within +/- this
+    # HAND SIGN CALIBRATION 
+    hand_sign_overrides: {}
 
   handedness:
-    # Does the detected hand match the filename hand (L/R)? Catches wrong-hand
-    # submissions (e.g. a right hand saved as ..._palm_L_...).
-    # Runs on the NEUTRAL (N) pose ONLY -- MediaPipe's left/right label is
-    # unreliable on tilted/rotated palm poses (the same physical hand can flip
-    # label between N and a pitch/roll pose).
-    enabled: true                    # [DESIGN]
+    enabled: true
     # Relation between the filename hand and MediaPipe's label for a CORRECT file:
-    #   "same"     -> L expects "Left",  R expects "Right"  (099 pipeline; DEFAULT)
+    #   "same"     -> L expects "Left",  R expects "Right"  (DEFAULT)
     #   "opposite" -> L expects "Right", R expects "Left"   (if a rig mirrors)
-    # Confirmed 2026-07-09 on 099 N pose (099_palm_L_N -> MediaPipe "Left").
     expected_relation: "same"        # [CONFIRM per rig]
     # A MATCHING label always PASSes. A MISMATCH only FAILs when MediaPipe is at
     # least this confident; a lower-confidence mismatch SKIPs (MediaPipe
     # handedness is flaky on palm poses, so an unsure disagreement should not
     # fail a possibly-correct file).
-    min_confidence: 0.7              # [ASSUMPTION] mismatch FAIL threshold; tune on real scores
+    min_confidence: 0.7
 
 
 walk:
-  extension: ".mp4"                  # [SPEC]
+  extension: ".mp4"
   pattern_keys:
     - "walk_F"
     - "walk_S"
 
-  views: ["F", "S"]                  # [SPEC]
-  expected_files_per_volunteer: 2    # [SPEC]
+  views: ["F", "S"]
+  expected_files_per_volunteer: 2
 
   metadata:
-    min_fps: 30                      # [SPEC]
-    min_duration_sec: 15             # [SPEC]
-    min_width_px: 1920               # [PLAN] concrete value for full HD
-    min_height_px: 1080              # [PLAN] concrete value for full HD
+    min_fps: 30
+    min_duration_sec: 15
+    min_width_px: 1920
+    min_height_px: 1080
 
   visibility:
-    min_person_height_ratio: 0.5     # [SPEC]
+    min_person_height_ratio: 0.5
 
   brightness:
-    # [RESEARCHER 2026-07-14] Brightness checking is OFF for walk. Set true to
-    # re-enable; the check code below is kept intact so flipping this back on
-    # needs no code change. When false, walk.py emits NO check_brightness rows
-    # (the check has no effect on any file's verdict).
     enabled: false
-    # [DESIGN] Same numeric cutoffs as the face check (dark<35, bright>200), but
-    # the walk verdict is INVERTED per the researcher decision (2026-07-13):
-    #   face  : PASS when 35 <= brightness <= 200   (normal-lit)
-    #   walk  : PASS when brightness < 35 OR > 200   (literally inverted)
-    # NOTE: this inversion means a normally-lit walk clip FAILS
-    # brightness and only a very dark / very bright clip passes. That is the
-    # opposite of the spec wording ("not too glaring, not too dark"). Flagged
-    # for confirmation, same discipline as the palm in-plane leak.
-    dark_threshold: 35               # [FACE-ALIGNED]
-    bright_threshold: 220            # [FACE-ALIGNED]
-    margin: 0.1                      # trim each side of the body bbox before measuring
-    # Video-level rule: overall brightness FAILS when >= this fraction of judged
-    # frames fail. Kept SEPARATE from report.aggregation so walk can be tuned
-    # without touching face. Wired via per_check_fail_ratio in run_walk.
-    frame_fail_ratio: 0.2            # [SPEC-DERIVED] overall FAIL if >= 20% frames fail
+    dark_threshold: 35
+    bright_threshold: 220
+    margin: 0.1
+    frame_fail_ratio: 0.2
 
   blur:
-    # Person-blur reuses check_face_blur (region-agnostic Tenengrad scorer) on
-    # the body bbox. Same default threshold as face; tune on real walk footage.
-    threshold: 35.0                  # [FACE-ALIGNED]
-    frame_fail_ratio: 0.2            # overall FAIL if >= 20% frames fail
+    threshold: 35.0
+    frame_fail_ratio: 0.2
 
   occlusion:
-    # Foreign-object occlusion via a COCO YOLO detector. Only class 0=person is
-    # allowed; any of the other 79 COCO classes in a frame FAILs that frame.
-    # This IMPLEMENTS recording.require_no_obstacle (previously "no detector ->
-    # SKIP"): with YOLO we can actually judge it per frame.
-    enabled: true                    # [DESIGN] set false to skip the 2nd model
-    conf: 0.6                       # [DESIGN] min confidence for a foreign object to count
-    frame_fail_ratio: 0.2            # overall FAIL if >= 20% frames fail (same as brightness/blur)
-    # Which non-person YOLO boxes to DRAW on the overlay (does NOT change the
-    # PASS/FAIL logic, only the visualization):
-    #   "all"        -> every non-person object (incl. off-to-the-side ones that
-    #                   do NOT fail the frame), so you can see what YOLO saw.
-    #   "overlap"    -> only objects overlapping the person (the ones that FAIL).
-    overlay_draw: all                # [DESIGN] "all" | "overlap"
-    # SIDE-view (_S) ONLY: switch from 2D box-overlap to the foot-band rule. An
-    # object FAILs iff its lower edge is within +/- foot_band_ratio * person
-    # height of the walker's planted-foot line (landmarks 31/32, max-y). Default
-    # 0.10 -> a 20% band. null -> _S also keeps raw overlap. FRONT (_F) ALWAYS
-    # uses overlap and ignores this. [DESIGN] pending sign-off.
+    enabled: true
+    conf: 0.6
+    frame_fail_ratio: 0.2
+    overlay_draw: all
     foot_band_ratio: 0.10
 
   direction:
-    # check_walk_direction (sequence-level): F=toward+away via body scale, S=left+right via
-    # centroid-x. [DESIGN] defaults pending validation on real _F/_S footage.
     smooth_window: 5                 # moving-average window over the frame series
     min_run: 3                       # consecutive frames of one polarity = a phase
     eps: 0.002                       # |delta| below this per step is treated as flat
     min_frames: 8                    # fewer usable frames -> SKIP (too short)
 
-  # Per-frame fail-ratio for the other person checks (detected / fully). Same
-  # 20% rule; kept here so all walk frame checks share one tunable place.
+  # Per-frame fail-ratio for the other person checks (detected / fully). Same 20% rule
   frame_checks:
     person_detected_fail_ratio: 0.2
     person_fully_fail_ratio: 0.2
@@ -436,7 +343,7 @@ report:
   # excluded) failed. A blink or a 2% transient on sampled frames is normal
   # human behaviour, not a QC defect. Same idea for REVIEW.
   # Applies ONLY to level=frame checks; video/sequence checks keep
-  # worst-status aggregation. [DESIGN] ratio values to confirm. [CONFIRM]
+  # worst-status aggregation.
   aggregation:
     frame_fail_ratio: 0.2
     frame_review_ratio: 0.2
