@@ -142,11 +142,14 @@ with st.sidebar:
     st.subheader("API")
     api_base = st.text_input("Base URL", value=DEFAULT_API)
     st.caption(
-        "**8001** — API running in Docker  \n"
-        "(`docker compose up -d`;  \n"
-        "the container publishes 8001 → 8000)  \n"
-        "**8000** — API running natively  \n"
-        "(`uvicorn main:app --reload`)"
+        "**Docker Compose dashboard:**  \n"
+        "`http://biometric-qc-api:8000`  \n\n"
+        "**Dashboard running directly on this computer, API in Docker:**  \n"
+        "`http://localhost:8001`  \n\n"
+        "**Dashboard and API running directly without Docker:**  \n"
+        "`http://localhost:8000`  \n\n"
+        "**API on another computer:**  \n"
+        "`http://<server-ip>:8001`"
     )
     if st.button("Check health"):
         ok, payload = api_health(api_base)
