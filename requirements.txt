@@ -11,6 +11,52 @@
 #   mediapipe 0.10.21 + protobuf 4.25.x + numpy 1.26.x. Pinning all three
 #   together is the point — upgrading any one of them can re-break solutions.
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CPU-ONLY PYTORCH INDEX — MUST STAY AT THE TOP OF THIS FILE.
+#
+# WHY: ultralytics depends on `torch>=1.8.0` with no upper bound and no CPU
+# constraint. On Linux, plain PyPI resolves that to the CUDA build, which drags
+# in the entire NVIDIA CUDA 13 stack as transitive dependencies:
+#
+#     torch                  526 MB
+#     nvidia-cublas          423 MB
+#     nvidia-cudnn-cu13      366 MB
+#     nvidia-cufft           214 MB
+#     nvidia-nccl-cu13       206 MB
+#     nvidia-cusolver        201 MB
+#     triton                 198 MB
+#     nvidia-cusparselt      170 MB
+#     nvidia-cusparse        146 MB
+#     nvidia-cuda-nvrtc       90 MB
+#     (+ cufile, curand, nvjitlink, cupti, nvtx, cuda-runtime)
+#     ───────────────────────────────
+#     ~2.66 GB of GPU libraries
+#
+# This QC pipeline runs YOLO inference on CPU only. None of that is used. It
+# added ~740 s to every cold build (325 s download + 419 s install) and several
+# GB to the image, for zero benefit.
+#
+# Pointing at download.pytorch.org/whl/cpu keeps torch at ~200 MB and cuts the
+# pip step from ~887 s to well under 2 minutes.
+# Kept HERE rather than in the Dockerfile so a plain
+# `pip install -r requirements.txt` on the host behaves identically.
+#
+# --index-url (NOT --extra-index-url): with --extra-index-url, pip sees BOTH
+# this index and PyPI and may still pick the CUDA build from PyPI. --index-url
+# REPLACES the default, so torch can only come from the CPU index. Every other
+# package below then needs PyPI added back explicitly, hence the extra line.
+#
+# No "+cpu" suffix on the pins: on the CPU index, `torch==2.5.1` already
+# resolves to the CPU wheel (which reports itself as 2.5.1+cpu once installed).
+# Writing "==2.5.1+cpu" is fragile — it breaks on any index or platform where
+# the local-version tag differs (macOS/Windows CPU wheels carry no suffix).
+# ─────────────────────────────────────────────────────────────────────────────
+--index-url https://download.pytorch.org/whl/cpu
+--extra-index-url https://pypi.org/simple
+
+torch==2.5.1
+torchvision==0.20.1
+
 # --- core CV / ML ---
 mediapipe==0.10.21
 opencv-python==4.11.0.86
@@ -19,15 +65,17 @@ protobuf==4.25.8          # pinned: mediapipe 0.10.21 needs protobuf >=4.25.3,<5
 
 # --- object detection (YOLO/COCO occlusion check for walk + face) ---
 # ultralytics provides the pretrained COCO YOLO model used by check_occlusion.
-# It pulls in torch/torchvision (CPU wheels by default), which are large; the
-# occlusion check degrades to SKIP if this is absent, but production runs need
-# it. Weights (yolov8n.pt) are NOT installed by pip; vendor them in models/ and
-# mount like the .task bundles (see Dockerfile / .dockerignore).
+# It depends on torch/torchvision — which are pinned ABOVE against the CPU
+# index, NOT left to default resolution (that pulls CUDA; see the top block).
+# The occlusion check degrades to SKIP if ultralytics is absent, but production
+# runs need it. Weights (yolov8n.pt) are NOT installed by pip; vendor them in
+# models/ and mount like the .task bundles (see Dockerfile / .dockerignore).
 ultralytics==8.4.95
 
 # --- config / data ---
 PyYAML==6.0.2
-lide==1.0.0
+lide==1.0.0               # optional LIDE blur preprocessing (--preprocess lideg/lidel);
+                          # check_face_blur.py guards the import, default is clahe
 
 # --- API (FastAPI + server) ---
 # These were imported by main.py but never listed. Without them the container
@@ -50,5 +98,6 @@ pytest==8.3.4
 # The tests surfaced python-multipart as a hard requirement for file uploads
 # (POST /check). fastapi + uvicorn you already added.
 python-multipart==0.0.20   # required by FastAPI for UploadFile / form data
+
 # --- debug visualization ---
 plotly==6.8.0        # optional: run_palm.py --angle-3d interactive HTML debug

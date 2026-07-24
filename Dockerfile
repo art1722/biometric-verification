@@ -5,6 +5,9 @@
 # Build it:   docker build -t biometric-qc .
 # Run it:     docker run -p 8000:8000 biometric-qc
 # Then open:  http://localhost:8000/docs
+#
+# The `# syntax=` line on line 1 is REQUIRED for `RUN --mount=type=cache` below.
+# It must be the very first line of the file — comments above it break it.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # 1. BASE IMAGE — start from an official, slim Python 3.11 on Linux.
@@ -41,10 +44,24 @@ RUN mkdir -p /app/.ultralytics
 #    WHY separately: Docker caches each step. As long as requirements.txt does
 #    not change, Docker reuses the cached "pip install" layer and your rebuilds
 #    after editing a .py file take seconds, not minutes.
+#
+#    --mount=type=cache keeps pip's HTTP wheel cache in a Docker-managed volume
+#    that SURVIVES layer invalidation. So when you DO edit requirements.txt, pip
+#    re-resolves but re-downloads only what actually changed.
+#
+#    NOTE: do NOT add --no-cache-dir here. It tells pip to write nothing to
+#    ~/.cache/pip, which makes the cache mount above completely pointless. The
+#    two options cancel each other out.
+#
+#    NOTE: we deliberately do NOT run `pip install --upgrade pip`. The base
+#    image's pip installs these wheels fine, and upgrading re-downloads pip on
+#    every cold build for no benefit.
+#
+#    The CPU-only PyTorch index lives in requirements.txt (not here) so that a
+#    plain host-side `pip install -r requirements.txt` resolves identically.
 COPY requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --upgrade pip \
-    && pip install -r requirements.txt
+    pip install -r requirements.txt
 
 # 5. COPY YOUR PROJECT into the image (qc/, main.py, config.yml, run_*.py, ...).
 #    .dockerignore controls what is skipped (data/, reports/, __pycache__, ...).

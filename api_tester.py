@@ -9,14 +9,16 @@ end, the way a real client would:
        GET /results?job_id=...&status=FAIL  the FAIL-only set (shown here)
     4. GET /results/download?job_id=...&format=csv   download button
 
-Run the API first (from the repo root):
+Run the API first (from the repo root). Either:
+
+    docker compose up -d                 # -> http://localhost:8001
     uvicorn main:app --reload            # -> http://localhost:8000
 
 Then run this app:
     streamlit run api_tester.py
 
-The API base URL is configurable in the sidebar (default http://localhost:8000)
-so you can point it at a remote deployment too.
+The API base URL is configurable in the sidebar (default http://localhost:8001,
+the Docker port) so you can point it at a native run or a remote deployment too.
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ import streamlit as st
 
 st.set_page_config(page_title="QC API tester", layout="wide")
 
-DEFAULT_API = "http://localhost:8000"
+DEFAULT_API = "http://localhost:8001"
 POLL_SECONDS = 2.0            # gap between status polls
 POLL_MAX_TRIES = 600         # ~20 min ceiling at 2s; batch of 1,500 is long
 
@@ -138,6 +140,13 @@ st.caption(
 with st.sidebar:
     st.subheader("API")
     api_base = st.text_input("Base URL", value=DEFAULT_API)
+    st.caption(
+        "**8001** — API running in Docker  \n"
+        "(`docker compose up -d`;  \n"
+        "the container publishes 8001 → 8000)  \n"
+        "**8000** — API running natively  \n"
+        "(`uvicorn main:app --reload`)"
+    )
     if st.button("Check health"):
         ok, payload = api_health(api_base)
         if ok:
@@ -145,6 +154,16 @@ with st.sidebar:
             st.json(payload)
         else:
             st.error(f"API unreachable: {payload}")
+            if ":8000" in api_base:
+                st.info(
+                    "Running the API in Docker? Try **http://localhost:8001** "
+                    "— compose maps host 8001 to container 8000."
+                )
+            elif ":8001" in api_base:
+                st.info(
+                    "Is the container up? Check with `docker ps`, "
+                    "and start it with `docker compose up -d`."
+                )
 
     st.subheader("Modalities to run")
     run_face = st.checkbox("Face", value=True)
