@@ -50,3 +50,52 @@ services:
     # Restart if it crashes or the host reboots, but not if you stopped it
     # yourself (`docker compose down`).
     restart: unless-stopped
+
+  biometric-qc-dashboard:
+    image: biometric-qc
+    container_name: biometric-qc-dashboard
+
+    command:
+      - streamlit
+      - run
+      - api_tester.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --server.headless=true
+
+    ports:
+      - "8501:8501"
+
+    environment:
+      - API_BASE_URL=http://biometric-qc-api:8000
+
+    depends_on:
+      - biometric-qc-api
+
+    restart: unless-stopped
+
+  biometric-qc-results:
+    image: biometric-qc
+    container_name: biometric-qc-results
+
+    command:
+      - streamlit
+      - run
+      - view_results.py
+      - --server.address=0.0.0.0
+      - --server.port=8502
+      - --server.headless=true
+      - --
+      - --reports
+      - /app/reports
+
+    ports:
+      - "8502:8502"
+
+    volumes:
+      - ./reports:/app/reports:ro
+
+    depends_on:
+      - biometric-qc-api
+
+    restart: unless-stopped

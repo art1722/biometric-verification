@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import io
 import time
+import os
 
 import pandas as pd
 import requests
@@ -32,7 +33,7 @@ import streamlit as st
 
 st.set_page_config(page_title="QC API tester", layout="wide")
 
-DEFAULT_API = "http://localhost:8001"
+DEFAULT_API = os.getenv("API_BASE_URL", "http://localhost:8001")
 POLL_SECONDS = 2.0            # gap between status polls
 POLL_MAX_TRIES = 600         # ~20 min ceiling at 2s; batch of 1,500 is long
 
