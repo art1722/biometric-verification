@@ -35,7 +35,7 @@ st.set_page_config(page_title="QC API tester", layout="wide")
 
 DEFAULT_API = os.getenv("API_BASE_URL", "http://localhost:8001")
 POLL_SECONDS = 2.0            # gap between status polls
-POLL_MAX_TRIES = 600         # ~20 min ceiling at 2s; batch of 1,500 is long
+POLL_MAX_TRIES = 6000         # ~200 min ceiling at 2s; batch of 1,500 is long
 
 
 # ---------------------------------------------------------------------------
